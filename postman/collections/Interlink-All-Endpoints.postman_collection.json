@@ -1,0 +1,684 @@
+{
+  "info": {
+    "_postman_id": "6fcce535-3a55-43ca-8a3a-1a7dc1f4db31",
+    "name": "Interlink API - All Active Endpoints",
+    "description": "Comprehensive collection for all active routes mounted in src/app.ts. Default baseUrl points to production deployment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://interlink-eight.vercel.app" },
+    { "key": "email", "value": "your-email@example.com" },
+    { "key": "password", "value": "your-password" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "eventId", "value": "" },
+    { "key": "templateId", "value": "" },
+    { "key": "workflowExecutionId", "value": "" },
+    { "key": "workflowStepId", "value": "" },
+    { "key": "actionKey", "value": "keep_event_a" },
+    { "key": "oauthCode", "value": "" },
+    { "key": "oauthState", "value": "" },
+    { "key": "calendarId", "value": "primary" },
+    { "key": "fromIso", "value": "2026-01-01T00:00:00.000Z" },
+    { "key": "toIso", "value": "2026-12-31T23:59:59.999Z" },
+    { "key": "channelId", "value": "" },
+    { "key": "resourceId", "value": "" },
+    { "key": "channelToken", "value": "" },
+    { "key": "messageNumber", "value": "1001" }
+  ],
+  "item": [
+    {
+      "name": "0) Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Health endpoint responds 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1) Auth",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/signup",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/signup",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "signup"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Signup returns success or already exists', function () {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/auth/login (save tokens)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Login returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && json.session) {",
+                  "  pm.collectionVariables.set('accessToken', json.session.accessToken || '');",
+                  "  pm.collectionVariables.set('refreshToken', json.session.refreshToken || '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/auth/refresh-token",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh-token",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "refresh-token"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Refresh token returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && json.session && json.session.accessToken) {",
+                  "  pm.collectionVariables.set('accessToken', json.session.accessToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/auth/google/start",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/google/start",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "google", "start"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/auth/google (redirect)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "google"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/auth/callback/google",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/callback/google?code={{oauthCode}}&state={{oauthState}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "callback", "google"],
+              "query": [
+                { "key": "code", "value": "{{oauthCode}}" },
+                { "key": "state", "value": "{{oauthState}}" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2) Calendar",
+      "item": [
+        {
+          "name": "POST /api/v1/calendar/sync",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/sync?provider=google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "sync"],
+              "query": [
+                { "key": "provider", "value": "google" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/calendar/watch/google",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"calendarId\": \"{{calendarId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/watch/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "watch", "google"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && json.channelId) pm.collectionVariables.set('channelId', json.channelId);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/calendar/webhook/google",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-goog-channel-id", "value": "{{channelId}}" },
+              { "key": "x-goog-resource-id", "value": "{{resourceId}}" },
+              { "key": "x-goog-resource-state", "value": "exists" },
+              { "key": "x-goog-message-number", "value": "{{messageNumber}}" },
+              { "key": "x-goog-channel-token", "value": "{{channelToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/webhook/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "webhook", "google"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3) Events",
+      "item": [
+        {
+          "name": "GET /api/v1/events",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events?from={{fromIso}}&to={{toIso}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events"],
+              "query": [
+                { "key": "from", "value": "{{fromIso}}" },
+                { "key": "to", "value": "{{toIso}}" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && Array.isArray(json.events) && json.events.length > 0 && json.events[0].id) {",
+                  "  pm.collectionVariables.set('eventId', json.events[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/events/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events", "{{eventId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/events/:id/attendance-response",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"response\": \"no\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/attendance-response",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events", "{{eventId}}", "attendance-response"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/events/:id/decline-email-logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/decline-email-logs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events", "{{eventId}}", "decline-email-logs"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/events/:id/send-decline-email",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateId\": \"system-default\",\n  \"sendToOrganizer\": true,\n  \"sendToAttendees\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/send-decline-email",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events", "{{eventId}}", "send-decline-email"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4) Preferences",
+      "item": [
+        {
+          "name": "GET /api/v1/preferences",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/preferences",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "preferences"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /api/v1/preferences",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"defaultBufferMinutes\": 15,\n  \"tonePreference\": \"professional\",\n  \"notifyVia\": \"both\",\n  \"timezone\": \"UTC\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/preferences",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "preferences"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5) Workflows",
+      "item": [
+        {
+          "name": "GET /api/v1/workflows/executions",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/workflows/executions?limit=20&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "workflows", "executions"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && Array.isArray(json.executions) && json.executions.length > 0 && json.executions[0].id) {",
+                  "  pm.collectionVariables.set('workflowExecutionId', json.executions[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/workflows/executions/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/workflows/executions/{{workflowExecutionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "workflows", "executions", "{{workflowExecutionId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && Array.isArray(json.steps) && json.steps.length > 0 && json.steps[0].stepId) {",
+                  "  pm.collectionVariables.set('workflowStepId', json.steps[0].stepId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/workflows/actions",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"executionId\": \"{{workflowExecutionId}}\",\n  \"stepId\": \"{{workflowStepId}}\",\n  \"actionKey\": \"{{actionKey}}\",\n  \"payload\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/workflows/actions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "workflows", "actions"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6) Email Templates",
+      "item": [
+        {
+          "name": "GET /api/v1/email-templates",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && Array.isArray(json.templates) && json.templates.length > 0 && json.templates[0].id) {",
+                  "  pm.collectionVariables.set('templateId', json.templates[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/email-templates/effective-default",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/effective-default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "effective-default"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/email-templates",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Auto test template\",\n  \"subjectTemplate\": \"Regarding {{eventTitle}}\",\n  \"bodyTemplate\": \"Hi, I cannot attend this event.\",\n  \"isActiveDefault\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (e) {}",
+                  "if (json && json.template && json.template.id) {",
+                  "  pm.collectionVariables.set('templateId', json.template.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "PATCH /api/v1/email-templates/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated auto test template\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "{{templateId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/email-templates/:id/set-default",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}/set-default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "{{templateId}}", "set-default"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/v1/email-templates/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "{{templateId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

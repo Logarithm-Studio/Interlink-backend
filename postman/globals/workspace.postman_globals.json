@@ -1,0 +1,100 @@
+{
+  "id": "6ef21abf-bdb3-411c-ac93-09ed8e78a230",
+  "name": "Globals",
+  "values": [
+    {
+      "key": "jwt",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "eventId",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "supabaseUrl",
+      "value": "https://qwjeczoafllmqjwgzooh.supabase.co",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "supabaseAnonKey",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "testEmail",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "testPassword",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "templateId",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "channelId",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "resourceId",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "channelToken",
+      "value": "",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "fromIso",
+      "value": "2026-01-01T00:00:00.000Z",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    },
+    {
+      "key": "toIso",
+      "value": "2026-12-31T23:59:59.999Z",
+      "enabled": true,
+      "type": "default",
+      "description": ""
+    }
+  ],
+  "_postman_variable_scope": "globals",
+  "_postman_exported_at": "2026-03-15T11:35:30.062Z",
+  "_postman_exported_using": "Postman/11.0.0"
+}

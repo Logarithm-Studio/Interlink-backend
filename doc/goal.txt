@@ -1,0 +1,30 @@
+for the mvp of the app
+
+for android right now
+first need to sync all the google events from the calendar to the app, then we can start working on the notifications for the events.
+there will be a part where all the events will be listed chronologically
+for now the current location of the user will be used to determine the distance to the event location, and in google maps there is an option for estimating the time to reach the event location, so we can use that to determine when to send the notification for the event.
+and now how the notification will work
+the notification will be sent to the user before a certain amount of time before the event starts,
+and the time will be determined by the following way:
+it should be addition of the time it takes to reach the event location and a specified amount of time like 15 minutes/30 minutes, so the user will have enough time to get ready and leave for the event.
+now a pop-up will be shown to the user wheather they are in the app or not, almost like google authentication pop-ups, and pop-up will have something about the event after clicking the notification it will take user to a specific screen in the app, like deep link, and there will be asked that if the user can attend the event or not
+
+if they choose yes, loop exit, no more work to do
+if they choose no, there are some cupple of things, i will say one by one
+
+after that, system should send an email to the event organizer's email address, and other attendees which is available in the calendar event details.
+
+how comes how the email will look like, there are two option for mail draft,
+one is default mail draft, which will be something like that user is not able to attend the event, and the other one is custom mail draft, where the user can write their own message to the organizer and attendees, update that, delete that, and then send the mail.
+
+so in short, the app will have the following features:
+1. Sync all google events from the calendar to the app.
+2. List all events chronologically.
+3. Determine the distance to the event location and estimate the time to reach there.
+4. Send notifications to the user before a certain amount of time before the event starts, based on the estimated time to reach the event location + a specified amount of time. example 15 minutes/30 minutes. like if the event starts at 5:00 PM, and it takes 30 minutes to reach there, and the specified amount of time is 15 minutes, then the notification will be sent at 4:15 PM. for now the specified amount of time will be fixed
+5. Show a pop-up to the user asking if they can attend the event or not.
+6. If the user chooses no, send an email to the event organizer and other attendees,with the option for a default mail draft or a custom mail draft.
+7. Allow the user to write their own message in the custom mail draft, update it,delete it, and then send the mail.
+8. The app should also have a settings page where the user can set the specified amount of time for the notifications, and also can choose to enable or disable the notifications for the events.
+9. for the first time user need to sync the google calendar events with the app, and then the app will automatically sync the events in the future, so the user don't have to worry about syncing the events every time they add a new event to their calendar.

@@ -1,0 +1,841 @@
+{
+  "info": {
+    "_postman_id": "d8b70532-37e8-4061-9bac-d945df4e6f04",
+    "name": "Interlink MVP Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Supabase Auth",
+      "item": [
+        {
+          "name": "Supabase Sign Up (Create User)",
+          "id": "c7b2882c-19c8-431e-93ea-867404456527",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "apikey",
+                "value": "{{supabaseAnonKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{supabaseUrl}}/auth/v1/signup",
+              "host": ["{{supabaseUrl}}"],
+              "path": ["auth", "v1", "signup"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Supabase Sign In (Password Grant + Save JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "92f78811-141c-4c1c-af92-7f1b3cc7d9ad",
+                "exec": [
+                  "let body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "if (body.access_token) {",
+                  "  pm.collectionVariables.set('jwt', body.access_token);",
+                  "  pm.globals.set('jwt', body.access_token);",
+                  "}"
+                ],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "id": "c4915fc8-66e7-4575-906c-44dbf3dcd1b9",
+                "exec": [""],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            }
+          ],
+          "id": "0d9efcfe-773f-4c97-b856-a6b865c76689",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "apikey",
+                "value": "{{supabaseAnonKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{supabaseUrl}}/auth/v1/token?grant_type=password",
+              "host": ["{{supabaseUrl}}"],
+              "path": ["auth", "v1", "token"],
+              "query": [
+                {
+                  "key": "grant_type",
+                  "value": "password",
+                  "uuid": "5e8492c7-4532-485c-a9e4-44ab1096912f"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "85f7d103-d208-4e94-8588-bd919f7191ca"
+    },
+    {
+      "name": "Backend Health",
+      "item": [
+        {
+          "name": "Backend Health Check",
+          "id": "09c27664-d459-40fd-ac26-b59095a30246",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "87e02de3-4c20-403d-a8c9-4bad4e96398f"
+    },
+    {
+      "name": "Backend Auth",
+      "item": [
+        {
+          "name": "Backend Auth Status (Google Connected?)",
+          "id": "08855fbb-e2b3-49a4-a8ee-6bbd158ecfff",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Start Google OAuth Connect",
+          "id": "254633d5-b077-47b1-a882-ea85a92a6a33",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "google"]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "2eae69ea-c677-450a-88ec-80b5bb93593e"
+    },
+    {
+      "name": "Calendar Sync & Watch",
+      "item": [
+        {
+          "name": "Trigger Google Calendar Sync",
+          "id": "ce7e024f-4c60-44ef-bce8-f0da64e5ec0d",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/sync?provider=google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "sync"],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "google"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Google Watch Channel",
+          "id": "7a550a35-67d0-4946-a946-12f9d6ad31aa",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"calendarId\": \"primary\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/watch/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "watch", "google"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Simulate Google Webhook Notification",
+          "id": "0c34f204-a1b0-4f17-b13d-e447d074bf68",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-goog-channel-id",
+                "value": "{{channelId}}"
+              },
+              {
+                "key": "x-goog-resource-id",
+                "value": "{{resourceId}}"
+              },
+              {
+                "key": "x-goog-resource-state",
+                "value": "exists"
+              },
+              {
+                "key": "x-goog-message-number",
+                "value": "1001"
+              },
+              {
+                "key": "x-goog-channel-token",
+                "value": "{{channelToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/webhook/google",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "webhook", "google"]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "0ed46435-b355-4501-a08f-6eb26498b77e"
+    },
+    {
+      "name": "Events & Attendance",
+      "item": [
+        {
+          "name": "List Upcoming Events",
+          "id": "842d2b9f-d29a-4c7a-8e7c-8a6fe39f61fc",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Events (Date Filter)",
+          "id": "fcbcbd50-2a9a-47d6-af66-f6f4e804e429",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events?from={{fromIso}}&to={{toIso}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{fromIso}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{toIso}}"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Event Detail by ID",
+          "id": "4568b59f-5ef7-49b3-b118-061a6fbfcfb6",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events", "{{eventId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record Attendance Response (Yes/No)",
+          "id": "47aad184-a5c5-4a37-a1f6-ee927acef915",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"response\": \"yes\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/attendance-response",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "attendance-response"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send Decline Email (Auto Marks Attendance No)",
+          "id": "e743cdd5-091a-47dc-b705-6120423a831c",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateId\": \"system-default\",\n  \"sendToOrganizer\": true,\n  \"sendToAttendees\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/send-decline-email",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "send-decline-email"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Decline Email Send Logs",
+          "id": "e22c1005-d492-4e15-84af-2a92e13ba4b4",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/decline-email-logs",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "decline-email-logs"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "79690132-a23e-43cf-841b-d1f2826bee97"
+    },
+    {
+      "name": "Decline Email Templates",
+      "item": [
+        {
+          "name": "List Decline Email Templates",
+          "id": "4b33749f-3f26-4338-b8b9-82be6a704f59",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Effective Default Decline Template",
+          "id": "ebe120c3-76d6-4761-b161-61cd66922e32",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/effective-default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "effective-default"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Custom Decline Template",
+          "id": "4ac6d39d-cf60-4a9f-aed4-6b6f9277ff8f",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"MVP Decline Template\",\n  \"subjectTemplate\": \"Unable to attend: {{eventTitle}}\",\n  \"bodyTemplate\": \"Hi, I will not be able to attend {{eventTitle}} at {{eventStart}}.\",\n  \"isActiveDefault\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Custom Decline Template",
+          "id": "b70a52f2-e18f-4219-80a8-acae2e8045d6",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"MVP Decline Template v2\",\n  \"bodyTemplate\": \"Hello, I am unable to attend {{eventTitle}}. Sorry for the inconvenience.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "{{templateId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Set Custom Template as Default",
+          "id": "f328b0b9-0b74-40de-86f8-9bc8f70d334d",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}/set-default",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "email-templates",
+                "{{templateId}}",
+                "set-default"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Set System Default as Active",
+          "id": "3ff2d7fe-2527-4436-98bf-1dab8b428cc9",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/system-default/set-default",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "email-templates",
+                "system-default",
+                "set-default"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Custom Decline Template",
+          "id": "f6c4ef5c-275e-4ca1-bf65-95f029f1400f",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "{{templateId}}"]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "214459cf-945a-46fa-997d-6c191e452fda"
+    },
+    {
+      "name": "Negative Tests",
+      "item": [
+        {
+          "name": "Missing JWT (Events List)",
+          "id": "4c7536f3-2e0f-4247-9fb4-65a8be176751",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "events"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Unsupported Sync Provider",
+          "id": "dc24018b-af07-40d6-b4f2-f9a179cfad27",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/calendar/sync?provider=microsoft",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "calendar", "sync"],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "microsoft"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Event Not Found",
+          "id": "7a56dc1a-76c0-47ef-b6e6-c082a57d82e4",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/00000000-0000-0000-0000-000000000000",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Edit System Default Template (Should Fail)",
+          "id": "0fc0b950-93e1-43d7-97ad-607c3c90e0ad",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"should-fail\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/system-default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "system-default"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete System Default Template (Should Fail)",
+          "id": "84bf827c-cf1f-485e-87b7-bf0891f1f0d9",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/email-templates/system-default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "email-templates", "system-default"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Decline Send Validation Error (Empty Subject)",
+          "id": "41abec3d-65b8-45aa-902f-c7949ad90bb6",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customSubject\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/send-decline-email",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "send-decline-email"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Attendance Validation Error (Invalid Value)",
+          "id": "5651bbcb-b71e-48fd-96ba-f6f7f2a9b155",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"response\": \"maybe\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/attendance-response",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "attendance-response"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "id": "4515f598-d6b8-448a-b875-74d6f51476f7"
+    }
+  ],
+  "variable": [
+    {
+      "id": "9e3ccffb-637c-4837-b676-fd25f9d5cfc4",
+      "key": "baseUrl",
+      "value": "http://localhost:5000"
+    },
+    {
+      "id": "a0168e80-f3d7-467d-8559-eb53fbb32305",
+      "key": "jwt",
+      "value": ""
+    },
+    {
+      "id": "2794eb24-e280-436e-8812-f5081e0c8726",
+      "key": "eventId",
+      "value": ""
+    },
+    {
+      "id": "0f804a17-7a57-4f4e-a67b-f7bb29087fb6",
+      "key": "supabaseUrl",
+      "value": "https://qwjeczoafllmqjwgzooh.supabase.co"
+    },
+    {
+      "id": "0c5a4385-de14-49f5-a0a6-393a8339f12c",
+      "key": "supabaseAnonKey",
+      "value": ""
+    },
+    {
+      "id": "056fb1d1-5326-4f79-bb55-d43bd0e4f3a5",
+      "key": "testEmail",
+      "value": ""
+    },
+    {
+      "id": "ddf87768-4680-4a54-8a89-bc3a0136f21d",
+      "key": "testPassword",
+      "value": ""
+    },
+    {
+      "id": "9b4f1a66-c59d-4c03-9f63-bb46d9b6347c",
+      "key": "templateId",
+      "value": ""
+    },
+    {
+      "id": "9d0e5f85-5b8c-44d7-9f95-074e6d5fd7da",
+      "key": "channelId",
+      "value": ""
+    },
+    {
+      "id": "e2b19380-c355-48ec-9005-f55c7bdd544f",
+      "key": "resourceId",
+      "value": ""
+    },
+    {
+      "id": "5f00702d-a39d-4f03-a2cb-17bad5dbf0ec",
+      "key": "channelToken",
+      "value": ""
+    },
+    {
+      "id": "0a4ca2f5-5643-4bfc-b54b-07c34462f937",
+      "key": "fromIso",
+      "value": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "7cb70308-f4b6-4019-b4c9-c764d2ec9516",
+      "key": "toIso",
+      "value": "2026-12-31T23:59:59.999Z"
+    }
+  ]
+}
