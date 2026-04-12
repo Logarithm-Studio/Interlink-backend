@@ -3,8 +3,11 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
-import { storeTokens, getTokens } from "../services/auth.service";
-import { createWatchChannel } from "../services/calendar/googleWatch.service";
+import { storeTokens, getTokens, deleteTokens } from "../services/auth.service";
+import {
+  createWatchChannel,
+  stopAllWatchChannelsForUser,
+} from "../services/calendar/googleWatch.service";
 import { getCalendarSyncQueue } from "../queues/queues";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
@@ -15,6 +18,11 @@ import {
   consumeOAuthState,
 } from "../services/oauth-state.service";
 import { getSupabase } from "../config/supabase";
+import {
+  sendEmailVerificationCode,
+  verifyEmailVerificationCode,
+  validateVerificationToken,
+} from "../services/emailVerification.service";
 
 const router = Router();
 
@@ -22,17 +30,28 @@ const router = Router();
 // re-consent after scope changes to obtain tokens with the new scopes.
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/userinfo.email",
 ];
-
-const GOOGLE_REDIRECT_URI =
-  process.env.GOOGLE_REDIRECT_URI ||
-  "http://localhost:5000/api/v1/auth/callback/google";
 
 const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT_URI;
 const GOOGLE_OAUTH_ERROR_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+
+function getGoogleRedirectUri(): string {
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim();
+
+  if (!redirectUri) {
+    throw new Error(
+      "GOOGLE_REDIRECT_URI must be set (for mobile dev use your public HTTPS callback URL).",
+    );
+  }
+
+  return redirectUri;
+}
 
 /**
  * Build a Google OAuth2 client for the consent/callback flow.
@@ -41,7 +60,7 @@ function getGoogleOAuth2Client() {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI,
+    getGoogleRedirectUri(),
   );
 }
 
@@ -56,6 +75,35 @@ function withQueryParams(
     }
   }
   return url.toString();
+}
+
+function sanitizeRedirectUri(input?: string): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(input);
+    const protocol = parsed.protocol;
+
+    const isLocalHttp =
+      protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+
+    const isHttps = protocol === "https:";
+
+    // Custom app links like interlinkapp://oauth/google/success
+    const isCustomScheme =
+      protocol !== "http:" && protocol !== "https:" && protocol.endsWith(":");
+
+    if (!isHttps && !isLocalHttp && !isCustomScheme) {
+      return undefined;
+    }
+
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function getCallbackErrorCode(err: unknown): string {
@@ -80,11 +128,93 @@ function buildGoogleAuthUrl(stateToken: string): string {
   });
 }
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function buildSessionPayload(session: {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  expires_at?: number;
+}) {
+  return {
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+    expiresIn: session.expires_in,
+    expiresAt: session.expires_at,
+    tokenType: "bearer",
+  };
+}
+
+function buildSignupUserMetadata(payload: {
+  fullName?: string;
+  contactNo?: string;
+  companyName?: string;
+  address?: string;
+}): Record<string, string> {
+  const metadata: Record<string, string> = {};
+
+  if (payload.fullName) {
+    metadata.fullName = payload.fullName;
+  }
+  if (payload.contactNo) {
+    metadata.contactNo = payload.contactNo;
+  }
+  if (payload.companyName) {
+    metadata.companyName = payload.companyName;
+  }
+  if (payload.address) {
+    metadata.address = payload.address;
+  }
+
+  return metadata;
+}
+
+async function findSupabaseUserIdByEmail(
+  supabase: ReturnType<typeof getSupabase>,
+  email: string,
+): Promise<string | null> {
+  const normalizedEmail = normalizeEmail(email);
+  const perPage = 200;
+  const maxPages = 10;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { data, error } = await supabase.auth.admin.listUsers({
+      page,
+      perPage,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const matchedUser = data.users.find(
+      (user) => normalizeEmail(user.email ?? "") === normalizedEmail,
+    );
+
+    if (matchedUser) {
+      return matchedUser.id;
+    }
+
+    if (data.users.length < perPage) {
+      break;
+    }
+  }
+
+  return null;
+}
+
 // ─── Validation schemas for signup/login ────────────────────────────
 
 const SignupSchema = z.object({
   email: z.string().email("Invalid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
+  verificationToken: z.string().min(1, "Verification token is required"),
+  fullName: z.string().min(1).optional(),
+  contactNo: z.string().min(1).optional(),
+  companyName: z.string().min(1).optional(),
+  address: z.string().min(1).optional(),
 });
 
 const LoginSchema = z.object({
@@ -95,6 +225,78 @@ const LoginSchema = z.object({
 const RefreshTokenSchema = z.object({
   refreshToken: z.string().min(1, "Refresh token is required"),
 });
+
+const SendVerificationCodeSchema = z.object({
+  email: z.string().email("Invalid email address"),
+});
+
+const VerifyVerificationCodeSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  code: z.string().regex(/^\d{4}$/, "Verification code must be 4 digits"),
+});
+
+// ─── POST /api/v1/auth/email/send-code ──────────────────────────────────────
+router.post(
+  "/email/send-code",
+  authRateLimit,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = SendVerificationCodeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+
+      const { email } = parsed.data;
+      const { expiresAt } = await sendEmailVerificationCode(email);
+
+      res.status(200).json({
+        message: "Verification code sent",
+        email,
+        expiresAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /api/v1/auth/email/verify-code ────────────────────────────────────
+router.post(
+  "/email/verify-code",
+  authRateLimit,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = VerifyVerificationCodeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+
+      const { email, code } = parsed.data;
+      const verificationResult = await verifyEmailVerificationCode(email, code);
+
+      if (!verificationResult.verified || !verificationResult.verificationToken) {
+        throw new UnauthorizedError(
+          verificationResult.reason === "code_expired"
+            ? "Verification code has expired. Request a new one."
+            : verificationResult.reason === "too_many_attempts"
+              ? "Too many attempts. Request a new code."
+              : "Invalid verification code",
+        );
+      }
+
+      res.status(200).json({
+        message: "Email verified",
+        verificationToken: verificationResult.verificationToken,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ─── POST /api/v1/auth/signup ───────────────────────────────────────
 // Register a new user. Proxies to Supabase Auth internally so clients
@@ -111,45 +313,106 @@ router.post(
         );
       }
 
-      const { email, password } = parsed.data;
+      const {
+        email,
+        password,
+        verificationToken,
+        fullName,
+        contactNo,
+        companyName,
+        address,
+      } = parsed.data;
+
+      const normalizedEmail = normalizeEmail(email);
+      const userMetadata = buildSignupUserMetadata({
+        fullName,
+        contactNo,
+        companyName,
+        address,
+      });
+
+      if (!validateVerificationToken(verificationToken, normalizedEmail, "signup")) {
+        throw new UnauthorizedError(
+          "Email verification token is invalid or expired",
+        );
+      }
+
       const supabase = getSupabase();
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
+      const createResult = await supabase.auth.admin.createUser({
+        email: normalizedEmail,
+        password,
+        email_confirm: true,
+        user_metadata: userMetadata,
+      });
+
+      const alreadyRegistered =
+        createResult.error?.message.toLowerCase().includes("already registered") ??
+        false;
+
+      if (createResult.error && !alreadyRegistered) {
+        throw new BadRequestError(createResult.error.message);
+      }
+
+      let accountExists = false;
+      let signInResult = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
         password,
       });
 
-      if (error) {
-        // Treat duplicate signup as idempotent so connection tests and retries
-        // with the same email don't fail with a generic 400.
-        if (error.message.toLowerCase().includes("already registered")) {
-          res.status(200).json({
-            message: "Account already exists. Please login.",
-            user: { email },
-            accountExists: true,
-          });
-          return;
+      if (alreadyRegistered && signInResult.error) {
+        accountExists = true;
+
+        const isUnconfirmedError = signInResult.error.message
+          .toLowerCase()
+          .includes("email not confirmed");
+
+        if (isUnconfirmedError) {
+          const userId = await findSupabaseUserIdByEmail(supabase, normalizedEmail);
+
+          if (userId) {
+            const updateResult = await supabase.auth.admin.updateUserById(userId, {
+              email_confirm: true,
+              password,
+              user_metadata: userMetadata,
+            });
+
+            if (updateResult.error) {
+              throw new BadRequestError(updateResult.error.message);
+            }
+
+            signInResult = await supabase.auth.signInWithPassword({
+              email: normalizedEmail,
+              password,
+            });
+          }
         }
-        throw new BadRequestError(error.message);
       }
 
-      res.status(201).json({
-        message: "User registered successfully",
+      if (signInResult.error || !signInResult.data.user || !signInResult.data.session) {
+        if (alreadyRegistered) {
+          throw new UnauthorizedError(
+            "Account already exists. Please log in with your existing password.",
+          );
+        }
+
+        throw new UnauthorizedError(
+          signInResult.error?.message ??
+            "Account created but automatic login failed. Please try logging in.",
+        );
+      }
+
+      res.status(accountExists ? 200 : 201).json({
+        message: accountExists
+          ? "Account already exists. Signed in successfully."
+          : "User registered successfully",
         user: {
-          id: data.user?.id,
-          email: data.user?.email,
+          id: signInResult.data.user.id,
+          email: signInResult.data.user.email,
         },
-        // If email confirmation is enabled, session will be null until confirmed.
-        session: data.session
-          ? {
-              accessToken: data.session.access_token,
-              refreshToken: data.session.refresh_token,
-              expiresIn: data.session.expires_in,
-              expiresAt: data.session.expires_at,
-              tokenType: "bearer",
-            }
-          : null,
-        confirmationRequired: !data.session,
+        session: buildSessionPayload(signInResult.data.session),
+        confirmationRequired: false,
+        accountExists,
       });
     } catch (err) {
       next(err);
@@ -171,11 +434,12 @@ router.post(
         );
       }
 
-      const { email, password } = parsed.data;
+      const normalizedEmail = normalizeEmail(parsed.data.email);
+      const { password } = parsed.data;
       const supabase = getSupabase();
 
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: normalizedEmail,
         password,
       });
 
@@ -189,13 +453,7 @@ router.post(
           id: data.user.id,
           email: data.user.email,
         },
-        session: {
-          accessToken: data.session.access_token,
-          refreshToken: data.session.refresh_token,
-          expiresIn: data.session.expires_in,
-          expiresAt: data.session.expires_at,
-          tokenType: "bearer",
-        },
+        session: buildSessionPayload(data.session),
       });
     } catch (err) {
       next(err);
@@ -256,12 +514,25 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
-      const stateToken = await createOAuthState(user.id, "google");
+      const successRedirectUri = sanitizeRedirectUri(
+        req.query.successRedirectUri as string | undefined,
+      );
+      const errorRedirectUri = sanitizeRedirectUri(
+        req.query.errorRedirectUri as string | undefined,
+      );
+
+      const stateToken = await createOAuthState(user.id, "google", {
+        successRedirectUri,
+        errorRedirectUri,
+      });
 
       res.status(200).json({
         provider: "google",
         authUrl: buildGoogleAuthUrl(stateToken),
+        redirectUri: getGoogleRedirectUri(),
         stateTtlSeconds: 600,
+        successRedirectUri,
+        errorRedirectUri,
       });
     } catch (err) {
       next(err);
@@ -299,6 +570,8 @@ router.get(
   "/callback/google",
   oauthRateLimit,
   async (req: Request, res: Response, next: NextFunction) => {
+    let callbackErrorRedirectUri = GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+
     try {
       const code = req.query.code as string;
       const stateToken = req.query.state as string;
@@ -316,6 +589,11 @@ router.get(
       }
 
       const userId = statePayload.userId;
+      const successRedirectUri =
+        statePayload.successRedirectUri ?? GOOGLE_OAUTH_SUCCESS_REDIRECT_URI;
+      const errorRedirectUri =
+        statePayload.errorRedirectUri ?? GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+      callbackErrorRedirectUri = errorRedirectUri;
 
       // Exchange the authorization code for tokens
       const oauth2Client = getGoogleOAuth2Client();
@@ -374,10 +652,10 @@ router.get(
         watchChannelCreated,
       };
 
-      if (GOOGLE_OAUTH_SUCCESS_REDIRECT_URI) {
+      if (successRedirectUri) {
         return res.redirect(
           302,
-          withQueryParams(GOOGLE_OAUTH_SUCCESS_REDIRECT_URI, {
+          withQueryParams(successRedirectUri, {
             provider: "google",
             status: "success",
           }),
@@ -386,16 +664,77 @@ router.get(
 
       res.status(200).json(successPayload);
     } catch (err) {
-      if (GOOGLE_OAUTH_ERROR_REDIRECT_URI) {
+      if (callbackErrorRedirectUri) {
         return res.redirect(
           302,
-          withQueryParams(GOOGLE_OAUTH_ERROR_REDIRECT_URI, {
+          withQueryParams(callbackErrorRedirectUri, {
             provider: "google",
             status: "error",
             code: getCallbackErrorCode(err),
           }),
         );
       }
+      next(err);
+    }
+  },
+);
+
+// ─── DELETE /api/v1/auth/google ─────────────────────────────────────
+// Disconnect a previously connected Google account.
+// Removes stored tokens and active watch channels for this user.
+router.delete(
+  "/google",
+  oauthRateLimit,
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+
+      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
+      try {
+        googleAccount = await getTokens(user.id, "google");
+      } catch {
+        // If token rows are already invalid/reauth-required, proceed with
+        // local disconnect cleanup anyway.
+      }
+
+      // Stop active channels before token deletion for best-effort Google-side cleanup.
+      const stoppedWatchChannels = await stopAllWatchChannelsForUser(user.id);
+
+      if (googleAccount) {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+        );
+
+        // Revoke both tokens when available. Failures are logged and ignored
+        // so account disconnect still succeeds locally.
+        try {
+          await oauth2Client.revokeToken(googleAccount.accessToken);
+        } catch (err) {
+          console.warn(
+            `[auth/google disconnect] access token revoke failed for user ${user.id}: ${String(err)}`,
+          );
+        }
+
+        try {
+          await oauth2Client.revokeToken(googleAccount.refreshToken);
+        } catch (err) {
+          console.warn(
+            `[auth/google disconnect] refresh token revoke failed for user ${user.id}: ${String(err)}`,
+          );
+        }
+      }
+
+      await deleteTokens(user.id, "google");
+
+      res.status(200).json({
+        message: "Google account disconnected successfully",
+        provider: "google",
+        disconnected: true,
+        stoppedWatchChannels,
+      });
+    } catch (err) {
       next(err);
     }
   },
@@ -419,8 +758,12 @@ router.get(
         },
         connectedAccounts: {
           google: googleAccount
-            ? { connected: true, expiresAt: googleAccount.expiresAt }
-            : null,
+            ? {
+                connected: true,
+                expiresAt: googleAccount.expiresAt,
+                reauthRequired: googleAccount.reauthRequired ?? false,
+              }
+            : { connected: false, expiresAt: null, reauthRequired: false },
         },
       });
     } catch (err) {

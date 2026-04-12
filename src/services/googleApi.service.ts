@@ -1,0 +1,235 @@
+import { google } from "googleapis";
+import { refreshGoogleTokenIfNeeded } from "./auth.service";
+import { BadRequestError } from "../utils/errors";
+
+async function getGoogleOAuthClient(userId: string) {
+  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({ access_token: accessToken });
+  return oauth2Client;
+}
+
+export async function listGoogleCalendarEvents(params: {
+  userId: string;
+  calendarId?: string;
+  maxResults?: number;
+  timeMin?: string;
+}): Promise<
+  Array<{
+    id: string | null | undefined;
+    status: string | null | undefined;
+    summary: string | null | undefined;
+    start: string | null | undefined;
+    end: string | null | undefined;
+    htmlLink: string | null | undefined;
+  }>
+> {
+  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
+  const response = await calendar.events.list({
+    calendarId: params.calendarId ?? "primary",
+    maxResults: Math.min(Math.max(params.maxResults ?? 10, 1), 50),
+    singleEvents: true,
+    orderBy: "startTime",
+    timeMin: params.timeMin ?? new Date().toISOString(),
+  });
+
+  return (response.data.items ?? []).map((event) => ({
+    id: event.id,
+    status: event.status,
+    summary: event.summary,
+    start: event.start?.dateTime ?? event.start?.date,
+    end: event.end?.dateTime ?? event.end?.date,
+    htmlLink: event.htmlLink,
+  }));
+}
+
+export type GmailMailbox = "inbox" | "sent" | "all";
+
+export interface GmailMessageSummary {
+  id: string;
+  threadId: string;
+  from: string | null;
+  to: string | null;
+  subject: string | null;
+  date: string | null;
+  messageIdHeader: string | null;
+  snippet: string | null;
+  internalDate: string | null;
+  labelIds: string[];
+}
+
+function mailboxToLabelIds(mailbox: GmailMailbox): string[] | undefined {
+  switch (mailbox) {
+    case "inbox":
+      return ["INBOX"];
+    case "sent":
+      return ["SENT"];
+    case "all":
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+function readHeader(
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined,
+  name: string,
+): string | null {
+  return (
+    headers?.find(
+      (header) => header.name?.toLowerCase() === name.toLowerCase(),
+    )?.value ?? null
+  );
+}
+
+function encodeRawMime(mime: string): string {
+  return Buffer.from(mime)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function buildMimeMessage(params: {
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+  inReplyToMessageId?: string;
+}): string {
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(params.subject).toString("base64")}?=`;
+
+  const lines = [
+    `From: ${params.from}`,
+    `To: ${params.to}`,
+    `Subject: ${encodedSubject}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+  ];
+
+  if (params.inReplyToMessageId) {
+    lines.push(`In-Reply-To: ${params.inReplyToMessageId}`);
+    lines.push(`References: ${params.inReplyToMessageId}`);
+  }
+
+  return [...lines, "", params.body].join("\r\n");
+}
+
+export async function listGmailMailboxMessages(params: {
+  userId: string;
+  mailbox?: GmailMailbox;
+  maxResults?: number;
+  query?: string;
+}): Promise<GmailMessageSummary[]> {
+  const mailbox = params.mailbox ?? "inbox";
+  const labelIds = mailboxToLabelIds(mailbox);
+
+  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  const listResponse = await gmail.users.messages.list({
+    userId: "me",
+    labelIds,
+    maxResults: Math.min(Math.max(params.maxResults ?? 20, 1), 50),
+    q: params.query,
+  });
+
+  const messageRefs = listResponse.data.messages ?? [];
+
+  const hydrated = await Promise.all(
+    messageRefs
+      .filter((message) => message.id && message.threadId)
+      .map(async (message): Promise<GmailMessageSummary> => {
+        const detail = await gmail.users.messages.get({
+          userId: "me",
+          id: message.id!,
+          format: "metadata",
+          metadataHeaders: ["From", "To", "Subject", "Date", "Message-ID"],
+        });
+
+        const headers = detail.data.payload?.headers;
+
+        return {
+          id: message.id!,
+          threadId: message.threadId!,
+          from: readHeader(headers, "From"),
+          to: readHeader(headers, "To"),
+          subject: readHeader(headers, "Subject"),
+          date: readHeader(headers, "Date"),
+          messageIdHeader: readHeader(headers, "Message-ID"),
+          snippet: detail.data.snippet ?? null,
+          internalDate: detail.data.internalDate ?? null,
+          labelIds: detail.data.labelIds ?? [],
+        };
+      }),
+  );
+
+  return hydrated;
+}
+
+export async function sendAutomatedGmailMessage(params: {
+  userId: string;
+  fromEmail: string;
+  toEmail: string;
+  subject: string;
+  body: string;
+  threadId?: string;
+  inReplyToMessageId?: string;
+}): Promise<{
+  id: string;
+  threadId: string;
+  labelIds: string[];
+}> {
+  if (!params.toEmail.trim()) {
+    throw new BadRequestError("Recipient email is required");
+  }
+
+  if (!params.subject.trim() || !params.body.trim()) {
+    throw new BadRequestError("Subject and body are required");
+  }
+
+  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  const mime = buildMimeMessage({
+    from: params.fromEmail,
+    to: params.toEmail,
+    subject: params.subject,
+    body: params.body,
+    inReplyToMessageId: params.inReplyToMessageId,
+  });
+
+  const response = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: {
+      raw: encodeRawMime(mime),
+      threadId: params.threadId,
+    },
+  });
+
+  if (!response.data.id || !response.data.threadId) {
+    throw new BadRequestError("Gmail did not return message identifiers");
+  }
+
+  return {
+    id: response.data.id,
+    threadId: response.data.threadId,
+    labelIds: response.data.labelIds ?? [],
+  };
+}
+
+export async function listGmailInboxMessages(params: {
+  userId: string;
+  maxResults?: number;
+  query?: string;
+}): Promise<GmailMessageSummary[]> {
+  return listGmailMailboxMessages({
+    userId: params.userId,
+    mailbox: "inbox",
+    maxResults: params.maxResults,
+    query: params.query,
+  });
+}

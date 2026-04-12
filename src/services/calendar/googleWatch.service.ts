@@ -226,6 +226,25 @@ export async function stopWatchChannel(channelId: string): Promise<void> {
 }
 
 /**
+ * Stop and remove every active watch channel for a user.
+ * Returns the number of channels that were targeted for cleanup.
+ */
+export async function stopAllWatchChannelsForUser(
+  userId: string,
+): Promise<number> {
+  const result = await query<Pick<ChannelRow, "channel_id">>(
+    "SELECT channel_id FROM google_watch_channels WHERE user_id = $1",
+    [userId],
+  );
+
+  for (const row of result.rows) {
+    await stopWatchChannel(row.channel_id);
+  }
+
+  return result.rows.length;
+}
+
+/**
  * Renew a watch channel: stop the old one and immediately create a new one
  * for the same user + calendar. The new channel has a fresh 6-day TTL.
  */

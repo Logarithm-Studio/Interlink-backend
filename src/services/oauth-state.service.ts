@@ -28,6 +28,8 @@ import { logger } from "../observability/logger";
 export interface OAuthStatePayload {
   userId: string;
   provider: "google" | "microsoft";
+  successRedirectUri?: string;
+  errorRedirectUri?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -51,9 +53,18 @@ function stateKey(token: string): string {
 export async function createOAuthState(
   userId: string,
   provider: OAuthStatePayload["provider"],
+  options?: {
+    successRedirectUri?: string;
+    errorRedirectUri?: string;
+  },
 ): Promise<string> {
   const token = randomBytes(16).toString("hex"); // 128 bits of entropy
-  const payload: OAuthStatePayload = { userId, provider };
+  const payload: OAuthStatePayload = {
+    userId,
+    provider,
+    successRedirectUri: options?.successRedirectUri,
+    errorRedirectUri: options?.errorRedirectUri,
+  };
 
   const redis = getRedis();
   await redis.set(
