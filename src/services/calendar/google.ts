@@ -232,6 +232,55 @@ export async function deleteGoogleEvent(
 }
 
 /**
+ * Accept a Google Calendar event by setting the authenticated user's
+ * attendee `responseStatus` to `"accepted"`.
+ *
+ * Mirror of `declineGoogleEvent`: patches the attendee list when the user
+ * appears as an attendee, no-ops (gracefully) when they are the sole organizer
+ * with no self-attendee row (they created it, so it's already "accepted").
+ */
+export async function acceptGoogleEvent(
+  userId: string,
+  userEmail: string,
+  eventId: string,
+  calendarId = "primary",
+): Promise<void> {
+  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({ access_token: accessToken });
+  const cal = google.calendar({ version: "v3", auth: oauth2Client });
+
+  try {
+    const { data: event } = await cal.events.get({ calendarId, eventId });
+
+    const attendees = event.attendees ?? [];
+    const lowerEmail = userEmail.toLowerCase();
+    const selfAttendee = attendees.find(
+      (a) => (a.email ?? "").toLowerCase() === lowerEmail,
+    );
+
+    if (!selfAttendee) {
+      // User is the organizer or has no attendee entry — no patch needed.
+      return;
+    }
+
+    // Only patch if the status isn't already accepted (avoids a needless write).
+    if (selfAttendee.responseStatus === "accepted") return;
+
+    selfAttendee.responseStatus = "accepted";
+    await cal.events.patch({
+      calendarId,
+      eventId,
+      requestBody: { attendees },
+      sendUpdates: "none", // Accepting doesn't warrant notifying other attendees.
+    });
+  } catch (err) {
+    // Non-fatal: local attendance record was already saved; log and move on.
+    console.warn(`[acceptGoogleEvent] Could not patch event ${eventId}:`, err);
+  }
+}
+
+/**
  * Decline a Google Calendar event by setting the authenticated user's
  * attendee `responseStatus` to `"declined"`.
  *

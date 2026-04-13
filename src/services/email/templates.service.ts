@@ -60,9 +60,51 @@ function mapRow(row: EmailTemplateRow): EmailTemplate {
   };
 }
 
+export const PRESET_TEMPLATES: {
+  name: string;
+  subjectTemplate: string;
+  bodyTemplate: string;
+}[] = [
+  {
+    name: "Brief",
+    subjectTemplate: "Cannot make it: {{eventTitle}}",
+    bodyTemplate:
+      "Hi,\n\nUnfortunately I will not be able to attend {{eventTitle}}. Apologies for the short notice.\n\nThanks.",
+  },
+  {
+    name: "Formal",
+    subjectTemplate: "Regrets: Unable to attend {{eventTitle}}",
+    bodyTemplate:
+      'Dear team,\n\nI regret to inform you that I will be unable to attend "{{eventTitle}}" on {{eventStart}}. I apologise for any inconvenience this may cause and would appreciate receiving any notes or action items afterwards so I can follow up accordingly.\n\nKind regards.',
+  },
+  {
+    name: "Casual",
+    subjectTemplate: "Skipping {{eventTitle}} — sorry!",
+    bodyTemplate:
+      "Hey!\n\nSomething came up and I won't be able to make {{eventTitle}}. Happy to catch up on anything I missed — just send the notes my way.\n\nCheers.",
+  },
+];
+
+export async function ensurePresetTemplates(userId: string): Promise<void> {
+  for (const preset of PRESET_TEMPLATES) {
+    await query(
+      `INSERT INTO email_templates
+         (user_id, name, subject_template, body_template, is_active_default)
+       SELECT $1, $2, $3, $4, FALSE
+        WHERE NOT EXISTS (
+               SELECT 1 FROM email_templates
+                WHERE user_id = $1 AND name = $2
+             )`,
+      [userId, preset.name, preset.subjectTemplate, preset.bodyTemplate],
+    );
+  }
+}
+
 export async function listEmailTemplates(
   userId: string,
 ): Promise<EmailTemplate[]> {
+  await ensurePresetTemplates(userId);
+
   const result = await query<EmailTemplateRow>(
     `SELECT id, user_id, name, subject_template, body_template,
             is_active_default, created_at, updated_at

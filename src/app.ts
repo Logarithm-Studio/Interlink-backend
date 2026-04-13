@@ -15,6 +15,7 @@ import preferencesRoutes from "./routes/preferences.routes";
 import workflowsRoutes from "./routes/workflows.routes";
 import workflowActionsRoutes from "./routes/workflow.actions.routes";
 import googleRoutes from "./routes/google.routes";
+import remindersRoutes from "./routes/reminders.routes";
 
 const app: Express = express();
 
@@ -50,6 +51,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/workflows", workflowActionsRoutes);
   app.use("/api/v1/email-templates", emailTemplatesRoutes);
   app.use("/api/v1/google", googleRoutes);
+  app.use("/api/v1/reminders", remindersRoutes);
 }
 
 function setupErrorHandling(app: Express) {

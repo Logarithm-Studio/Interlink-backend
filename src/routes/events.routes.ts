@@ -17,6 +17,7 @@ import {
   upsertAttendanceResponse,
 } from "../services/attendanceResponses.service";
 import { listEmailSendLogsForEvent } from "../services/email/sendLogs.service";
+import { acceptGoogleEvent, declineGoogleEvent } from "../services/calendar/google";
 import { AuthenticatedRequest } from "../types";
 import {
   BadRequestError,
@@ -126,6 +127,22 @@ router.post(
         eventId: req.params.id,
         response: parsed.data.response,
       });
+
+      // Sync the decision back to Google Calendar in the background.
+      // The local record is already saved above; Google API failures must not
+      // block the 200 response.
+      const externalId = event.externalEventId;
+      if (externalId) {
+        if (parsed.data.response === "yes") {
+          acceptGoogleEvent(user.id, user.email, externalId).catch((err) =>
+            console.warn("[attendance-response] acceptGoogleEvent failed:", err),
+          );
+        } else {
+          declineGoogleEvent(user.id, user.email, externalId).catch((err) =>
+            console.warn("[attendance-response] declineGoogleEvent failed:", err),
+          );
+        }
+      }
 
       res.status(200).json({
         message: "Attendance response recorded",

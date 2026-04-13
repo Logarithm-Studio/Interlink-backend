@@ -80,6 +80,14 @@ function resolveRecipients(params: {
   return [...deduped];
 }
 
+function deriveOrganizerName(organizerEmail: string | null): string {
+  if (!organizerEmail) return '';
+  const local = organizerEmail.split('@')[0] ?? '';
+  const parts = local.split(/[._+-]/).filter(Boolean);
+  if (!parts.length) return organizerEmail;
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+
 function renderTemplate(
   content: string,
   context: {
@@ -87,13 +95,26 @@ function renderTemplate(
     eventLocation: string;
     eventStartIso: string;
     eventEndIso: string;
+    organizerEmail: string | null;
   },
 ): string {
+  const startDate = new Date(context.eventStartIso);
+  const humanDate = Number.isFinite(startDate.getTime())
+    ? startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : context.eventStartIso;
+  const humanTime = Number.isFinite(startDate.getTime())
+    ? startDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : context.eventStartIso;
+  const organizerName = deriveOrganizerName(context.organizerEmail);
+
   return content
     .replace(/\{\{\s*eventTitle\s*\}\}/g, context.eventTitle)
     .replace(/\{\{\s*eventLocation\s*\}\}/g, context.eventLocation)
     .replace(/\{\{\s*eventStart\s*\}\}/g, context.eventStartIso)
-    .replace(/\{\{\s*eventEnd\s*\}\}/g, context.eventEndIso);
+    .replace(/\{\{\s*eventEnd\s*\}\}/g, context.eventEndIso)
+    .replace(/\{\{\s*organizerName\s*\}\}/g, organizerName)
+    .replace(/\{\{\s*startTime\s*\}\}/g, humanTime)
+    .replace(/\{\{\s*date\s*\}\}/g, humanDate);
 }
 
 function computeDeclineDraftIdempotencyKey(params: {
@@ -183,6 +204,7 @@ export async function sendDeclineEmailForEvent(
     eventLocation: event.location ?? "",
     eventStartIso: event.startTime.toISOString(),
     eventEndIso: event.endTime.toISOString(),
+    organizerEmail: event.organizerEmail ?? null,
   };
 
   const renderedSubject = customSubject?.trim().length

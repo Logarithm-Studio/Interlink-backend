@@ -213,18 +213,64 @@ export async function incrementalSync(
   }
 }
 
-// ─── Backward-compatible alias ─────────────────────────────────────────────
+// ─── Manual sync entry point ───────────────────────────────────────────────
 
 /**
- * Backward-compatible wrapper used by the manual `/sync` route and any other
- * caller that doesn't have a watch-channel context.
- * For webhook-driven sync, prefer `incrementalSync`.
+ * Used by the manual POST /calendar/sync route and any caller without an
+ * explicit watch-channel context.
+ *
+ * Strategy:
+ *  1. Look up the user's most-recently-updated active Google watch channel
+ *     that has a stored syncToken.
+ *  2. If found → incremental sync via that channel's cursor (fast path).
+ *  3. If not found → full time-window sync (first sync or no channel set up).
+ *
+ * This prevents the manual sync from re-downloading all events on every call.
  */
 export async function syncUserCalendar(
   userId: string,
   provider: "google",
   since?: string,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
+  if (provider !== "google") {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  // Find any channel with a stored syncToken for this user.
+  const { query } = await import("../../config/db");
+  const row = await query<{ channel_id: string; calendar_id: string }>(
+    `SELECT channel_id, calendar_id
+       FROM google_watch_channels
+      WHERE user_id = $1
+        AND sync_token IS NOT NULL
+        AND expiration > now()
+      ORDER BY updated_at DESC
+      LIMIT 1`,
+    [userId],
+  ).catch(() => ({ rows: [] as { channel_id: string; calendar_id: string }[] }));
+
+  if (row.rows[0]) {
+    const { channel_id: channelId, calendar_id: calendarId } = row.rows[0];
+    console.log(
+      `[syncUserCalendar] Incremental path via channel=${channelId} for user=${userId}`,
+    );
+    try {
+      return await incrementalSync(userId, channelId, calendarId);
+    } catch (err) {
+      if (err instanceof FullResyncRequiredError) {
+        console.log(
+          `[syncUserCalendar] Incremental cursor expired — falling back to full sync for user=${userId}`,
+        );
+        // Fall through to full sync below.
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  console.log(
+    `[syncUserCalendar] No incremental cursor — full sync for user=${userId}`,
+  );
   const { synced, skipped, deleted } = await fullSync(userId, provider, since);
   return { synced, skipped, deleted };
 }
