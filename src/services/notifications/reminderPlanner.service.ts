@@ -21,7 +21,6 @@
  */
 import { query } from "../../config/db";
 import {
-  geocodeAddress,
   getDistanceFromOrigin,
   type LatLng,
 } from "../googleMaps.service";
@@ -31,6 +30,13 @@ const DEFAULT_LEAD_MINUTES = 15;
 const STATIONARY_ETA_THRESHOLD_SECONDS = 60;
 /** Max event window we plan reminders for — keeps response sizes small. */
 const HORIZON_HOURS = 24;
+
+const MAPS_DISABLED_RE =
+  /(legacy api|service_disabled|not been used|not activated|disabled)/i;
+const MAPS_DENIED_RE =
+  /(permission_denied|request_denied|forbidden|api key)/i;
+const MAPS_NO_ROUTE_RE =
+  /(zero_results|no route|no distance result|element status)/i;
 
 export interface ReminderPlan {
   eventId: string;
@@ -49,6 +55,22 @@ interface EventRow {
   title: string;
   start_time: Date;
   location: string | null;
+}
+
+function toTravelFailureReason(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+
+  if (MAPS_DISABLED_RE.test(message)) {
+    return "maps_api_disabled";
+  }
+  if (MAPS_DENIED_RE.test(message)) {
+    return "maps_request_denied";
+  }
+  if (MAPS_NO_ROUTE_RE.test(message)) {
+    return "maps_no_route";
+  }
+
+  return "maps_lookup_failed";
 }
 
 async function loadUpcomingEvents(
@@ -90,10 +112,9 @@ async function resolveTravelSeconds(
   destinationAddress: string,
 ): Promise<{ seconds: number; reason?: string }> {
   try {
-    const geo = await geocodeAddress(destinationAddress);
     const res = await getDistanceFromOrigin({
       origin,
-      destination: { location: geo.location },
+      destination: { address: destinationAddress },
       mode: "driving",
       departureTime: "now",
     });
@@ -101,9 +122,14 @@ async function resolveTravelSeconds(
       res.durationInTrafficSeconds ?? res.durationSeconds ?? 0;
     return { seconds };
   } catch (err) {
+    const reason = toTravelFailureReason(err);
+    console.warn(
+      `[ReminderPlanner] Travel lookup failed (${reason}) for destination "${destinationAddress}"`,
+      err,
+    );
     return {
       seconds: 0,
-      reason: err instanceof Error ? err.message : "maps_lookup_failed",
+      reason,
     };
   }
 }
@@ -127,6 +153,12 @@ export async function computeReminders(
 
   const leadSeconds = leadMinutes * 60;
 
+  console.log(
+    `[ReminderPlanner] Computing reminders for user ${userId}:`,
+    `${events.length} events, lead time ${leadMinutes}min (${leadSeconds}s)`,
+    origin ? `, location (${origin.lat.toFixed(4)}, ${origin.lng.toFixed(4)})` : ", no location",
+  );
+
   const plans: ReminderPlan[] = await Promise.all(
     events.map(async (ev): Promise<ReminderPlan> => {
       const base = {
@@ -139,13 +171,22 @@ export async function computeReminders(
 
       // No origin (no permission yet) or no event location → stationary.
       if (!origin || !ev.location || !ev.location.trim()) {
+        const notifyAt = new Date(
+          ev.start_time.getTime() - leadSeconds * 1000,
+        );
+
+        console.log(
+          `[ReminderPlanner] Event "${ev.title}": STATIONARY (no location)`,
+          `\n  Start: ${ev.start_time.toISOString()}`,
+          `\n  Lead: ${leadMinutes}min`,
+          `\n  Notify at: ${notifyAt.toISOString()}`,
+        );
+
         return {
           ...base,
           travelSeconds: 0,
           mode: "stationary",
-          notifyAt: new Date(
-            ev.start_time.getTime() - leadSeconds * 1000,
-          ).toISOString(),
+          notifyAt: notifyAt.toISOString(),
           reason: !origin ? "no_origin" : "no_event_location",
         };
       }
@@ -159,18 +200,33 @@ export async function computeReminders(
         seconds < STATIONARY_ETA_THRESHOLD_SECONDS ? "stationary" : "moving";
 
       const effectiveTravel = mode === "stationary" ? 0 : seconds;
+      const notifyAt = new Date(
+        ev.start_time.getTime() - (leadSeconds + effectiveTravel) * 1000,
+      );
+
+      console.log(
+        `[ReminderPlanner] Event "${ev.title}": ${mode.toUpperCase()}`,
+        `\n  Start: ${ev.start_time.toISOString()}`,
+        `\n  Lead: ${leadMinutes}min (${leadSeconds}s)`,
+        `\n  Travel: ${Math.round(seconds / 60)}min (${seconds}s)`,
+        `\n  Effective travel: ${Math.round(effectiveTravel / 60)}min (${effectiveTravel}s)`,
+        `\n  Total buffer: ${Math.round((leadSeconds + effectiveTravel) / 60)}min`,
+        `\n  Notify at: ${notifyAt.toISOString()}`,
+        `\n  Time until notify: ${Math.round((notifyAt.getTime() - Date.now()) / 1000)}s`,
+        reason ? `\n  Reason: ${reason}` : "",
+      );
 
       return {
         ...base,
         travelSeconds: effectiveTravel,
         mode,
-        notifyAt: new Date(
-          ev.start_time.getTime() - (leadSeconds + effectiveTravel) * 1000,
-        ).toISOString(),
+        notifyAt: notifyAt.toISOString(),
         reason,
       };
     }),
   );
+
+  console.log(`[ReminderPlanner] Generated ${plans.length} reminder plans`);
 
   return { plans, leadMinutes };
 }
