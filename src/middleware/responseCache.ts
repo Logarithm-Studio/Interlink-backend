@@ -11,6 +11,7 @@
 
 import { Request, Response, NextFunction } from "express";
 import { getFromCache, setInCache, CacheKeys } from "@/lib/cache";
+import { AuthenticatedRequest } from "@/types";
 
 export interface ResponseCacheConfig {
   /** Default TTL in seconds (default: 300) */
@@ -45,7 +46,7 @@ export function responseCache(config: ResponseCacheConfig = {}) {
     prefix = "api",
   } = config;
 
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request | AuthenticatedRequest, res: Response, next: NextFunction) => {
     // Only cache GET requests
     if (req.method !== "GET" || !enabled) {
       return next();
@@ -57,7 +58,8 @@ export function responseCache(config: ResponseCacheConfig = {}) {
     }
 
     // Generate cache key from route and query params
-    const cacheKey = `${prefix}:${req.originalUrl}:${req.user?.id || "anonymous"}`;
+    const userId = (req as Partial<AuthenticatedRequest>).user?.id || "anonymous";
+    const cacheKey = `${prefix}:${req.originalUrl}:${userId}`;
 
     // Try to get from cache
     try {
@@ -99,7 +101,7 @@ export function responseCache(config: ResponseCacheConfig = {}) {
             headers: res.getHeaders(),
           },
           { ttl },
-        ).catch((error) => {
+        ).catch((error: unknown) => {
           console.warn("[ResponseCache] Cache write failed:", error);
         });
 
