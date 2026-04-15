@@ -38,6 +38,7 @@ async function upsertAll(
   userId: string,
   provider: "google",
   rules: EventTypeRule[],
+  calendarId: string,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
   let synced = 0;
   let skipped = 0;
@@ -60,7 +61,9 @@ async function upsertAll(
     }
 
     const normalized: NormalizedEvent | null =
-      provider === "google" ? normalizeGoogleEvent(raw, userId, rules) : null;
+      provider === "google"
+        ? normalizeGoogleEvent(raw, userId, rules, calendarId)
+        : null;
 
     if (!normalized) {
       skipped++;
@@ -112,6 +115,7 @@ export async function fullSync(
     userId,
     provider,
     rules,
+    calendarId,
   );
 
   console.log(
@@ -188,6 +192,7 @@ export async function incrementalSync(
       userId,
       "google",
       rules,
+      calendarId,
     );
 
     // Advance cursor only after all upserts in this batch succeed.

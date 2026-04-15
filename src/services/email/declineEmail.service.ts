@@ -7,6 +7,7 @@ import {
 import { createEmailSendLog } from "./sendLogs.service";
 import { upsertAttendanceResponse } from "../attendanceResponses.service";
 import { getEventById } from "../events.service";
+import { declineGoogleEvent } from "../calendar/google";
 import { AppUser } from "../../types";
 import { BadRequestError, NotFoundError } from "../../utils/errors";
 
@@ -88,6 +89,10 @@ function deriveOrganizerName(organizerEmail: string | null): string {
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
+function normalizeTemplateToken(raw: string): string {
+  return raw.replace(/[\s._-]+/g, '').toLowerCase();
+}
+
 function renderTemplate(
   content: string,
   context: {
@@ -107,14 +112,30 @@ function renderTemplate(
     : context.eventStartIso;
   const organizerName = deriveOrganizerName(context.organizerEmail);
 
-  return content
-    .replace(/\{\{\s*eventTitle\s*\}\}/g, context.eventTitle)
-    .replace(/\{\{\s*eventLocation\s*\}\}/g, context.eventLocation)
-    .replace(/\{\{\s*eventStart\s*\}\}/g, context.eventStartIso)
-    .replace(/\{\{\s*eventEnd\s*\}\}/g, context.eventEndIso)
-    .replace(/\{\{\s*organizerName\s*\}\}/g, organizerName)
-    .replace(/\{\{\s*startTime\s*\}\}/g, humanTime)
-    .replace(/\{\{\s*date\s*\}\}/g, humanDate);
+  const tokenValues: Record<string, string> = {
+    eventtitle: context.eventTitle,
+    title: context.eventTitle,
+    eventlocation: context.eventLocation,
+    location: context.eventLocation,
+    eventstart: context.eventStartIso,
+    start: context.eventStartIso,
+    eventend: context.eventEndIso,
+    end: context.eventEndIso,
+    organizername: organizerName,
+    organizer: organizerName,
+    organizeremail: context.organizerEmail ?? '',
+    starttime: humanTime,
+    time: humanTime,
+    date: humanDate,
+    eventdate: humanDate,
+  };
+
+  return content.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (full, token: string) => {
+    const normalized = normalizeTemplateToken(token);
+    return Object.prototype.hasOwnProperty.call(tokenValues, normalized)
+      ? tokenValues[normalized]
+      : full;
+  });
 }
 
 function computeDeclineDraftIdempotencyKey(params: {
@@ -159,6 +180,15 @@ export async function sendDeclineEmailForEvent(
   if (!event) {
     throw new NotFoundError("Event");
   }
+
+  const metadata =
+    event.metadata && typeof event.metadata === "object"
+      ? (event.metadata as Record<string, unknown>)
+      : {};
+  const sourceCalendarId =
+    typeof metadata.calendarId === "string" && metadata.calendarId.trim()
+      ? metadata.calendarId.trim()
+      : "primary";
 
   const recipients = resolveRecipients({
     userEmail: user.email,
@@ -226,6 +256,13 @@ export async function sendDeclineEmailForEvent(
   let sendCompleted = false;
 
   try {
+    await declineGoogleEvent(
+      user.id,
+      user.email,
+      event.externalEventId,
+      sourceCalendarId,
+    );
+
     const draft = await createGmailDraft({
       executionId: null,
       stepId: `decline_email:${eventId}`,

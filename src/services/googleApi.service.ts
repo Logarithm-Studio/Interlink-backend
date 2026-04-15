@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+import { google, gmail_v1 } from "googleapis";
 import { refreshGoogleTokenIfNeeded } from "./auth.service";
 import { BadRequestError } from "../utils/errors";
 
@@ -60,6 +60,16 @@ export interface GmailMessageSummary {
   labelIds: string[];
 }
 
+export interface GmailMessageDetail extends GmailMessageSummary {
+  cc: string | null;
+  bcc: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  allLinks: string[];
+  calendarLinks: string[];
+  webLink: string;
+}
+
 function mailboxToLabelIds(mailbox: GmailMailbox): string[] | undefined {
   switch (mailbox) {
     case "inbox":
@@ -82,6 +92,74 @@ function readHeader(
       (header) => header.name?.toLowerCase() === name.toLowerCase(),
     )?.value ?? null
   );
+}
+
+function decodeBase64Url(data: string | null | undefined): string | null {
+  if (!data) {
+    return null;
+  }
+
+  try {
+    const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
+    return Buffer.from(`${normalized}${padding}`, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function extractMimeBodies(
+  part: gmail_v1.Schema$MessagePart | null | undefined,
+  buckets: { text: string[]; html: string[]; calendar: string[] },
+): void {
+  if (!part) return;
+
+  const mimeType = (part.mimeType ?? "").toLowerCase();
+  const decoded = decodeBase64Url(part.body?.data);
+
+  if (decoded) {
+    if (mimeType.startsWith("text/plain")) {
+      buckets.text.push(decoded);
+    } else if (mimeType.startsWith("text/html")) {
+      buckets.html.push(decoded);
+    } else if (mimeType.startsWith("text/calendar")) {
+      buckets.calendar.push(decoded);
+    }
+  }
+
+  for (const child of part.parts ?? []) {
+    extractMimeBodies(child, buckets);
+  }
+}
+
+function normalizeUrl(url: string): string {
+  return url.replace(/[),.;!?]+$/g, "");
+}
+
+function extractLinksFromText(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+  return matches.map(normalizeUrl);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function isCalendarLink(url: string): boolean {
+  return /(calendar\.google\.com|google\.com\/calendar|event\?eid=|meet\.google\.com|\.ics($|[?#]))/i.test(
+    url,
+  );
+}
+
+function buildGmailWebLink(messageId: string, labelIds: string[]): string {
+  const section = labelIds.includes("SENT")
+    ? "sent"
+    : labelIds.includes("INBOX")
+      ? "inbox"
+      : "all";
+
+  return `https://mail.google.com/mail/u/0/#${section}/${messageId}`;
 }
 
 function encodeRawMime(mime: string): string {
@@ -168,6 +246,61 @@ export async function listGmailMailboxMessages(params: {
   );
 
   return hydrated;
+}
+
+export async function getGmailMessageDetail(params: {
+  userId: string;
+  messageId: string;
+}): Promise<GmailMessageDetail> {
+  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  const detail = await gmail.users.messages.get({
+    userId: "me",
+    id: params.messageId,
+    format: "full",
+  });
+
+  if (!detail.data.id || !detail.data.threadId) {
+    throw new BadRequestError("Gmail message could not be loaded.");
+  }
+
+  const headers = detail.data.payload?.headers;
+  const buckets = { text: [] as string[], html: [] as string[], calendar: [] as string[] };
+  extractMimeBodies(detail.data.payload, buckets);
+
+  const bodyText = buckets.text.join("\n\n").trim() || null;
+  const bodyHtml = buckets.html.join("\n").trim() || null;
+
+  const allLinks = dedupeStrings([
+    ...extractLinksFromText(bodyText),
+    ...extractLinksFromText(bodyHtml),
+    ...extractLinksFromText(buckets.calendar.join("\n")),
+    ...extractLinksFromText(detail.data.snippet ?? null),
+  ]);
+
+  const calendarLinks = allLinks.filter(isCalendarLink);
+  const labelIds = detail.data.labelIds ?? [];
+
+  return {
+    id: detail.data.id,
+    threadId: detail.data.threadId,
+    from: readHeader(headers, "From"),
+    to: readHeader(headers, "To"),
+    cc: readHeader(headers, "Cc"),
+    bcc: readHeader(headers, "Bcc"),
+    subject: readHeader(headers, "Subject"),
+    date: readHeader(headers, "Date"),
+    messageIdHeader: readHeader(headers, "Message-ID"),
+    snippet: detail.data.snippet ?? null,
+    internalDate: detail.data.internalDate ?? null,
+    labelIds,
+    bodyText,
+    bodyHtml,
+    allLinks,
+    calendarLinks,
+    webLink: buildGmailWebLink(detail.data.id, labelIds),
+  };
 }
 
 export async function sendAutomatedGmailMessage(params: {

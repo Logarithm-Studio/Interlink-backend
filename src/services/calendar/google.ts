@@ -2,6 +2,101 @@ import { google, calendar_v3 } from "googleapis";
 import { refreshGoogleTokenIfNeeded } from "../auth.service";
 import { BadRequestError } from "../../utils/errors";
 
+function getGoogleStatusCode(err: unknown): number | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const asRecord = err as {
+    response?: { status?: number };
+    code?: string | number;
+    status?: number;
+  };
+  if (typeof asRecord.response?.status === "number") {
+    return asRecord.response.status;
+  }
+  if (typeof asRecord.status === "number") {
+    return asRecord.status;
+  }
+  const codeAsNumber = Number(asRecord.code);
+  return Number.isFinite(codeAsNumber) ? codeAsNumber : undefined;
+}
+
+async function listCandidateCalendarIds(
+  cal: calendar_v3.Calendar,
+  preferredCalendarId?: string,
+): Promise<string[]> {
+  const ids = new Set<string>();
+
+  if (preferredCalendarId?.trim()) {
+    ids.add(preferredCalendarId.trim());
+  }
+  ids.add("primary");
+
+  try {
+    let pageToken: string | undefined;
+    do {
+      const response = await cal.calendarList.list({
+        maxResults: 250,
+        pageToken,
+        fields: "items(id),nextPageToken",
+      });
+
+      for (const item of response.data.items ?? []) {
+        if (item.id) {
+          ids.add(item.id);
+        }
+      }
+
+      pageToken = response.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  } catch (err) {
+    // Non-fatal: we'll still try preferred + primary.
+    console.warn("[google.calendar] Could not list calendar IDs:", err);
+  }
+
+  return [...ids];
+}
+
+async function resolveEventAcrossCalendars(
+  cal: calendar_v3.Calendar,
+  eventId: string,
+  preferredCalendarId?: string,
+): Promise<{ calendarId: string; event: calendar_v3.Schema$Event }> {
+  const candidates = await listCandidateCalendarIds(cal, preferredCalendarId);
+
+  for (const calendarId of candidates) {
+    try {
+      const response = await cal.events.get({ calendarId, eventId });
+      return { calendarId, event: response.data };
+    } catch (err) {
+      const status = getGoogleStatusCode(err);
+      if (status === 404) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new BadRequestError(
+    "Could not locate this Google event in your connected calendars.",
+  );
+}
+
+function findSelfAttendee(
+  event: calendar_v3.Schema$Event,
+  userEmail: string,
+): calendar_v3.Schema$EventAttendee | undefined {
+  const attendees = event.attendees ?? [];
+
+  const explicitSelf = attendees.find((attendee) => attendee.self === true);
+  if (explicitSelf) {
+    return explicitSelf;
+  }
+
+  const normalizedUserEmail = userEmail.trim().toLowerCase();
+  return attendees.find(
+    (attendee) => (attendee.email ?? "").toLowerCase() === normalizedUserEmail,
+  );
+}
+
 // ─── Error types ───────────────────────────────────────────────────────────
 
 /**
@@ -251,17 +346,19 @@ export async function acceptGoogleEvent(
   const cal = google.calendar({ version: "v3", auth: oauth2Client });
 
   try {
-    const { data: event } = await cal.events.get({ calendarId, eventId });
-
-    const attendees = event.attendees ?? [];
-    const lowerEmail = userEmail.toLowerCase();
-    const selfAttendee = attendees.find(
-      (a) => (a.email ?? "").toLowerCase() === lowerEmail,
-    );
+    const resolved = await resolveEventAcrossCalendars(cal, eventId, calendarId);
+    const attendees = resolved.event.attendees ?? [];
+    const selfAttendee = findSelfAttendee(resolved.event, userEmail);
 
     if (!selfAttendee) {
-      // User is the organizer or has no attendee entry — no patch needed.
-      return;
+      // Organizer-owned events often don't include a self attendee row.
+      if (resolved.event.organizer?.self) {
+        return;
+      }
+
+      throw new BadRequestError(
+        "Could not find your attendee entry for this Google event.",
+      );
     }
 
     // Only patch if the status isn't already accepted (avoids a needless write).
@@ -269,14 +366,13 @@ export async function acceptGoogleEvent(
 
     selfAttendee.responseStatus = "accepted";
     await cal.events.patch({
-      calendarId,
+      calendarId: resolved.calendarId,
       eventId,
       requestBody: { attendees },
       sendUpdates: "none", // Accepting doesn't warrant notifying other attendees.
     });
   } catch (err) {
-    // Non-fatal: local attendance record was already saved; log and move on.
-    console.warn(`[acceptGoogleEvent] Could not patch event ${eventId}:`, err);
+    throw new BadRequestError(`Failed to accept Google event: ${String(err)}`);
   }
 }
 
@@ -304,28 +400,31 @@ export async function declineGoogleEvent(
   const cal = google.calendar({ version: "v3", auth: oauth2Client });
 
   try {
-    // Fetch the current event so we have the full attendee list.
-    const { data: event } = await cal.events.get({ calendarId, eventId });
-
-    const attendees = event.attendees ?? [];
-    const lowerEmail = userEmail.toLowerCase();
-    const selfAttendee = attendees.find(
-      (a) => (a.email ?? "").toLowerCase() === lowerEmail,
-    );
+    const resolved = await resolveEventAcrossCalendars(cal, eventId, calendarId);
+    const attendees = resolved.event.attendees ?? [];
+    const selfAttendee = findSelfAttendee(resolved.event, userEmail);
 
     if (selfAttendee) {
       // Set responseStatus to declined and PATCH the event.
       selfAttendee.responseStatus = "declined";
       await cal.events.patch({
-        calendarId,
+        calendarId: resolved.calendarId,
         eventId,
         requestBody: { attendees },
         sendUpdates: "all",
       });
-    } else {
+    } else if (resolved.event.organizer?.self) {
       // User is likely the sole organizer with no self-attendee row.
       // Deleting the event from their calendar effectively declines it.
-      await cal.events.delete({ calendarId, eventId, sendUpdates: "all" });
+      await cal.events.delete({
+        calendarId: resolved.calendarId,
+        eventId,
+        sendUpdates: "all",
+      });
+    } else {
+      throw new BadRequestError(
+        "Could not find your attendee entry for this Google event.",
+      );
     }
   } catch (err) {
     throw new BadRequestError(`Failed to decline Google event: ${String(err)}`);
