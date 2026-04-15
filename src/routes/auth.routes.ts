@@ -43,12 +43,48 @@ const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =
 const GOOGLE_OAUTH_ERROR_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_ERROR_REDIRECT_URI;
 
-function getGoogleRedirectUri(): string {
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim();
+function normalizeAbsoluteHttpsOrLocalhostUri(input: string): string | undefined {
+  try {
+    const parsed = new URL(input.trim());
+    const protocol = parsed.protocol;
 
-  if (!redirectUri) {
+    const isLocalHttp =
+      protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+    const isHttps = protocol === "https:";
+
+    if (!isHttps && !isLocalHttp) {
+      return undefined;
+    }
+
+    // Guard against accidental duplicate path separators in env values.
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
+
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function getGoogleRedirectUri(): string {
+  const rawRedirectUri = process.env.GOOGLE_REDIRECT_URI?.trim();
+
+  if (!rawRedirectUri) {
     throw new Error(
       "GOOGLE_REDIRECT_URI must be set (for mobile dev use your public HTTPS callback URL).",
+    );
+  }
+
+  const redirectUri = normalizeAbsoluteHttpsOrLocalhostUri(rawRedirectUri);
+  if (!redirectUri) {
+    throw new Error(
+      "GOOGLE_REDIRECT_URI must be a valid HTTPS URL (or http://localhost for local dev).",
+    );
+  }
+
+  if (redirectUri !== rawRedirectUri) {
+    console.warn(
+      `GOOGLE_REDIRECT_URI normalized from "${rawRedirectUri}" to "${redirectUri}". Update your environment variable to the normalized value to avoid OAuth mismatches.`,
     );
   }
 

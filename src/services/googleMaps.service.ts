@@ -65,6 +65,8 @@ const ROUTES_FIELD_MASK = [
   "routes.legs.staticDuration",
   "geocodingResults.destination.placeId",
 ].join(",");
+const ROUTES_DEPARTURE_NOW_OFFSET_MS = 2 * 60 * 1000;
+const ROUTES_FUTURE_TIMESTAMP_RE = /timestamp must be set to a future time/i;
 
 function getGoogleApiKey(): string {
   const apiKey = process.env.GOOGLE_API_KEY;
@@ -451,7 +453,11 @@ async function getDistanceViaRoutes(params: {
   if (params.mode === "driving") {
     requestBody.routingPreference = "TRAFFIC_AWARE_OPTIMAL";
     if (params.departureTime === "now") {
-      requestBody.departureTime = new Date().toISOString();
+      // Routes traffic-aware mode can reject timestamps equal to "now".
+      // Nudge slightly into the future for stable real-time ETA responses.
+      requestBody.departureTime = new Date(
+        Date.now() + ROUTES_DEPARTURE_NOW_OFFSET_MS,
+      ).toISOString();
     }
   }
 
@@ -706,8 +712,29 @@ export async function getDistanceFromOrigin(params: {
       departureTime: params.departureTime,
     });
   } catch (routesErr) {
-    const routesMessage =
+    let routesMessage =
       routesErr instanceof Error ? routesErr.message : "routes_lookup_failed";
+
+    // Some Routes responses can reject near-now traffic timestamps.
+    // Retry once without explicit departureTime before legacy fallback.
+    if (
+      params.departureTime === "now" &&
+      ROUTES_FUTURE_TIMESTAMP_RE.test(routesMessage)
+    ) {
+      try {
+        return await getDistanceViaRoutes({
+          origin: params.origin,
+          destination: params.destination,
+          mode,
+          units,
+        });
+      } catch (routesRetryErr) {
+        routesMessage =
+          routesRetryErr instanceof Error
+            ? routesRetryErr.message
+            : routesMessage;
+      }
+    }
 
     try {
       return await getDistanceViaLegacyDistanceMatrix({

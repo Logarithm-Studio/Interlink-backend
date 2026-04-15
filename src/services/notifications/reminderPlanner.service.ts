@@ -28,8 +28,12 @@ import {
 const DEFAULT_LEAD_MINUTES = 15;
 /** If driving ETA is under this, treat the user as already at the venue. */
 const STATIONARY_ETA_THRESHOLD_SECONDS = 60;
-/** Max event window we plan reminders for — keeps response sizes small. */
-const HORIZON_HOURS = 24;
+/**
+ * Max event window we plan reminders for.
+ * 72h avoids empty plans for events just outside the old 24h horizon while
+ * still keeping payloads bounded.
+ */
+const HORIZON_HOURS = 72;
 
 const MAPS_DISABLED_RE =
   /(legacy api|service_disabled|not been used|not activated|disabled)/i;
