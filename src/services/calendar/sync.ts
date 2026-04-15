@@ -220,12 +220,15 @@ export async function incrementalSync(
  * explicit watch-channel context.
  *
  * Strategy:
- *  1. Look up the user's most-recently-updated active Google watch channel
- *     that has a stored syncToken.
- *  2. If found → incremental sync via that channel's cursor (fast path).
- *  3. If not found → full time-window sync (first sync or no channel set up).
+ *  1. Pick the user's most-recently-updated Google watch channel, preferring
+ *     rows that already have a stored syncToken.
+ *  2. If a token is present → incremental sync via that channel (fast path),
+ *     with automatic full-sync fallback on 410 cursor expiry.
+ *  3. If a channel exists but has no token → run one full sync and seed the
+ *     cursor for subsequent incremental runs.
+ *  4. If no channel exists → full time-window sync.
  *
- * This prevents the manual sync from re-downloading all events on every call.
+ * This prevents manual sync from repeatedly re-downloading the full window.
  */
 export async function syncUserCalendar(
   userId: string,
@@ -236,40 +239,77 @@ export async function syncUserCalendar(
     throw new Error(`Unsupported provider: ${provider}`);
   }
 
-  // Find any channel with a stored syncToken for this user.
+  // Prefer the most recently updated channel for this user.
+  // We intentionally do NOT require expiration > now() for manual sync because
+  // syncToken validity is independent of watch-channel webhook expiry.
   const { query } = await import("../../config/db");
-  const row = await query<{ channel_id: string; calendar_id: string }>(
-    `SELECT channel_id, calendar_id
+  const row = await query<{
+    channel_id: string;
+    calendar_id: string;
+    sync_token: string | null;
+  }>(
+    `SELECT channel_id, calendar_id, sync_token
        FROM google_watch_channels
       WHERE user_id = $1
-        AND sync_token IS NOT NULL
-        AND expiration > now()
-      ORDER BY updated_at DESC
+      ORDER BY (sync_token IS NOT NULL) DESC, updated_at DESC
       LIMIT 1`,
     [userId],
-  ).catch(() => ({ rows: [] as { channel_id: string; calendar_id: string }[] }));
+  ).catch(
+    () =>
+      ({ rows: [] as { channel_id: string; calendar_id: string; sync_token: string | null }[] }),
+  );
 
-  if (row.rows[0]) {
-    const { channel_id: channelId, calendar_id: calendarId } = row.rows[0];
+  const preferredChannel = row.rows[0];
+
+  if (preferredChannel?.sync_token) {
+    const { channel_id: channelId, calendar_id: calendarId } = preferredChannel;
     console.log(
       `[syncUserCalendar] Incremental path via channel=${channelId} for user=${userId}`,
     );
     try {
       return await incrementalSync(userId, channelId, calendarId);
     } catch (err) {
-      if (err instanceof FullResyncRequiredError) {
-        console.log(
-          `[syncUserCalendar] Incremental cursor expired — falling back to full sync for user=${userId}`,
-        );
-        // Fall through to full sync below.
-      } else {
+      if (!(err instanceof FullResyncRequiredError)) {
         throw err;
       }
+
+      console.log(
+        `[syncUserCalendar] Incremental cursor expired — falling back to full sync for user=${userId}`,
+      );
+
+      const { synced, skipped, deleted, nextSyncToken } = await fullSync(
+        userId,
+        provider,
+        since,
+        calendarId,
+      );
+      if (nextSyncToken) {
+        await setSyncToken(channelId, nextSyncToken);
+      }
+      return { synced, skipped, deleted };
     }
   }
 
+  if (preferredChannel) {
+    const { channel_id: channelId, calendar_id: calendarId } = preferredChannel;
+    console.log(
+      `[syncUserCalendar] Channel found without syncToken — full sync + seed cursor for user=${userId}`,
+    );
+
+    const { synced, skipped, deleted, nextSyncToken } = await fullSync(
+      userId,
+      provider,
+      since,
+      calendarId,
+    );
+    if (nextSyncToken) {
+      await setSyncToken(channelId, nextSyncToken);
+    }
+    return { synced, skipped, deleted };
+  }
+
   console.log(
-    `[syncUserCalendar] No incremental cursor — full sync for user=${userId}`,
+    `[syncUserCalendar] No channel found — full sync for user=${userId}`,
   );
   const { synced, skipped, deleted } = await fullSync(userId, provider, since);
   return { synced, skipped, deleted };

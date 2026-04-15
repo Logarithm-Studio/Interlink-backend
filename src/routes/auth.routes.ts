@@ -648,7 +648,25 @@ router.get(
         expiresAt,
       });
 
+      let watchChannelCreated = false;
+      let watchChannelId: string | undefined;
+      let watchCalendarId: string | undefined;
+      if (process.env.GOOGLE_WEBHOOK_URL) {
+        try {
+          const watch = await createWatchChannel(userId, "primary");
+          watchChannelCreated = true;
+          watchChannelId = watch.channelId;
+          watchCalendarId = watch.calendarId;
+        } catch (watchErr) {
+          console.warn(
+            `[auth/google callback] watch channel setup failed for user ${userId}: ${String(watchErr)}`,
+          );
+        }
+      }
+
       // Trigger the first import immediately after account connection.
+      // If we have a watch channel, include it so the worker can seed and reuse
+      // the incremental sync cursor from day one.
       const initialSyncJobId = `google-sync-initial|${userId}|${Date.now()}`;
       await getCalendarSyncQueue().add(
         JobType.GOOGLE_SYNC,
@@ -657,7 +675,10 @@ router.get(
           requestId: randomUUID(),
           idempotencyKey: initialSyncJobId,
           userId,
-          payload: {},
+          payload:
+            watchChannelId && watchCalendarId
+              ? { channelId: watchChannelId, calendarId: watchCalendarId }
+              : {},
         },
         {
           jobId: initialSyncJobId,
@@ -665,18 +686,6 @@ router.get(
           backoff: { type: "calendar_exp" as "exponential", delay: 30_000 },
         },
       );
-
-      let watchChannelCreated = false;
-      if (process.env.GOOGLE_WEBHOOK_URL) {
-        try {
-          await createWatchChannel(userId, "primary");
-          watchChannelCreated = true;
-        } catch (watchErr) {
-          console.warn(
-            `[auth/google callback] watch channel setup failed for user ${userId}: ${String(watchErr)}`,
-          );
-        }
-      }
 
       const successPayload = {
         message: "Google Calendar connected successfully",
@@ -784,7 +793,7 @@ router.get(
 
       // Best-effort: seed presets + backfill profile from Supabase metadata so the
       // very first Settings load after signup shows the values captured at registration.
-      await ensurePresetTemplates(user.id).catch(() => {});
+      void ensurePresetTemplates(user.id).catch(() => {});
 
       const profileRow = await query<{
         full_name: string | null;

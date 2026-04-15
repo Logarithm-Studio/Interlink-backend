@@ -86,18 +86,27 @@ export const PRESET_TEMPLATES: {
 ];
 
 export async function ensurePresetTemplates(userId: string): Promise<void> {
-  for (const preset of PRESET_TEMPLATES) {
-    await query(
-      `INSERT INTO email_templates
-         (user_id, name, subject_template, body_template, is_active_default)
-       SELECT $1, $2, $3, $4, FALSE
-        WHERE NOT EXISTS (
-               SELECT 1 FROM email_templates
-                WHERE user_id = $1 AND name = $2
-             )`,
-      [userId, preset.name, preset.subjectTemplate, preset.bodyTemplate],
-    );
-  }
+  const names = PRESET_TEMPLATES.map((preset) => preset.name);
+  const subjects = PRESET_TEMPLATES.map((preset) => preset.subjectTemplate);
+  const bodies = PRESET_TEMPLATES.map((preset) => preset.bodyTemplate);
+
+  await query(
+    `WITH preset(name, subject_template, body_template) AS (
+       SELECT *
+       FROM unnest($2::text[], $3::text[], $4::text[])
+     )
+     INSERT INTO email_templates
+       (user_id, name, subject_template, body_template, is_active_default)
+     SELECT $1, p.name, p.subject_template, p.body_template, FALSE
+       FROM preset p
+      WHERE NOT EXISTS (
+              SELECT 1
+                FROM email_templates et
+               WHERE et.user_id = $1
+                 AND et.name = p.name
+            )`,
+    [userId, names, subjects, bodies],
+  );
 }
 
 export async function listEmailTemplates(
