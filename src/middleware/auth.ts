@@ -22,8 +22,6 @@ export async function authMiddleware(
     }
 
     const token = authHeader.split(" ")[1];
-    const { data: { user }, error } = await getSupabase().auth.getUser(token);
-
     const {
       data: { user },
       error,
@@ -45,8 +43,6 @@ export async function authMiddleware(
     );
 
     req.user = { id: user.id, email: user.email };
-
-    req.user = { id: localUserId, email: normalizedEmail };
     next();
   } catch (err) {
     next(err);

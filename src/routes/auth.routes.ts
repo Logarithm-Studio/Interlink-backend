@@ -23,6 +23,8 @@ import {
   verifyEmailVerificationCode,
   validateVerificationToken,
 } from "../services/emailVerification.service";
+import { query } from "../config/db";
+import { ensurePresetTemplates } from "../services/email/templates.service";
 
 const router = Router();
 
@@ -394,14 +396,6 @@ router.post(
       let signInResult = await supabase.auth.signInWithPassword({
         email: normalizedEmail,
         password,
-        options: {
-          data: {
-            fullName,
-            contactNo,
-            companyName,
-            address,
-          },
-        },
       });
 
       if (alreadyRegistered && signInResult.error) {

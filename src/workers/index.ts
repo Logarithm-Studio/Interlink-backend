@@ -5,6 +5,7 @@ import { startWorkflowWorker } from "./processors/workflow.processor";
 import { startNotificationsWorker } from "./processors/notifications.processor";
 import { startEmailWorker } from "./processors/email.processor";
 import { startDlqWorker } from "./processors/dlq.processor";
+import { startConflictsWorker } from "./processors/conflicts.processor";
 
 /**
  * Start all queue workers and return them for graceful shutdown.
@@ -17,5 +18,6 @@ export function startAllWorkers(): Worker[] {
     startNotificationsWorker(),
     startEmailWorker(),
     startDlqWorker(),
+    startConflictsWorker(),
   ];
 }

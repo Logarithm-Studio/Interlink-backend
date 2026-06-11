@@ -1,6 +1,6 @@
 /**
  * Redis-based caching layer for backend performance optimization.
- * 
+ *
  * Provides:
  * - Response caching for frequently accessed data
  * - Cache invalidation utilities
@@ -8,7 +8,6 @@
  * - Cache warming for critical paths
  */
 
-import { Redis } from "ioredis";
 import { getRedis } from "@/config/redis";
 
 // ─── Cache Configuration ────────────────────────────────────────────────
@@ -27,16 +26,10 @@ const CACHE_PREFIX = "interlink:cache:";
 
 // ─── Core Cache Functions ───────────────────────────────────────────────
 
-/**
- * Generate a namespaced cache key
- */
 export function cacheKey(key: string, prefix?: string): string {
   return `${CACHE_PREFIX}${prefix ? `${prefix}:` : ""}${key}`;
 }
 
-/**
- * Get a value from cache with automatic deserialization
- */
 export async function getFromCache<T>(
   key: string,
   config?: CacheConfig,
@@ -45,25 +38,20 @@ export async function getFromCache<T>(
   const fullKey = cacheKey(key, config?.prefix);
 
   try {
-    const raw = await redis.get(fullKey);
+    const raw = await redis.get<string>(fullKey);
     if (!raw) return null;
 
-    // Deserialize if enabled
     if (config?.serialize !== false) {
       return JSON.parse(raw) as T;
     }
 
     return raw as unknown as T;
   } catch (error) {
-    // Cache read failed - non-critical, return null
     console.warn(`[Cache] Failed to read key ${fullKey}:`, error);
     return null;
   }
 }
 
-/**
- * Set a value in cache with automatic serialization and TTL
- */
 export async function setInCache<T>(
   key: string,
   value: T,
@@ -74,21 +62,14 @@ export async function setInCache<T>(
   const ttl = config?.ttl ?? DEFAULT_TTL;
 
   try {
-    const serialized = config?.serialize !== false ? JSON.stringify(value) : (value as string);
-    
-    // Use pipeline for atomic SET + EXPIRE
-    const pipeline = redis.pipeline();
-    pipeline.set(fullKey, serialized, "EX", ttl);
-    await pipeline.exec();
+    const serialized =
+      config?.serialize !== false ? JSON.stringify(value) : (value as string);
+    await redis.set(fullKey, serialized, { ex: ttl });
   } catch (error) {
-    // Cache write failed - non-critical
     console.warn(`[Cache] Failed to write key ${fullKey}:`, error);
   }
 }
 
-/**
- * Delete a key from cache
- */
 export async function deleteFromCache(
   key: string,
   config?: CacheConfig,
@@ -103,9 +84,6 @@ export async function deleteFromCache(
   }
 }
 
-/**
- * Delete multiple keys matching a pattern
- */
 export async function deleteFromCacheByPattern(
   pattern: string,
   prefix?: string,
@@ -114,27 +92,30 @@ export async function deleteFromCacheByPattern(
   const fullPattern = cacheKey(pattern, prefix);
 
   try {
-    // Use SCAN instead of KEYS for production safety
     const keys: string[] = [];
     let cursor = 0;
 
     do {
-      const result = await redis.scan(cursor, "MATCH", fullPattern, "COUNT", 100);
-      cursor = parseInt(result[0], 10);
-      keys.push(...result[1]);
+      const [nextCursor, batch] = await redis.scan(cursor, {
+        match: fullPattern,
+        count: 100,
+      });
+      cursor = Number(nextCursor);
+      keys.push(...batch);
     } while (cursor !== 0);
 
-    if (keys.length > 0) {
-      await redis.del(...keys);
+    // Delete in chunks to avoid oversized commands
+    for (let i = 0; i < keys.length; i += 100) {
+      const chunk = keys.slice(i, i + 100);
+      if (chunk.length > 0) {
+        await redis.del(...(chunk as [string, ...string[]]));
+      }
     }
   } catch (error) {
     console.warn(`[Cache] Failed to delete pattern ${fullPattern}:`, error);
   }
 }
 
-/**
- * Check if a key exists in cache
- */
 export async function hasInCache(
   key: string,
   config?: CacheConfig,
@@ -150,9 +131,6 @@ export async function hasInCache(
   }
 }
 
-/**
- * Get TTL for a key (returns -1 if no TTL, -2 if key doesn't exist)
- */
 export async function getCacheTTL(
   key: string,
   config?: CacheConfig,
@@ -170,37 +148,23 @@ export async function getCacheTTL(
 // ─── Stale-While-Revalidate Pattern ─────────────────────────────────────
 
 export interface StaleWhileRevalidateOptions<T> {
-  /** How long to keep fresh data (seconds) */
   freshTTL: number;
-  /** How long to serve stale data (seconds) */
   staleTTL: number;
-  /** Function to fetch fresh data */
   fetchFn: () => Promise<T>;
 }
 
-/**
- * Implements stale-while-revalidate pattern:
- * 1. Return cached data (even if stale)
- * 2. Trigger background refresh if stale
- * 3. Update cache with fresh data
- * 
- * This ensures fast response times while keeping data reasonably fresh.
- */
 export async function staleWhileRevalidate<T>(
   key: string,
   options: StaleWhileRevalidateOptions<T>,
 ): Promise<T> {
   const { freshTTL, staleTTL, fetchFn } = options;
 
-  // Try to get cached data
   const cached = await getFromCache<T>(key, { ttl: freshTTL + staleTTL });
 
   if (cached !== null) {
-    // Check if we need to refresh in background
     const remainingTTL = await getCacheTTL(key);
-    
+
     if (remainingTTL <= staleTTL) {
-      // Data is in stale period - refresh in background
       void fetchFn()
         .then(async (freshData) => {
           await setInCache(key, freshData, { ttl: freshTTL + staleTTL });
@@ -213,7 +177,6 @@ export async function staleWhileRevalidate<T>(
     return cached;
   }
 
-  // No cached data - fetch fresh
   const freshData = await fetchFn();
   await setInCache(key, freshData, { ttl: freshTTL + staleTTL });
   return freshData;
@@ -222,23 +185,14 @@ export async function staleWhileRevalidate<T>(
 // ─── Cache Warming ──────────────────────────────────────────────────────
 
 export interface CacheWarmerConfig {
-  /** Cache keys to warm */
   keys: Array<{
     key: string;
-    fetchFn: () => Promise<any>;
+    fetchFn: () => Promise<unknown>;
     ttl: number;
   }>;
-  /** Warm cache on interval (seconds, 0 = once) */
   intervalSeconds?: number;
 }
 
-/**
- * Cache warmer for pre-loading frequently accessed data.
- * Useful for:
- * - User profiles on login
- * - Event lists on app open
- * - Configuration data
- */
 export class CacheWarmer {
   private config: CacheWarmerConfig;
   private intervalId: NodeJS.Timeout | null = null;
@@ -247,9 +201,6 @@ export class CacheWarmer {
     this.config = config;
   }
 
-  /**
-   * Warm all configured caches
-   */
   async warm(): Promise<void> {
     const promises = this.config.keys.map(async ({ key, fetchFn, ttl }) => {
       try {
@@ -264,29 +215,21 @@ export class CacheWarmer {
     await Promise.all(promises);
   }
 
-  /**
-   * Start periodic cache warming
-   */
   start(): void {
     const intervalSeconds = this.config.intervalSeconds ?? 0;
-    
+
     if (intervalSeconds <= 0) {
-      // One-time warm up
       void this.warm();
       return;
     }
 
-    // Warm immediately and then on interval
     void this.warm();
-    
+
     this.intervalId = setInterval(() => {
       void this.warm();
     }, intervalSeconds * 1000);
   }
 
-  /**
-   * Stop periodic cache warming
-   */
   stop(): void {
     if (this.intervalId) {
       clearInterval(this.intervalId);
@@ -313,7 +256,6 @@ export function resetCacheStats(): void {
   _stats = { hits: 0, misses: 0, errors: 0 };
 }
 
-// Instrumented cache functions with stats
 export async function getFromCacheWithStats<T>(
   key: string,
   config?: CacheConfig,
@@ -335,34 +277,27 @@ export async function getFromCacheWithStats<T>(
 // ─── Cache Keys for Common Operations ───────────────────────────────────
 
 export const CacheKeys = {
-  // Events
-  eventsList: (userId: string, filters?: Record<string, any>) =>
+  eventsList: (userId: string, filters?: Record<string, unknown>) =>
     `events:${userId}:${JSON.stringify(filters || {})}`,
-  eventDetail: (userId: string, eventId: string) => `event:${userId}:${eventId}`,
-  
-  // Calendar
+  eventDetail: (userId: string, eventId: string) =>
+    `event:${userId}:${eventId}`,
   calendarSync: (userId: string) => `calendar:sync:${userId}`,
-  calendarEvents: (userId: string, dateRange: string) => `calendar:events:${userId}:${dateRange}`,
-  
-  // Gmail
-  gmailMessages: (userId: string, mailbox: string, params?: Record<string, any>) =>
-    `gmail:${userId}:${mailbox}:${JSON.stringify(params || {})}`,
-  gmailDetail: (userId: string, messageId: string) => `gmail:message:${userId}:${messageId}`,
-  
-  // Maps
+  calendarEvents: (userId: string, dateRange: string) =>
+    `calendar:events:${userId}:${dateRange}`,
+  gmailMessages: (
+    userId: string,
+    mailbox: string,
+    params?: Record<string, unknown>,
+  ) => `gmail:${userId}:${mailbox}:${JSON.stringify(params || {})}`,
+  gmailDetail: (userId: string, messageId: string) =>
+    `gmail:message:${userId}:${messageId}`,
   mapsDistance: (origin: string, destination: string, mode: string) =>
     `maps:${origin}:${destination}:${mode}`,
-  
-  // User
   userProfile: (userId: string) => `user:profile:${userId}`,
   userPreferences: (userId: string) => `user:preferences:${userId}`,
-  
-  // Reminders
   reminderPlans: (userId: string, hasLocation: boolean) =>
     `reminders:${userId}:${hasLocation}`,
 } as const;
-
-// ─── Export Redis Client for Advanced Usage ─────────────────────────────
 
 export { getRedis };
 
