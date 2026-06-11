@@ -164,9 +164,8 @@ export function createRateLimiter(opts: RateLimitOptions) {
     try {
       count = (await getRedis().eval(
         INCR_SCRIPT,
-        1,
-        key,
-        String(windowSeconds),
+        [key],
+        [String(windowSeconds)],
       )) as number;
     } catch (err) {
       // Redis unavailable — fail open (let request through) so that a Redis
@@ -232,9 +231,8 @@ export async function checkWorkerRateLimit(opts: {
   try {
     count = (await getRedis().eval(
       INCR_SCRIPT,
-      1,
-      key,
-      String(windowSeconds),
+      [key],
+      [String(windowSeconds)],
     )) as number;
   } catch (err) {
     logger.error(

@@ -15,6 +15,11 @@ import {
   consumeOAuthState,
 } from "../services/oauth-state.service";
 import { getSupabase } from "../config/supabase";
+import {
+  sendEmailVerificationCode,
+  verifyEmailVerificationCode,
+  validateVerificationToken,
+} from "../services/emailVerification.service";
 
 const router = Router();
 
@@ -22,7 +27,10 @@ const router = Router();
 // re-consent after scope changes to obtain tokens with the new scopes.
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/userinfo.email",
 ];
 
 const GOOGLE_REDIRECT_URI =
@@ -58,6 +66,35 @@ function withQueryParams(
   return url.toString();
 }
 
+function sanitizeRedirectUri(input?: string): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(input);
+    const protocol = parsed.protocol;
+
+    const isLocalHttp =
+      protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+
+    const isHttps = protocol === "https:";
+
+    // Custom app links like interlinkapp://oauth/google/success
+    const isCustomScheme =
+      protocol !== "http:" && protocol !== "https:" && protocol.endsWith(":");
+
+    if (!isHttps && !isLocalHttp && !isCustomScheme) {
+      return undefined;
+    }
+
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 function getCallbackErrorCode(err: unknown): string {
   if (err instanceof UnauthorizedError) {
     return "invalid_oauth_state";
@@ -85,6 +122,11 @@ function buildGoogleAuthUrl(stateToken: string): string {
 const SignupSchema = z.object({
   email: z.string().email("Invalid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
+  verificationToken: z.string().min(1, "Verification token is required"),
+  fullName: z.string().min(1).optional(),
+  contactNo: z.string().min(1).optional(),
+  companyName: z.string().min(1).optional(),
+  address: z.string().min(1).optional(),
 });
 
 const LoginSchema = z.object({
@@ -95,6 +137,78 @@ const LoginSchema = z.object({
 const RefreshTokenSchema = z.object({
   refreshToken: z.string().min(1, "Refresh token is required"),
 });
+
+const SendVerificationCodeSchema = z.object({
+  email: z.string().email("Invalid email address"),
+});
+
+const VerifyVerificationCodeSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  code: z.string().regex(/^\d{4}$/, "Verification code must be 4 digits"),
+});
+
+// ─── POST /api/v1/auth/email/send-code ──────────────────────────────────────
+router.post(
+  "/email/send-code",
+  authRateLimit,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = SendVerificationCodeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+
+      const { email } = parsed.data;
+      const { expiresAt } = await sendEmailVerificationCode(email);
+
+      res.status(200).json({
+        message: "Verification code sent",
+        email,
+        expiresAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /api/v1/auth/email/verify-code ────────────────────────────────────
+router.post(
+  "/email/verify-code",
+  authRateLimit,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = VerifyVerificationCodeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+
+      const { email, code } = parsed.data;
+      const verificationResult = await verifyEmailVerificationCode(email, code);
+
+      if (!verificationResult.verified || !verificationResult.verificationToken) {
+        throw new UnauthorizedError(
+          verificationResult.reason === "code_expired"
+            ? "Verification code has expired. Request a new one."
+            : verificationResult.reason === "too_many_attempts"
+              ? "Too many attempts. Request a new code."
+              : "Invalid verification code",
+        );
+      }
+
+      res.status(200).json({
+        message: "Email verified",
+        verificationToken: verificationResult.verificationToken,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ─── POST /api/v1/auth/signup ───────────────────────────────────────
 // Register a new user. Proxies to Supabase Auth internally so clients
@@ -111,12 +225,35 @@ router.post(
         );
       }
 
-      const { email, password } = parsed.data;
+      const {
+        email,
+        password,
+        verificationToken,
+        fullName,
+        contactNo,
+        companyName,
+        address,
+      } = parsed.data;
+
+      if (!validateVerificationToken(verificationToken, email, "signup")) {
+        throw new UnauthorizedError(
+          "Email verification token is invalid or expired",
+        );
+      }
+
       const supabase = getSupabase();
 
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            fullName,
+            contactNo,
+            companyName,
+            address,
+          },
+        },
       });
 
       if (error) {
@@ -256,12 +393,24 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
-      const stateToken = await createOAuthState(user.id, "google");
+      const successRedirectUri = sanitizeRedirectUri(
+        req.query.successRedirectUri as string | undefined,
+      );
+      const errorRedirectUri = sanitizeRedirectUri(
+        req.query.errorRedirectUri as string | undefined,
+      );
+
+      const stateToken = await createOAuthState(user.id, "google", {
+        successRedirectUri,
+        errorRedirectUri,
+      });
 
       res.status(200).json({
         provider: "google",
         authUrl: buildGoogleAuthUrl(stateToken),
         stateTtlSeconds: 600,
+        successRedirectUri,
+        errorRedirectUri,
       });
     } catch (err) {
       next(err);
@@ -299,6 +448,8 @@ router.get(
   "/callback/google",
   oauthRateLimit,
   async (req: Request, res: Response, next: NextFunction) => {
+    let callbackErrorRedirectUri = GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+
     try {
       const code = req.query.code as string;
       const stateToken = req.query.state as string;
@@ -316,6 +467,11 @@ router.get(
       }
 
       const userId = statePayload.userId;
+      const successRedirectUri =
+        statePayload.successRedirectUri ?? GOOGLE_OAUTH_SUCCESS_REDIRECT_URI;
+      const errorRedirectUri =
+        statePayload.errorRedirectUri ?? GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+      callbackErrorRedirectUri = errorRedirectUri;
 
       // Exchange the authorization code for tokens
       const oauth2Client = getGoogleOAuth2Client();
@@ -374,10 +530,10 @@ router.get(
         watchChannelCreated,
       };
 
-      if (GOOGLE_OAUTH_SUCCESS_REDIRECT_URI) {
+      if (successRedirectUri) {
         return res.redirect(
           302,
-          withQueryParams(GOOGLE_OAUTH_SUCCESS_REDIRECT_URI, {
+          withQueryParams(successRedirectUri, {
             provider: "google",
             status: "success",
           }),
@@ -386,10 +542,10 @@ router.get(
 
       res.status(200).json(successPayload);
     } catch (err) {
-      if (GOOGLE_OAUTH_ERROR_REDIRECT_URI) {
+      if (callbackErrorRedirectUri) {
         return res.redirect(
           302,
-          withQueryParams(GOOGLE_OAUTH_ERROR_REDIRECT_URI, {
+          withQueryParams(callbackErrorRedirectUri, {
             provider: "google",
             status: "error",
             code: getCallbackErrorCode(err),
@@ -419,8 +575,12 @@ router.get(
         },
         connectedAccounts: {
           google: googleAccount
-            ? { connected: true, expiresAt: googleAccount.expiresAt }
-            : null,
+            ? {
+                connected: true,
+                expiresAt: googleAccount.expiresAt,
+                reauthRequired: googleAccount.reauthRequired ?? false,
+              }
+            : { connected: false, expiresAt: null, reauthRequired: false },
         },
       });
     } catch (err) {

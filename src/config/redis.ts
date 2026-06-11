@@ -1,39 +1,24 @@
-import Redis from 'ioredis';
+import { Redis } from "@upstash/redis";
 
-let redis: Redis;
+let _redis: Redis | null = null;
 
 /**
- * Get or create the Redis client singleton.
- * Supports Upstash Redis (TLS via rediss:// URL).
+ * Get or create the Upstash Redis REST client singleton.
+ * Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN from env.
+ * Uses HTTP — compatible with Vercel serverless (no persistent TCP needed).
  */
 export function getRedis(): Redis {
-  if (!redis) {
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      throw new Error('REDIS_URL environment variable is not set');
+  if (!_redis) {
+    const url = process.env.UPSTASH_REDIS_REST_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (!url || !token) {
+      throw new Error(
+        "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set",
+      );
     }
-
-    redis = new Redis(redisUrl, {
-      maxRetriesPerRequest: 3,
-      retryStrategy(times: number) {
-        const delay = Math.min(times * 200, 5000);
-        return delay;
-      },
-      // Upstash requires TLS — ioredis handles this automatically
-      // when the URL starts with rediss://
-      tls: redisUrl.startsWith('rediss://') ? {} : undefined,
-    });
-
-    redis.on('connect', () => {
-      console.log('✅ Redis connected');
-    });
-
-    redis.on('error', (err) => {
-      console.error('Redis connection error:', err.message);
-    });
+    _redis = new Redis({ url, token });
   }
-
-  return redis;
+  return _redis;
 }
 
 /**

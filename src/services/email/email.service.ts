@@ -58,8 +58,18 @@ async function detectProvider(
   if (preferred) return preferred;
 
   const res = await query<{ provider: string }>(
-    `SELECT provider FROM connected_accounts
-      WHERE user_id = $1
+    `SELECT provider
+       FROM (
+              SELECT 'google'::text AS provider
+                FROM google_accounts ga
+               WHERE ga.user_id = $1
+                 AND ga.reauth_required = FALSE
+              UNION
+              SELECT provider
+                FROM connected_accounts ca
+               WHERE ca.user_id = $1
+                 AND ca.reauth_required = FALSE
+            ) providers
       ORDER BY CASE provider WHEN 'google' THEN 1 WHEN 'microsoft' THEN 2 ELSE 3 END
       LIMIT 2`,
     [userId],

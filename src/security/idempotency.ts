@@ -30,7 +30,7 @@ export async function isDuplicate(
   ttlSeconds: number,
 ): Promise<boolean> {
   // SET key 1 NX EX ttl — returns "OK" if set, null if key existed
-  const result = await getRedis().set(key, "1", "EX", ttlSeconds, "NX");
+  const result = await getRedis().set(key, "1", { ex: ttlSeconds, nx: true });
   return result === null; // null → key already existed → duplicate
 }
 

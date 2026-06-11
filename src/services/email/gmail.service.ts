@@ -105,6 +105,18 @@ async function findExistingDraft(
 async function markGoogleReauthRequired(userId: string): Promise<void> {
   try {
     await query(
+      `UPDATE google_accounts
+          SET reauth_required = true,
+              access_token = NULL,
+              refresh_token = NULL,
+              enc_iv = NULL,
+              enc_tag = NULL,
+              enc_kid = NULL
+        WHERE user_id = $1`,
+      [userId],
+    );
+
+    await query(
       `UPDATE connected_accounts
           SET reauth_required = true
         WHERE user_id = $1 AND provider = 'google'`,

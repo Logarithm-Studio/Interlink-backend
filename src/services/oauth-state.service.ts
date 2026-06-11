@@ -28,6 +28,8 @@ import { logger } from "../observability/logger";
 export interface OAuthStatePayload {
   userId: string;
   provider: "google" | "microsoft";
+  successRedirectUri?: string;
+  errorRedirectUri?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -51,17 +53,21 @@ function stateKey(token: string): string {
 export async function createOAuthState(
   userId: string,
   provider: OAuthStatePayload["provider"],
+  options?: {
+    successRedirectUri?: string;
+    errorRedirectUri?: string;
+  },
 ): Promise<string> {
   const token = randomBytes(16).toString("hex"); // 128 bits of entropy
-  const payload: OAuthStatePayload = { userId, provider };
+  const payload: OAuthStatePayload = {
+    userId,
+    provider,
+    successRedirectUri: options?.successRedirectUri,
+    errorRedirectUri: options?.errorRedirectUri,
+  };
 
   const redis = getRedis();
-  await redis.set(
-    stateKey(token),
-    JSON.stringify(payload),
-    "EX",
-    STATE_TTL_SECONDS,
-  );
+  await redis.set(stateKey(token), JSON.stringify(payload), { ex: STATE_TTL_SECONDS });
 
   logger.debug("[oauth-state] created state token", { userId, provider });
   return token;
@@ -90,12 +96,10 @@ export async function consumeOAuthState(
   const pipeline = redis.pipeline();
   pipeline.get(key);
   pipeline.del(key);
-  const [[getErr, raw]] = (await pipeline.exec()) as [
-    [Error | null, string | null],
-    [Error | null, number],
-  ];
+  const results = await pipeline.exec();
+  const raw = results[0] as string | null;
 
-  if (getErr || !raw) {
+  if (!raw) {
     logger.warn("[oauth-state] state token not found or expired", {
       token: token.slice(0, 8) + "…",
     });
