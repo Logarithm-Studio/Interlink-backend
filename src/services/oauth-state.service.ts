@@ -67,7 +67,9 @@ export async function createOAuthState(
   };
 
   const redis = getRedis();
-  await redis.set(stateKey(token), JSON.stringify(payload), { ex: STATE_TTL_SECONDS });
+  // Store as object — @upstash/redis auto-serializes/deserializes JSON, so
+  // storing the object directly means get() returns the object, not a string.
+  await redis.set(stateKey(token), payload, { ex: STATE_TTL_SECONDS });
 
   logger.debug("[oauth-state] created state token", { userId, provider });
   return token;
@@ -93,23 +95,20 @@ export async function consumeOAuthState(
   const key = stateKey(token);
 
   // Atomic GET + DEL via pipeline to prevent TOCTOU races.
+  // @upstash/redis auto-deserializes JSON, so the get result is already the
+  // payload object — no JSON.parse needed.
   const pipeline = redis.pipeline();
-  pipeline.get(key);
+  pipeline.get<OAuthStatePayload>(key);
   pipeline.del(key);
   const results = await pipeline.exec();
-  const raw = results[0] as string | null;
+  const payload = results[0] as OAuthStatePayload | null;
 
-  if (!raw) {
+  if (!payload) {
     logger.warn("[oauth-state] state token not found or expired", {
       token: token.slice(0, 8) + "…",
     });
     return null;
   }
 
-  try {
-    return JSON.parse(raw) as OAuthStatePayload;
-  } catch {
-    logger.error("[oauth-state] failed to parse stored state payload", { key });
-    return null;
-  }
+  return payload;
 }
