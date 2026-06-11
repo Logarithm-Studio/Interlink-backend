@@ -60,9 +60,60 @@ function mapRow(row: EmailTemplateRow): EmailTemplate {
   };
 }
 
+export const PRESET_TEMPLATES: {
+  name: string;
+  subjectTemplate: string;
+  bodyTemplate: string;
+}[] = [
+  {
+    name: "Brief",
+    subjectTemplate: "Cannot make it: {{eventTitle}}",
+    bodyTemplate:
+      "Hi,\n\nUnfortunately I will not be able to attend {{eventTitle}}. Apologies for the short notice.\n\nThanks.",
+  },
+  {
+    name: "Formal",
+    subjectTemplate: "Regrets: Unable to attend {{eventTitle}}",
+    bodyTemplate:
+      'Dear team,\n\nI regret to inform you that I will be unable to attend "{{eventTitle}}" on {{eventStart}}. I apologise for any inconvenience this may cause and would appreciate receiving any notes or action items afterwards so I can follow up accordingly.\n\nKind regards.',
+  },
+  {
+    name: "Casual",
+    subjectTemplate: "Skipping {{eventTitle}} — sorry!",
+    bodyTemplate:
+      "Hey!\n\nSomething came up and I won't be able to make {{eventTitle}}. Happy to catch up on anything I missed — just send the notes my way.\n\nCheers.",
+  },
+];
+
+export async function ensurePresetTemplates(userId: string): Promise<void> {
+  const names = PRESET_TEMPLATES.map((preset) => preset.name);
+  const subjects = PRESET_TEMPLATES.map((preset) => preset.subjectTemplate);
+  const bodies = PRESET_TEMPLATES.map((preset) => preset.bodyTemplate);
+
+  await query(
+    `WITH preset(name, subject_template, body_template) AS (
+       SELECT *
+       FROM unnest($2::text[], $3::text[], $4::text[])
+     )
+     INSERT INTO email_templates
+       (user_id, name, subject_template, body_template, is_active_default)
+     SELECT $1, p.name, p.subject_template, p.body_template, FALSE
+       FROM preset p
+      WHERE NOT EXISTS (
+              SELECT 1
+                FROM email_templates et
+               WHERE et.user_id = $1
+                 AND et.name = p.name
+            )`,
+    [userId, names, subjects, bodies],
+  );
+}
+
 export async function listEmailTemplates(
   userId: string,
 ): Promise<EmailTemplate[]> {
+  await ensurePresetTemplates(userId);
+
   const result = await query<EmailTemplateRow>(
     `SELECT id, user_id, name, subject_template, body_template,
             is_active_default, created_at, updated_at

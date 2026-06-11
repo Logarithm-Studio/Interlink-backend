@@ -4,6 +4,8 @@ import { getSupabase } from "../config/supabase";
 import { AuthenticatedRequest } from "../types";
 import { UnauthorizedError } from "../utils/errors";
 
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
 /**
  * Express middleware that validates Supabase JWT access tokens using
  * `supabase.auth.getUser(token)` and attaches `req.user` on success.
@@ -15,12 +17,12 @@ export async function authMiddleware(
 ): Promise<void> {
   try {
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       throw new UnauthorizedError("Missing or malformed Authorization header");
     }
 
     const token = authHeader.split(" ")[1];
+    const { data: { user }, error } = await getSupabase().auth.getUser(token);
 
     const {
       data: { user },
@@ -44,6 +46,7 @@ export async function authMiddleware(
 
     req.user = { id: user.id, email: user.email };
 
+    req.user = { id: localUserId, email: normalizedEmail };
     next();
   } catch (err) {
     next(err);

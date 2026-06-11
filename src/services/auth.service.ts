@@ -172,6 +172,24 @@ export async function storeTokens(
   );
 }
 
+/**
+ * Remove stored OAuth credentials for a provider.
+ * Used when the user explicitly disconnects an external account.
+ */
+export async function deleteTokens(
+  userId: string,
+  provider: Provider,
+): Promise<void> {
+  if (provider === "google") {
+    await query(`DELETE FROM google_accounts WHERE user_id = $1`, [userId]);
+  }
+
+  await query(
+    `DELETE FROM connected_accounts WHERE user_id = $1 AND provider = $2`,
+    [userId, provider],
+  );
+}
+
 // ─── Token retrieval ──────────────────────────────────────────────────────────
 
 /**

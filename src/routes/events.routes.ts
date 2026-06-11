@@ -15,8 +15,10 @@ import {
   getAttendanceResponseForEvent,
   listAttendanceResponsesForEvents,
   upsertAttendanceResponse,
+  type AttendanceResponseValue,
 } from "../services/attendanceResponses.service";
 import { listEmailSendLogsForEvent } from "../services/email/sendLogs.service";
+import { acceptGoogleEvent, declineGoogleEvent } from "../services/calendar/google";
 import { AuthenticatedRequest } from "../types";
 import {
   BadRequestError,
@@ -38,6 +40,22 @@ const AttendanceResponseSchema = z.object({
   response: z.enum(["yes", "no"]),
 });
 
+function buildEventStateFlags(
+  endTime: Date,
+  attendanceResponse: AttendanceResponseValue | null,
+): {
+  isPast: boolean;
+  isHandled: boolean;
+  isMissed: boolean;
+} {
+  const endMs = endTime.getTime();
+  const isPast = Number.isFinite(endMs) && endMs <= Date.now();
+  const isHandled = attendanceResponse !== null;
+  const isMissed = isPast && !isHandled;
+
+  return { isPast, isHandled, isMissed };
+}
+
 // All event routes require authentication
 router.use(authMiddleware as never);
 
@@ -58,10 +76,14 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     );
 
     res.json({
-      events: events.map((event) => ({
-        ...toFlutterEventListItem(event),
-        attendanceResponse: attendanceResponses[event.id ?? ""] ?? null,
-      })),
+      events: events.map((event) => {
+        const attendanceResponse = attendanceResponses[event.id ?? ""] ?? null;
+        return {
+          ...buildEventStateFlags(event.endTime, attendanceResponse),
+          ...toFlutterEventListItem(event),
+          attendanceResponse,
+        };
+      }),
       count: events.length,
       filters: {
         from: from ?? new Date().toISOString(),
@@ -92,6 +114,10 @@ router.get("/:id", async (req: Request, res: Response, next: NextFunction) => {
 
     res.json({
       event: {
+        ...buildEventStateFlags(
+          event.endTime,
+          attendanceResponse?.response ?? null,
+        ),
         ...toFlutterEventDetail(event),
         attendanceResponse: attendanceResponse?.response ?? null,
         attendanceHandledAt: attendanceResponse?.handledAt ?? null,
@@ -119,6 +145,36 @@ router.post(
       const event = await getEventById(user.id, req.params.id);
       if (!event) {
         throw new NotFoundError("Event");
+      }
+
+      // Persist to Google first so local attendance state always reflects what
+      // actually exists in the user's Google Calendar account.
+      const externalId = event.externalEventId;
+      if (externalId) {
+        const metadata =
+          event.metadata && typeof event.metadata === "object"
+            ? (event.metadata as Record<string, unknown>)
+            : {};
+        const sourceCalendarId =
+          typeof metadata.calendarId === "string" && metadata.calendarId.trim()
+            ? metadata.calendarId.trim()
+            : "primary";
+
+        if (parsed.data.response === "yes") {
+          await acceptGoogleEvent(
+            user.id,
+            user.email,
+            externalId,
+            sourceCalendarId,
+          );
+        } else {
+          await declineGoogleEvent(
+            user.id,
+            user.email,
+            externalId,
+            sourceCalendarId,
+          );
+        }
       }
 
       const attendanceResponse = await upsertAttendanceResponse({

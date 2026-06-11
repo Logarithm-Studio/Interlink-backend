@@ -43,6 +43,23 @@ router.post(
         ...result,
       });
     } catch (err) {
+      if (err instanceof ReauthRequiredError) {
+        return next(
+          new UnauthorizedError(
+            "Google account requires re-authentication. Reconnect and try again.",
+          ),
+        );
+      }
+      if (
+        err instanceof Error &&
+        err.message === "No Google account connected"
+      ) {
+        return next(
+          new BadRequestError(
+            "Google account is not connected. Connect Google first.",
+          ),
+        );
+      }
       next(err);
     }
   },

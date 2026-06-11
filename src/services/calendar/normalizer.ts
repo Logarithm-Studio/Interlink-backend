@@ -15,6 +15,7 @@ export function normalizeGoogleEvent(
   raw: calendar_v3.Schema$Event,
   userId: string,
   rules: EventTypeRule[],
+  sourceCalendarId?: string,
 ): NormalizedEvent | null {
   // Cancelled events are handled upstream (deleted from DB); skip here.
   if (raw.status === "cancelled") return null;
@@ -68,6 +69,7 @@ export function normalizeGoogleEvent(
     seriesId: raw.recurringEventId ?? null,
     occurrenceId: raw.recurringEventId ? (raw.id ?? null) : null,
     metadata: {
+      calendarId: sourceCalendarId ?? "primary",
       htmlLink: raw.htmlLink,
       location,
       hangoutLink: raw.hangoutLink,

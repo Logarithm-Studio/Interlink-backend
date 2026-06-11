@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from "../types";
 import {
   listGoogleCalendarEvents,
   listGmailMailboxMessages,
+  getGmailMessageDetail,
   sendAutomatedGmailMessage,
 } from "../services/googleApi.service";
 import { ReauthRequiredError } from "../services/auth.service";
@@ -28,6 +29,10 @@ const GmailQuerySchema = z.object({
   mailbox: z.enum(["inbox", "sent", "all"]).optional(),
   maxResults: z.coerce.number().int().min(1).max(25).optional(),
   query: z.string().min(1).optional(),
+});
+
+const GmailDetailParamsSchema = z.object({
+  messageId: z.string().min(1),
 });
 
 const SendAutomatedGmailResponseSchema = z.object({
@@ -169,6 +174,38 @@ router.get(
   "/gmail/messages",
   async (req: Request, res: Response, next: NextFunction) => {
     await handleGmailMessages(req, res, next);
+  },
+);
+
+// Example: GET /api/v1/google/gmail/messages/18f0f6f2...
+router.get(
+  "/gmail/messages/:messageId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = GmailDetailParamsSchema.safeParse(req.params);
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((issue) => issue.message).join(", "),
+        );
+      }
+
+      const user = (req as AuthenticatedRequest).user;
+      const message = await getGmailMessageDetail({
+        userId: user.id,
+        messageId: parsed.data.messageId,
+      });
+
+      res.status(200).json({
+        provider: "google",
+        message,
+      });
+    } catch (err) {
+      const reauth = handleGoogleReauthError(err);
+      if (reauth) {
+        return next(reauth);
+      }
+      next(err);
+    }
   },
 );
 

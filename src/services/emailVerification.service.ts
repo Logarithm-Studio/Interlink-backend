@@ -218,13 +218,14 @@ export async function verifyEmailVerificationCode(
        FROM email_verification_codes
       WHERE email = $1
         AND purpose = $2
+        AND used_at IS NULL
       ORDER BY created_at DESC
       LIMIT 1`,
     [normalizedEmail, purpose],
   );
 
   const row = result.rows[0];
-  if (!row || row.used_at) {
+  if (!row) {
     return { verified: false, reason: "code_not_found" };
   }
 

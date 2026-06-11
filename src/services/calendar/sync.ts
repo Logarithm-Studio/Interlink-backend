@@ -38,6 +38,7 @@ async function upsertAll(
   userId: string,
   provider: "google",
   rules: EventTypeRule[],
+  calendarId: string,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
   let synced = 0;
   let skipped = 0;
@@ -60,7 +61,9 @@ async function upsertAll(
     }
 
     const normalized: NormalizedEvent | null =
-      provider === "google" ? normalizeGoogleEvent(raw, userId, rules) : null;
+      provider === "google"
+        ? normalizeGoogleEvent(raw, userId, rules, calendarId)
+        : null;
 
     if (!normalized) {
       skipped++;
@@ -112,6 +115,7 @@ export async function fullSync(
     userId,
     provider,
     rules,
+    calendarId,
   );
 
   console.log(
@@ -188,6 +192,7 @@ export async function incrementalSync(
       userId,
       "google",
       rules,
+      calendarId,
     );
 
     // Advance cursor only after all upserts in this batch succeed.
@@ -213,18 +218,104 @@ export async function incrementalSync(
   }
 }
 
-// ─── Backward-compatible alias ─────────────────────────────────────────────
+// ─── Manual sync entry point ───────────────────────────────────────────────
 
 /**
- * Backward-compatible wrapper used by the manual `/sync` route and any other
- * caller that doesn't have a watch-channel context.
- * For webhook-driven sync, prefer `incrementalSync`.
+ * Used by the manual POST /calendar/sync route and any caller without an
+ * explicit watch-channel context.
+ *
+ * Strategy:
+ *  1. Pick the user's most-recently-updated Google watch channel, preferring
+ *     rows that already have a stored syncToken.
+ *  2. If a token is present → incremental sync via that channel (fast path),
+ *     with automatic full-sync fallback on 410 cursor expiry.
+ *  3. If a channel exists but has no token → run one full sync and seed the
+ *     cursor for subsequent incremental runs.
+ *  4. If no channel exists → full time-window sync.
+ *
+ * This prevents manual sync from repeatedly re-downloading the full window.
  */
 export async function syncUserCalendar(
   userId: string,
   provider: "google",
   since?: string,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
+  if (provider !== "google") {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  // Prefer the most recently updated channel for this user.
+  // We intentionally do NOT require expiration > now() for manual sync because
+  // syncToken validity is independent of watch-channel webhook expiry.
+  const { query } = await import("../../config/db");
+  const row = await query<{
+    channel_id: string;
+    calendar_id: string;
+    sync_token: string | null;
+  }>(
+    `SELECT channel_id, calendar_id, sync_token
+       FROM google_watch_channels
+      WHERE user_id = $1
+      ORDER BY (sync_token IS NOT NULL) DESC, updated_at DESC
+      LIMIT 1`,
+    [userId],
+  ).catch(
+    () =>
+      ({ rows: [] as { channel_id: string; calendar_id: string; sync_token: string | null }[] }),
+  );
+
+  const preferredChannel = row.rows[0];
+
+  if (preferredChannel?.sync_token) {
+    const { channel_id: channelId, calendar_id: calendarId } = preferredChannel;
+    console.log(
+      `[syncUserCalendar] Incremental path via channel=${channelId} for user=${userId}`,
+    );
+    try {
+      return await incrementalSync(userId, channelId, calendarId);
+    } catch (err) {
+      if (!(err instanceof FullResyncRequiredError)) {
+        throw err;
+      }
+
+      console.log(
+        `[syncUserCalendar] Incremental cursor expired — falling back to full sync for user=${userId}`,
+      );
+
+      const { synced, skipped, deleted, nextSyncToken } = await fullSync(
+        userId,
+        provider,
+        since,
+        calendarId,
+      );
+      if (nextSyncToken) {
+        await setSyncToken(channelId, nextSyncToken);
+      }
+      return { synced, skipped, deleted };
+    }
+  }
+
+  if (preferredChannel) {
+    const { channel_id: channelId, calendar_id: calendarId } = preferredChannel;
+    console.log(
+      `[syncUserCalendar] Channel found without syncToken — full sync + seed cursor for user=${userId}`,
+    );
+
+    const { synced, skipped, deleted, nextSyncToken } = await fullSync(
+      userId,
+      provider,
+      since,
+      calendarId,
+    );
+    if (nextSyncToken) {
+      await setSyncToken(channelId, nextSyncToken);
+    }
+    return { synced, skipped, deleted };
+  }
+
+  console.log(
+    `[syncUserCalendar] No channel found — full sync for user=${userId}`,
+  );
   const { synced, skipped, deleted } = await fullSync(userId, provider, since);
   return { synced, skipped, deleted };
 }

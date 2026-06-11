@@ -3,8 +3,11 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
-import { storeTokens, getTokens } from "../services/auth.service";
-import { createWatchChannel } from "../services/calendar/googleWatch.service";
+import { storeTokens, getTokens, deleteTokens } from "../services/auth.service";
+import {
+  createWatchChannel,
+  stopAllWatchChannelsForUser,
+} from "../services/calendar/googleWatch.service";
 import { getCalendarSyncQueue } from "../queues/queues";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
@@ -33,14 +36,58 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
-const GOOGLE_REDIRECT_URI =
-  process.env.GOOGLE_REDIRECT_URI ||
-  "http://localhost:5000/api/v1/auth/callback/google";
-
 const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT_URI;
 const GOOGLE_OAUTH_ERROR_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_ERROR_REDIRECT_URI;
+
+function normalizeAbsoluteHttpsOrLocalhostUri(input: string): string | undefined {
+  try {
+    const parsed = new URL(input.trim());
+    const protocol = parsed.protocol;
+
+    const isLocalHttp =
+      protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+    const isHttps = protocol === "https:";
+
+    if (!isHttps && !isLocalHttp) {
+      return undefined;
+    }
+
+    // Guard against accidental duplicate path separators in env values.
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
+
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function getGoogleRedirectUri(): string {
+  const rawRedirectUri = process.env.GOOGLE_REDIRECT_URI?.trim();
+
+  if (!rawRedirectUri) {
+    throw new Error(
+      "GOOGLE_REDIRECT_URI must be set (for mobile dev use your public HTTPS callback URL).",
+    );
+  }
+
+  const redirectUri = normalizeAbsoluteHttpsOrLocalhostUri(rawRedirectUri);
+  if (!redirectUri) {
+    throw new Error(
+      "GOOGLE_REDIRECT_URI must be a valid HTTPS URL (or http://localhost for local dev).",
+    );
+  }
+
+  if (redirectUri !== rawRedirectUri) {
+    console.warn(
+      `GOOGLE_REDIRECT_URI normalized from "${rawRedirectUri}" to "${redirectUri}". Update your environment variable to the normalized value to avoid OAuth mismatches.`,
+    );
+  }
+
+  return redirectUri;
+}
 
 /**
  * Build a Google OAuth2 client for the consent/callback flow.
@@ -49,7 +96,7 @@ function getGoogleOAuth2Client() {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI,
+    getGoogleRedirectUri(),
   );
 }
 
@@ -115,6 +162,83 @@ function buildGoogleAuthUrl(stateToken: string): string {
     scope: GOOGLE_SCOPES,
     state: stateToken,
   });
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function buildSessionPayload(session: {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  expires_at?: number;
+}) {
+  return {
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+    expiresIn: session.expires_in,
+    expiresAt: session.expires_at,
+    tokenType: "bearer",
+  };
+}
+
+function buildSignupUserMetadata(payload: {
+  fullName?: string;
+  contactNo?: string;
+  companyName?: string;
+  address?: string;
+}): Record<string, string> {
+  const metadata: Record<string, string> = {};
+
+  if (payload.fullName) {
+    metadata.fullName = payload.fullName;
+  }
+  if (payload.contactNo) {
+    metadata.contactNo = payload.contactNo;
+  }
+  if (payload.companyName) {
+    metadata.companyName = payload.companyName;
+  }
+  if (payload.address) {
+    metadata.address = payload.address;
+  }
+
+  return metadata;
+}
+
+async function findSupabaseUserIdByEmail(
+  supabase: ReturnType<typeof getSupabase>,
+  email: string,
+): Promise<string | null> {
+  const normalizedEmail = normalizeEmail(email);
+  const perPage = 200;
+  const maxPages = 10;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { data, error } = await supabase.auth.admin.listUsers({
+      page,
+      perPage,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const matchedUser = data.users.find(
+      (user) => normalizeEmail(user.email ?? "") === normalizedEmail,
+    );
+
+    if (matchedUser) {
+      return matchedUser.id;
+    }
+
+    if (data.users.length < perPage) {
+      break;
+    }
+  }
+
+  return null;
 }
 
 // ─── Validation schemas for signup/login ────────────────────────────
@@ -235,7 +359,15 @@ router.post(
         address,
       } = parsed.data;
 
-      if (!validateVerificationToken(verificationToken, email, "signup")) {
+      const normalizedEmail = normalizeEmail(email);
+      const userMetadata = buildSignupUserMetadata({
+        fullName,
+        contactNo,
+        companyName,
+        address,
+      });
+
+      if (!validateVerificationToken(verificationToken, normalizedEmail, "signup")) {
         throw new UnauthorizedError(
           "Email verification token is invalid or expired",
         );
@@ -243,8 +375,24 @@ router.post(
 
       const supabase = getSupabase();
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
+      const createResult = await supabase.auth.admin.createUser({
+        email: normalizedEmail,
+        password,
+        email_confirm: true,
+        user_metadata: userMetadata,
+      });
+
+      const alreadyRegistered =
+        createResult.error?.message.toLowerCase().includes("already registered") ??
+        false;
+
+      if (createResult.error && !alreadyRegistered) {
+        throw new BadRequestError(createResult.error.message);
+      }
+
+      let accountExists = false;
+      let signInResult = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
         password,
         options: {
           data: {
@@ -256,37 +404,90 @@ router.post(
         },
       });
 
-      if (error) {
-        // Treat duplicate signup as idempotent so connection tests and retries
-        // with the same email don't fail with a generic 400.
-        if (error.message.toLowerCase().includes("already registered")) {
-          res.status(200).json({
-            message: "Account already exists. Please login.",
-            user: { email },
-            accountExists: true,
-          });
-          return;
+      if (alreadyRegistered && signInResult.error) {
+        accountExists = true;
+
+        const isUnconfirmedError = signInResult.error.message
+          .toLowerCase()
+          .includes("email not confirmed");
+
+        if (isUnconfirmedError) {
+          const userId = await findSupabaseUserIdByEmail(supabase, normalizedEmail);
+
+          if (userId) {
+            const updateResult = await supabase.auth.admin.updateUserById(userId, {
+              email_confirm: true,
+              password,
+              user_metadata: userMetadata,
+            });
+
+            if (updateResult.error) {
+              throw new BadRequestError(updateResult.error.message);
+            }
+
+            signInResult = await supabase.auth.signInWithPassword({
+              email: normalizedEmail,
+              password,
+            });
+          }
         }
-        throw new BadRequestError(error.message);
       }
 
-      res.status(201).json({
-        message: "User registered successfully",
+      if (signInResult.error || !signInResult.data.user || !signInResult.data.session) {
+        if (alreadyRegistered) {
+          throw new UnauthorizedError(
+            "Account already exists. Please log in with your existing password.",
+          );
+        }
+
+        throw new UnauthorizedError(
+          signInResult.error?.message ??
+            "Account created but automatic login failed. Please try logging in.",
+        );
+      }
+
+      // Persist profile + seed preset templates so settings is fully populated
+      // the moment the user lands after signup. Best-effort: failures here
+      // should not block the signup response (middleware upsert will backfill).
+      try {
+        await query(
+          `INSERT INTO users (id, email, full_name, contact_no, company_name, address)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE
+               SET email        = EXCLUDED.email,
+                   full_name    = COALESCE(EXCLUDED.full_name, users.full_name),
+                   contact_no   = COALESCE(EXCLUDED.contact_no, users.contact_no),
+                   company_name = COALESCE(EXCLUDED.company_name, users.company_name),
+                   address      = COALESCE(EXCLUDED.address, users.address),
+                   updated_at   = NOW()`,
+          [
+            signInResult.data.user.id,
+            normalizedEmail,
+            fullName ?? null,
+            contactNo ?? null,
+            companyName ?? null,
+            address ?? null,
+          ],
+        );
+        await ensurePresetTemplates(signInResult.data.user.id);
+      } catch (persistErr) {
+        console.warn(
+          "[auth/signup] profile/template seed failed:",
+          persistErr instanceof Error ? persistErr.message : persistErr,
+        );
+      }
+
+      res.status(accountExists ? 200 : 201).json({
+        message: accountExists
+          ? "Account already exists. Signed in successfully."
+          : "User registered successfully",
         user: {
-          id: data.user?.id,
-          email: data.user?.email,
+          id: signInResult.data.user.id,
+          email: signInResult.data.user.email,
         },
-        // If email confirmation is enabled, session will be null until confirmed.
-        session: data.session
-          ? {
-              accessToken: data.session.access_token,
-              refreshToken: data.session.refresh_token,
-              expiresIn: data.session.expires_in,
-              expiresAt: data.session.expires_at,
-              tokenType: "bearer",
-            }
-          : null,
-        confirmationRequired: !data.session,
+        session: buildSessionPayload(signInResult.data.session),
+        confirmationRequired: false,
+        accountExists,
       });
     } catch (err) {
       next(err);
@@ -308,11 +509,12 @@ router.post(
         );
       }
 
-      const { email, password } = parsed.data;
+      const normalizedEmail = normalizeEmail(parsed.data.email);
+      const { password } = parsed.data;
       const supabase = getSupabase();
 
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: normalizedEmail,
         password,
       });
 
@@ -326,13 +528,7 @@ router.post(
           id: data.user.id,
           email: data.user.email,
         },
-        session: {
-          accessToken: data.session.access_token,
-          refreshToken: data.session.refresh_token,
-          expiresIn: data.session.expires_in,
-          expiresAt: data.session.expires_at,
-          tokenType: "bearer",
-        },
+        session: buildSessionPayload(data.session),
       });
     } catch (err) {
       next(err);
@@ -408,6 +604,7 @@ router.get(
       res.status(200).json({
         provider: "google",
         authUrl: buildGoogleAuthUrl(stateToken),
+        redirectUri: getGoogleRedirectUri(),
         stateTtlSeconds: 600,
         successRedirectUri,
         errorRedirectUri,
@@ -493,7 +690,25 @@ router.get(
         expiresAt,
       });
 
+      let watchChannelCreated = false;
+      let watchChannelId: string | undefined;
+      let watchCalendarId: string | undefined;
+      if (process.env.GOOGLE_WEBHOOK_URL) {
+        try {
+          const watch = await createWatchChannel(userId, "primary");
+          watchChannelCreated = true;
+          watchChannelId = watch.channelId;
+          watchCalendarId = watch.calendarId;
+        } catch (watchErr) {
+          console.warn(
+            `[auth/google callback] watch channel setup failed for user ${userId}: ${String(watchErr)}`,
+          );
+        }
+      }
+
       // Trigger the first import immediately after account connection.
+      // If we have a watch channel, include it so the worker can seed and reuse
+      // the incremental sync cursor from day one.
       const initialSyncJobId = `google-sync-initial|${userId}|${Date.now()}`;
       await getCalendarSyncQueue().add(
         JobType.GOOGLE_SYNC,
@@ -502,7 +717,10 @@ router.get(
           requestId: randomUUID(),
           idempotencyKey: initialSyncJobId,
           userId,
-          payload: {},
+          payload:
+            watchChannelId && watchCalendarId
+              ? { channelId: watchChannelId, calendarId: watchCalendarId }
+              : {},
         },
         {
           jobId: initialSyncJobId,
@@ -510,18 +728,6 @@ router.get(
           backoff: { type: "calendar_exp" as "exponential", delay: 30_000 },
         },
       );
-
-      let watchChannelCreated = false;
-      if (process.env.GOOGLE_WEBHOOK_URL) {
-        try {
-          await createWatchChannel(userId, "primary");
-          watchChannelCreated = true;
-        } catch (watchErr) {
-          console.warn(
-            `[auth/google callback] watch channel setup failed for user ${userId}: ${String(watchErr)}`,
-          );
-        }
-      }
 
       const successPayload = {
         message: "Google Calendar connected successfully",
@@ -557,6 +763,67 @@ router.get(
   },
 );
 
+// ─── DELETE /api/v1/auth/google ─────────────────────────────────────
+// Disconnect a previously connected Google account.
+// Removes stored tokens and active watch channels for this user.
+router.delete(
+  "/google",
+  oauthRateLimit,
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+
+      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
+      try {
+        googleAccount = await getTokens(user.id, "google");
+      } catch {
+        // If token rows are already invalid/reauth-required, proceed with
+        // local disconnect cleanup anyway.
+      }
+
+      // Stop active channels before token deletion for best-effort Google-side cleanup.
+      const stoppedWatchChannels = await stopAllWatchChannelsForUser(user.id);
+
+      if (googleAccount) {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+        );
+
+        // Revoke both tokens when available. Failures are logged and ignored
+        // so account disconnect still succeeds locally.
+        try {
+          await oauth2Client.revokeToken(googleAccount.accessToken);
+        } catch (err) {
+          console.warn(
+            `[auth/google disconnect] access token revoke failed for user ${user.id}: ${String(err)}`,
+          );
+        }
+
+        try {
+          await oauth2Client.revokeToken(googleAccount.refreshToken);
+        } catch (err) {
+          console.warn(
+            `[auth/google disconnect] refresh token revoke failed for user ${user.id}: ${String(err)}`,
+          );
+        }
+      }
+
+      await deleteTokens(user.id, "google");
+
+      res.status(200).json({
+        message: "Google account disconnected successfully",
+        provider: "google",
+        disconnected: true,
+        stoppedWatchChannels,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── GET /api/v1/auth/me ────────────────────────────────────────────
 // Returns the current user's info and connected accounts.
 router.get(
@@ -566,21 +833,229 @@ router.get(
     try {
       const user = (req as AuthenticatedRequest).user;
 
-      const googleAccount = await getTokens(user.id, "google");
+      // Best-effort: seed presets + backfill profile from Supabase metadata so the
+      // very first Settings load after signup shows the values captured at registration.
+      void ensurePresetTemplates(user.id).catch(() => {});
+
+      const profileRow = await query<{
+        full_name: string | null;
+        contact_no: string | null;
+        company_name: string | null;
+        address: string | null;
+      }>(
+        `SELECT full_name, contact_no, company_name, address
+           FROM users
+          WHERE id = $1
+          LIMIT 1`,
+        [user.id],
+      );
+      const profile = profileRow.rows[0] ?? {
+        full_name: null,
+        contact_no: null,
+        company_name: null,
+        address: null,
+      };
+
+      // Back-fill from Supabase user_metadata if the local row is blank.
+      if (
+        !profile.full_name &&
+        !profile.contact_no &&
+        !profile.company_name &&
+        !profile.address
+      ) {
+        try {
+          const supabase = getSupabase();
+          const { data } = await supabase.auth.admin.getUserById(user.id);
+          const metadata = (data?.user?.user_metadata ?? {}) as Record<
+            string,
+            string
+          >;
+          if (
+            metadata.fullName ||
+            metadata.contactNo ||
+            metadata.companyName ||
+            metadata.address
+          ) {
+            await query(
+              `UPDATE users
+                  SET full_name    = COALESCE(full_name, $2),
+                      contact_no   = COALESCE(contact_no, $3),
+                      company_name = COALESCE(company_name, $4),
+                      address      = COALESCE(address, $5),
+                      updated_at   = NOW()
+                WHERE id = $1`,
+              [
+                user.id,
+                metadata.fullName ?? null,
+                metadata.contactNo ?? null,
+                metadata.companyName ?? null,
+                metadata.address ?? null,
+              ],
+            );
+            profile.full_name = profile.full_name ?? metadata.fullName ?? null;
+            profile.contact_no =
+              profile.contact_no ?? metadata.contactNo ?? null;
+            profile.company_name =
+              profile.company_name ?? metadata.companyName ?? null;
+            profile.address = profile.address ?? metadata.address ?? null;
+          }
+        } catch {
+          // Non-fatal: metadata back-fill is best-effort.
+        }
+      }
+
+      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
+      try {
+        googleAccount = await getTokens(user.id, "google");
+      } catch {
+        googleAccount = null;
+      }
 
       res.json({
         user: {
           id: user.id,
           email: user.email,
+          fullName: profile.full_name ?? undefined,
+          contactNo: profile.contact_no ?? undefined,
+          companyName: profile.company_name ?? undefined,
+          address: profile.address ?? undefined,
         },
         connectedAccounts: {
           google: googleAccount
             ? {
                 connected: true,
+                email: user.email,
                 expiresAt: googleAccount.expiresAt,
                 reauthRequired: googleAccount.reauthRequired ?? false,
               }
-            : { connected: false, expiresAt: null, reauthRequired: false },
+            : {
+                connected: false,
+                email: undefined,
+                expiresAt: null,
+                reauthRequired: false,
+              },
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /api/v1/auth/profile ──────────────────────────────────────
+// Update the signed-in user's profile fields. Writes to both the local
+// `users` table (source of truth for backend) and Supabase `user_metadata`
+// (so any other consumer of the Supabase JWT sees the same values).
+const UpdateProfileSchema = z.object({
+  fullName: z.string().trim().min(1).max(100).optional(),
+  email: z.string().trim().email().max(254).optional(),
+  contactNo: z.string().trim().min(3).max(32).optional(),
+  companyName: z.string().trim().min(1).max(120).optional(),
+  address: z.string().trim().min(1).max(240).optional(),
+});
+
+router.put(
+  "/profile",
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const parsed = UpdateProfileSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+
+      const { fullName, email, contactNo, companyName, address } = parsed.data;
+      const normalizedEmail = email ? normalizeEmail(email) : undefined;
+
+      await query(
+        `UPDATE users
+            SET full_name    = COALESCE($2, full_name),
+                contact_no   = COALESCE($3, contact_no),
+                company_name = COALESCE($4, company_name),
+                address      = COALESCE($5, address),
+                email        = COALESCE($6, email),
+                updated_at   = NOW()
+          WHERE id = $1`,
+        [
+          user.id,
+          fullName ?? null,
+          contactNo ?? null,
+          companyName ?? null,
+          address ?? null,
+          normalizedEmail ?? null,
+        ],
+      );
+
+      // Mirror into Supabase metadata (and email if changed) — best effort.
+      try {
+        const supabase = getSupabase();
+        const metadataUpdate: Record<string, string> = {};
+        if (fullName) metadataUpdate.fullName = fullName;
+        if (contactNo) metadataUpdate.contactNo = contactNo;
+        if (companyName) metadataUpdate.companyName = companyName;
+        if (address) metadataUpdate.address = address;
+
+        if (Object.keys(metadataUpdate).length > 0 || normalizedEmail) {
+          await supabase.auth.admin.updateUserById(user.id, {
+            ...(normalizedEmail ? { email: normalizedEmail } : {}),
+            user_metadata: metadataUpdate,
+          });
+        }
+      } catch (mirrorErr) {
+        req.log?.warn("Failed to mirror profile into Supabase metadata", {
+          error:
+            mirrorErr instanceof Error ? mirrorErr.message : String(mirrorErr),
+        });
+      }
+
+      const row = await query<{
+        email: string;
+        full_name: string | null;
+        contact_no: string | null;
+        company_name: string | null;
+        address: string | null;
+      }>(
+        `SELECT email, full_name, contact_no, company_name, address
+           FROM users
+          WHERE id = $1
+          LIMIT 1`,
+        [user.id],
+      );
+      const updated = row.rows[0];
+
+      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
+      try {
+        googleAccount = await getTokens(user.id, "google");
+      } catch {
+        googleAccount = null;
+      }
+
+      res.json({
+        user: {
+          id: user.id,
+          email: updated?.email ?? user.email,
+          fullName: updated?.full_name ?? undefined,
+          contactNo: updated?.contact_no ?? undefined,
+          companyName: updated?.company_name ?? undefined,
+          address: updated?.address ?? undefined,
+        },
+        connectedAccounts: {
+          google: googleAccount
+            ? {
+                connected: true,
+                email: updated?.email ?? user.email,
+                expiresAt: googleAccount.expiresAt,
+                reauthRequired: googleAccount.reauthRequired ?? false,
+              }
+            : {
+                connected: false,
+                email: undefined,
+                expiresAt: null,
+                reauthRequired: false,
+              },
         },
       });
     } catch (err) {
