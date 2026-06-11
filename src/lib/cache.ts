@@ -8,7 +8,7 @@
  * - Cache warming for critical paths
  */
 
-import { getRedis } from "@/config/redis";
+import { getRedis } from "../config/redis";
 
 // ─── Cache Configuration ────────────────────────────────────────────────
 

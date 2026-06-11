@@ -10,8 +10,8 @@
  */
 
 import { Request, Response, NextFunction } from "express";
-import { getFromCache, setInCache, CacheKeys } from "@/lib/cache";
-import { AuthenticatedRequest } from "@/types";
+import { getFromCache, setInCache, CacheKeys } from "../lib/cache";
+import { AuthenticatedRequest } from "../types";
 
 export interface ResponseCacheConfig {
   /** Default TTL in seconds (default: 300) */
@@ -148,28 +148,28 @@ export function invalidateCache(cacheGroups: string[]) {
             switch (group) {
               case "events":
                 // Invalidate all event caches for this user
-                await require("@/lib/cache").deleteFromCacheByPattern(
+                await require("../lib/cache").deleteFromCacheByPattern(
                   `interlink:cache:events:*:${userId}*`,
                 );
                 break;
               case "calendar":
-                await require("@/lib/cache").deleteFromCacheByPattern(
+                await require("../lib/cache").deleteFromCacheByPattern(
                   `interlink:cache:calendar:*:${userId}*`,
                 );
                 break;
               case "gmail":
-                await require("@/lib/cache").deleteFromCacheByPattern(
+                await require("../lib/cache").deleteFromCacheByPattern(
                   `interlink:cache:gmail:*:${userId}*`,
                 );
                 break;
               case "reminders":
-                await require("@/lib/cache").deleteFromCacheByPattern(
+                await require("../lib/cache").deleteFromCacheByPattern(
                   `interlink:cache:reminders:*:${userId}*`,
                 );
                 break;
               default:
                 // Generic invalidation
-                await require("@/lib/cache").deleteFromCacheByPattern(
+                await require("../lib/cache").deleteFromCacheByPattern(
                   `interlink:cache:${group}:*`,
                 );
             }
