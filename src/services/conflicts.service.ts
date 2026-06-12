@@ -23,7 +23,7 @@
 
 import { randomUUID } from "crypto";
 import { query } from "../config/db";
-import { getConflictsQueue } from "../queues/queues";
+import { enqueueJob } from "./jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { ConflictResult, Attendee } from "../types";
 
@@ -479,8 +479,8 @@ export async function enqueueConflictDetection(
   const fromBucket = Math.floor(new Date(rangeFrom).getTime() / (5 * 60_000));
   const jobId = `conflicts|detect|${userId}|${fromBucket}`;
 
-  await getConflictsQueue().add(
-    JobType.CONFLICTS_DETECT,
+  await enqueueJob(
+    "conflicts",
     {
       jobType: JobType.CONFLICTS_DETECT,
       requestId: randomUUID(),
@@ -488,14 +488,6 @@ export async function enqueueConflictDetection(
       userId,
       payload: { userId, rangeFrom, rangeTo } as Record<string, unknown>,
     },
-    {
-      jobId,
-      attempts: 5,
-      backoff: { type: "exponential", delay: 5_000 },
-      // Remove completed/failed jobs so future adds with the same bucket ID
-      // can enqueue new work instead of reusing a completed job record.
-      removeOnComplete: { count: 500 },
-      removeOnFail: { count: 200 },
-    },
+    { jobId, retries: 5 },
   );
 }

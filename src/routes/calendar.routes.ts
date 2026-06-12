@@ -7,7 +7,7 @@ import {
   getChannelByChannelId,
 } from "../services/calendar/googleWatch.service";
 import { ReauthRequiredError } from "../services/auth.service";
-import { getCalendarSyncQueue } from "../queues/queues";
+import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
 import { BadRequestError, UnauthorizedError } from "../utils/errors";
@@ -191,8 +191,8 @@ router.post(
       // into a single BullMQ job (the second add with the same jobId is a no-op).
       const jobId = `google-sync|${channelId}|${messageNumber ?? randomUUID()}`;
 
-      await getCalendarSyncQueue().add(
-        JobType.GOOGLE_SYNC,
+      await enqueueJob(
+        "calendar-sync",
         {
           jobType: JobType.GOOGLE_SYNC,
           requestId: randomUUID(),
@@ -200,12 +200,7 @@ router.post(
           userId: channel.userId,
           payload: { channelId, calendarId: channel.calendarId },
         },
-        {
-          jobId,
-          // calendar.*.sync policy: 8 attempts, exponential 30s base, 30m cap.
-          attempts: 8,
-          backoff: { type: "calendar_exp" as "exponential", delay: 30_000 },
-        },
+        { jobId, retries: 8 },
       );
 
       console.log(

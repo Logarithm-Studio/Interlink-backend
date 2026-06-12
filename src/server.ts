@@ -2,7 +2,6 @@ import "dotenv/config";
 
 import app from "./app";
 import { testConnection } from "./config/db";
-import { testRedisConnection } from "./config/redis";
 import { initKeyring } from "./security/keyring";
 
 const PORT = process.env.PORT || 5000;
@@ -14,8 +13,6 @@ const startServer = async () => {
       "DATABASE_URL",
       "SUPABASE_URL",
       "SUPABASE_SERVICE_ROLE_KEY",
-      "UPSTASH_REDIS_REST_URL",
-      "UPSTASH_REDIS_REST_TOKEN",
       "ENCRYPTION_KEY",
       "GOOGLE_API_KEY",
       "GOOGLE_CLIENT_ID",
@@ -25,6 +22,10 @@ const startServer = async () => {
       "SMTP_USER",
       "SMTP_PASS",
       "SMTP_FROM",
+      "QSTASH_TOKEN",
+      "QSTASH_CURRENT_SIGNING_KEY",
+      "QSTASH_NEXT_SIGNING_KEY",
+      "API_BASE_URL",
     ];
     for (const key of required) {
       if (!process.env[key]) {
@@ -44,9 +45,8 @@ const startServer = async () => {
     // Initialise encryption key ring before any token reads/writes.
     initKeyring();
 
-    // Test external connections
-    await testConnection(); // PostgreSQL
-    await testRedisConnection(); // Redis (Upstash)
+    // Test PostgreSQL connection
+    await testConnection();
 
     app.listen(PORT, () => {
       console.log(`\n🚀 Server running on http://localhost:${PORT}`);

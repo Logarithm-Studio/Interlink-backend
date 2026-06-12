@@ -17,6 +17,7 @@ import workflowActionsRoutes from "./routes/workflow.actions.routes";
 import googleRoutes from "./routes/google.routes";
 import remindersRoutes from "./routes/reminders.routes";
 import pushTokensRoutes from "./routes/pushTokens.routes";
+import workersRoutes from "./routes/workers.routes";
 
 const app: Express = express();
 
@@ -33,7 +34,15 @@ function configureMiddleware(app: Express) {
   app.use(requestIdMiddleware);
   app.use(helmet());
   app.use(cors());
-  app.use(express.json());
+  // Capture raw body bytes so QStash signature verification in workers.routes.ts
+  // can verify the Upstash-Signature header against the original payload bytes.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: true }));
 }
 
@@ -54,6 +63,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/google", googleRoutes);
   app.use("/api/v1/reminders", remindersRoutes);
   app.use("/api/v1/push-tokens", pushTokensRoutes);
+  app.use("/api/v1/workers", workersRoutes);
 }
 
 function setupErrorHandling(app: Express) {

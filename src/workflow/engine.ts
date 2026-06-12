@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { getWorkflowQueue } from "../queues/queues";
+import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import {
   getExecution,
@@ -237,8 +237,8 @@ export async function runStep(opts: RunStepOptions): Promise<void> {
       // advance linearly.
       const delayMs = Math.max(0, new Date(spec.until).getTime() - Date.now());
       const resumeJobId = `workflow|resume|timeout|${executionId}|${stepId}`;
-      await getWorkflowQueue().add(
-        JobType.WORKFLOW_RESUME,
+      await enqueueJob(
+        "workflow",
         {
           jobType: JobType.WORKFLOW_RESUME,
           requestId: randomUUID(),
@@ -251,12 +251,7 @@ export async function runStep(opts: RunStepOptions): Promise<void> {
             resumePayload: { resumeReason: "timer" },
           } as Record<string, unknown>,
         },
-        {
-          jobId: resumeJobId,
-          delay: delayMs,
-          attempts: 5,
-          backoff: { type: "exponential", delay: 2_000 },
-        },
+        { jobId: resumeJobId, delayMs, retries: 5 },
       );
       console.log(
         `[engine] Scheduled resume in ${delayMs}ms for execution=${executionId} step=${stepId} (job=${resumeJobId})`,
@@ -268,24 +263,16 @@ export async function runStep(opts: RunStepOptions): Promise<void> {
       // timeout that arrives after a successful user action is a no-op.
       const delayMs = spec.timeoutSeconds * 1_000;
       const timeoutJobId = `workflow|timeout|${executionId}|${stepId}`;
-      await getWorkflowQueue().add(
-        JobType.WORKFLOW_TIMEOUT,
+      await enqueueJob(
+        "workflow",
         {
           jobType: JobType.WORKFLOW_TIMEOUT,
           requestId: randomUUID(),
           idempotencyKey: timeoutJobId,
           userId,
-          payload: {
-            executionId,
-            stepId,
-          } as Record<string, unknown>,
+          payload: { executionId, stepId } as Record<string, unknown>,
         },
-        {
-          jobId: timeoutJobId,
-          delay: delayMs,
-          attempts: 5,
-          backoff: { type: "exponential", delay: 2_000 },
-        },
+        { jobId: timeoutJobId, delayMs, retries: 5 },
       );
       console.log(
         `[engine] Scheduled timeout in ${delayMs}ms for execution=${executionId} step=${stepId} (job=${timeoutJobId})`,
@@ -348,8 +335,8 @@ export async function runStep(opts: RunStepOptions): Promise<void> {
 
   // Enqueue the next workflow.run job with a deterministic jobId.
   const nextJobId = `workflow|run|${executionId}|${resolvedNextStepId}|0`;
-  await getWorkflowQueue().add(
-    JobType.WORKFLOW_RUN,
+  await enqueueJob(
+    "workflow",
     {
       jobType: JobType.WORKFLOW_RUN,
       requestId: randomUUID(),
@@ -361,11 +348,7 @@ export async function runStep(opts: RunStepOptions): Promise<void> {
         attempt: 0,
       } as Record<string, unknown>,
     },
-    {
-      jobId: nextJobId,
-      attempts: 12,
-      backoff: { type: "exponential", delay: 5_000 },
-    },
+    { jobId: nextJobId, retries: 12 },
   );
 
   console.log(

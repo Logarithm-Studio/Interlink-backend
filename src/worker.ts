@@ -1,35 +1,6 @@
-import dns from "dns";
+// Workers are now QStash HTTP callbacks — this standalone process is no longer needed.
+// Keep the file so `npm run worker:start` doesn't crash if called during migration.
 import "dotenv/config";
-
-// Force IPv4 — required on hosts without IPv6 routing
-dns.setDefaultResultOrder("ipv4first");
-
-import { initKeyring } from "./security/keyring";
 import { logger } from "./observability/logger";
-import { startAllWorkers } from "./workers";
 
-// Initialise encryption key ring before processing any jobs that read tokens.
-initKeyring();
-
-const workers = startAllWorkers();
-
-logger.info("Worker process started", { queues: workers.length });
-
-// ─── Graceful shutdown ────────────────────────────────────────────────────────
-
-async function shutdown(signal: string): Promise<void> {
-  logger.info("Shutdown signal received", { signal });
-  await Promise.all(workers.map((w) => w.close()));
-  logger.info("All workers closed — exiting");
-  process.exit(0);
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-// Log unhandled rejections so they surface in structured logs.
-process.on("unhandledRejection", (reason) => {
-  logger.fatal("Unhandled promise rejection", {
-    err: reason instanceof Error ? reason : new Error(String(reason)),
-  } as Parameters<typeof logger.fatal>[1]);
-});
+logger.info("Worker process is a no-op — jobs are handled by /api/v1/workers/* (QStash HTTP callbacks).");

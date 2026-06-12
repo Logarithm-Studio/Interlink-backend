@@ -25,6 +25,7 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from "../utils/errors";
+import { ReauthRequiredError } from "../services/auth.service";
 
 const router = Router();
 
@@ -160,19 +161,26 @@ router.post(
             ? metadata.calendarId.trim()
             : "primary";
 
-        if (parsed.data.response === "yes") {
-          await acceptGoogleEvent(
-            user.id,
-            user.email,
-            externalId,
-            sourceCalendarId,
-          );
-        } else {
-          await declineGoogleEvent(
-            user.id,
-            user.email,
-            externalId,
-            sourceCalendarId,
+        try {
+          if (parsed.data.response === "yes") {
+            await acceptGoogleEvent(
+              user.id,
+              user.email,
+              externalId,
+              sourceCalendarId,
+            );
+          } else {
+            await declineGoogleEvent(
+              user.id,
+              user.email,
+              externalId,
+              sourceCalendarId,
+            );
+          }
+        } catch (calErr) {
+          // Best-effort: Google Calendar sync failure does not block recording attendance.
+          console.warn(
+            `[attendance-response] Google Calendar update skipped for event=${req.params.id}: ${calErr instanceof Error ? calErr.message : String(calErr)}`,
           );
         }
       }
@@ -240,7 +248,7 @@ router.post(
         ...result,
       });
     } catch (err) {
-      if (err instanceof AuthError) {
+      if (err instanceof AuthError || err instanceof ReauthRequiredError) {
         next(
           new UnauthorizedError(
             "Google authorization failed. Please reconnect your Google account.",

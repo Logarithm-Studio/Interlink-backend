@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "crypto";
 import { google } from "googleapis";
 import { refreshGoogleTokenIfNeeded } from "../auth.service";
 import { query } from "../../config/db";
-import { getCalendarSyncQueue } from "../../queues/queues";
+import { enqueueJob } from "../jobQueue.service";
 import { JobType } from "../../jobs/schemas/envelope";
 
 export interface WatchChannel {
@@ -76,8 +76,8 @@ export async function scheduleWatchRenewal(
   );
   const jobId = `google-watch-renew|${channel.channelId}`;
 
-  await getCalendarSyncQueue().add(
-    JobType.GOOGLE_WATCH_RENEW,
+  await enqueueJob(
+    "calendar-sync",
     {
       jobType: JobType.GOOGLE_WATCH_RENEW,
       requestId: randomUUID(),
@@ -88,14 +88,7 @@ export async function scheduleWatchRenewal(
         calendarId: channel.calendarId,
       },
     },
-    {
-      jobId,
-      delay: delayMs,
-      attempts: 8,
-      backoff: { type: "calendar_exp" as "exponential", delay: 30_000 },
-      removeOnComplete: { count: 500 },
-      removeOnFail: { count: 500 },
-    },
+    { jobId, delayMs, retries: 8 },
   );
 }
 

@@ -20,7 +20,7 @@ import { randomUUID } from "crypto";
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
-import { getWorkflowQueue } from "../queues/queues";
+import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
 import {
@@ -126,8 +126,8 @@ router.post(
       // Deterministic jobId — prevents double-resume if the user submits twice.
       const jobId = `workflow|resume|${executionId}|${stepId}|${actionKey}`;
 
-      await getWorkflowQueue().add(
-        JobType.WORKFLOW_RESUME,
+      await enqueueJob(
+        "workflow",
         {
           jobType: JobType.WORKFLOW_RESUME,
           requestId: randomUUID(),
@@ -140,11 +140,7 @@ router.post(
             resumePayload: payload ?? {},
           } as Record<string, unknown>,
         },
-        {
-          jobId,
-          attempts: 12,
-          backoff: { type: "exponential", delay: 5_000 },
-        },
+        { jobId, retries: 12 },
       );
 
       // Durable audit entry for this user action.

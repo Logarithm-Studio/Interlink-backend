@@ -9,29 +9,45 @@
  */
 
 import { Request, Response, NextFunction } from "express";
-import { getRedis } from "../config/redis";
 import { query } from "../config/db";
 
-// ─── Redis short-window dedupe ────────────────────────────────────────────────
+// ─── PostgreSQL short-window dedupe ──────────────────────────────────────────
 
 /**
- * Attempt to claim `key` in Redis using SET NX (set if not exists).
+ * Attempt to claim `key` in the `webhook_dedup` table.
  *
- * Returns `true` if the key already existed (i.e. this is a duplicate).
- * Returns `false` if the key was newly set (i.e. this is the first time we've
- * seen it within the TTL window).
+ * Returns `true` if the key already existed (duplicate).
+ * Returns `false` if inserted (first time seen within TTL).
  *
- * @param key       Unique string identifying the operation.
- * @param ttlSeconds  How long to hold the key.  Must be ≥ max retry window.
- *                    Webhook: 48 h (172_800 s) covers Google's 24 h retry window.
+ * Required table (run once in Supabase SQL editor):
+ *
+ *   CREATE TABLE IF NOT EXISTS webhook_dedup (
+ *     dedup_key  text        PRIMARY KEY,
+ *     expires_at timestamptz NOT NULL
+ *   );
+ *   CREATE INDEX IF NOT EXISTS webhook_dedup_expires_idx ON webhook_dedup (expires_at);
+ *
+ * @param key        Unique string identifying the operation.
+ * @param ttlSeconds How long to retain the key.
  */
 export async function isDuplicate(
   key: string,
   ttlSeconds: number,
 ): Promise<boolean> {
-  // SET key 1 NX EX ttl — returns "OK" if set, null if key existed
-  const result = await getRedis().set(key, "1", { ex: ttlSeconds, nx: true });
-  return result === null; // null → key already existed → duplicate
+  // Opportunistic cleanup: remove expired rows 1% of the time to keep the
+  // table small without a dedicated cron job.
+  if (Math.random() < 0.01) {
+    query("DELETE FROM webhook_dedup WHERE expires_at < now()").catch(() => {});
+  }
+
+  const result = await query(
+    `INSERT INTO webhook_dedup (dedup_key, expires_at)
+     VALUES ($1, now() + ($2 || ' seconds')::interval)
+     ON CONFLICT (dedup_key) DO NOTHING
+     RETURNING dedup_key`,
+    [key, String(ttlSeconds)],
+  );
+  return (result.rowCount ?? 0) === 0; // 0 rows → key already existed → duplicate
 }
 
 // ─── Webhook dedupe key helpers ───────────────────────────────────────────────

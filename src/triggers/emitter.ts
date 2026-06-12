@@ -13,7 +13,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { getTriggersQueue } from "../queues/queues";
+import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { TriggerPayload, TriggerType } from "./types";
 
@@ -59,8 +59,8 @@ export async function emitTrigger(trigger: TriggerPayload): Promise<void> {
 
   const idempotencyKey = jobId;
 
-  await getTriggersQueue().add(
-    JobType.TRIGGER_EMIT,
+  await enqueueJob(
+    "triggers",
     {
       jobType: JobType.TRIGGER_EMIT,
       requestId: randomUUID(),
@@ -68,11 +68,6 @@ export async function emitTrigger(trigger: TriggerPayload): Promise<void> {
       userId: trigger.userId,
       payload: trigger as unknown as Record<string, unknown>,
     },
-    {
-      jobId,
-      // Emit jobs are lightweight fan-out — generous retries with short backoff.
-      attempts: 5,
-      backoff: { type: "exponential", delay: 2_000 },
-    },
+    { jobId, retries: 5 },
   );
 }

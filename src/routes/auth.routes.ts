@@ -8,7 +8,7 @@ import {
   createWatchChannel,
   stopAllWatchChannelsForUser,
 } from "../services/calendar/googleWatch.service";
-import { getCalendarSyncQueue } from "../queues/queues";
+import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
 import { BadRequestError, UnauthorizedError } from "../utils/errors";
@@ -704,8 +704,8 @@ router.get(
       // If we have a watch channel, include it so the worker can seed and reuse
       // the incremental sync cursor from day one.
       const initialSyncJobId = `google-sync-initial|${userId}|${Date.now()}`;
-      await getCalendarSyncQueue().add(
-        JobType.GOOGLE_SYNC,
+      await enqueueJob(
+        "calendar-sync",
         {
           jobType: JobType.GOOGLE_SYNC,
           requestId: randomUUID(),
@@ -716,11 +716,7 @@ router.get(
               ? { channelId: watchChannelId, calendarId: watchCalendarId }
               : {},
         },
-        {
-          jobId: initialSyncJobId,
-          attempts: 8,
-          backoff: { type: "calendar_exp" as "exponential", delay: 30_000 },
-        },
+        { jobId: initialSyncJobId, retries: 8 },
       );
 
       const successPayload = {

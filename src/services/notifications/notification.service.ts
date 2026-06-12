@@ -18,7 +18,7 @@
  */
 
 import crypto from "crypto";
-import { getNotificationsQueue } from "../../queues/queues";
+import { enqueueJob } from "../jobQueue.service";
 import { query } from "../../config/db";
 import { recordAuditLog } from "../../security/idempotency";
 import { JobType } from "../../jobs/schemas/envelope";
@@ -121,8 +121,8 @@ export async function enqueueNotification(
   const { executionId, stepId, userId, title, body, actions } = params;
   const jobId = `notif|send|${executionId}|${stepId}|${actionSetHash(actions)}`;
 
-  await getNotificationsQueue().add(
-    JobType.NOTIFICATION_SEND,
+  await enqueueJob(
+    "notifications",
     {
       jobType: JobType.NOTIFICATION_SEND,
       requestId: crypto.randomUUID(),
@@ -130,13 +130,7 @@ export async function enqueueNotification(
       userId,
       payload: { executionId, stepId, title, body, actions },
     },
-    {
-      jobId,
-      attempts: 3,
-      backoff: { type: "exponential", delay: 2000 },
-      removeOnComplete: { count: 500 },
-      removeOnFail: { count: 1000 },
-    },
+    { jobId, retries: 3 },
   );
 
   console.log(
