@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
-import { storeTokens, getTokens, deleteTokens } from "../services/auth.service";
+import { storeTokens, getTokens, deleteTokens, ReauthRequiredError } from "../services/auth.service";
 import {
   createWatchChannel,
   stopAllWatchChannelsForUser,
@@ -895,9 +895,13 @@ router.get(
       }
 
       let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
+      let googleReauthRequired = false;
       try {
         googleAccount = await getTokens(user.id, "google");
-      } catch {
+      } catch (err) {
+        if (err instanceof ReauthRequiredError) {
+          googleReauthRequired = true;
+        }
         googleAccount = null;
       }
 
@@ -917,6 +921,13 @@ router.get(
                 email: user.email,
                 expiresAt: googleAccount.expiresAt,
                 reauthRequired: googleAccount.reauthRequired ?? false,
+              }
+            : googleReauthRequired
+            ? {
+                connected: true,
+                email: user.email,
+                expiresAt: null,
+                reauthRequired: true,
               }
             : {
                 connected: false,
