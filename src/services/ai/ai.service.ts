@@ -32,6 +32,13 @@ import {
   buildEmailConflictPrompt,
   ConflictEmailContext,
 } from "./prompts/emailConflict";
+import {
+  buildDunningPrompt,
+  buildFallbackDunningEmail,
+  DunningEmail,
+  DunningEmailContext,
+  DunningEmailSchema,
+} from "./prompts/dunningReminder";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -438,4 +445,158 @@ export async function generateEmailDraft(
     provider,
     latencyMs,
   };
+}
+
+// ─── Professional Mode: dunning reminder email (Gemini) ───────────────────────
+
+export interface GenerateDunningParams {
+  userId: string;
+  context: DunningEmailContext;
+  /** Deterministic idempotency key (prefix `ai:dunning:`). */
+  idempotencyKey: string;
+}
+
+export interface GenerateDunningResult {
+  aiOutputId: string;
+  email: DunningEmail;
+  isFallback: boolean;
+  model: string;
+  provider: string;
+  latencyMs: number;
+}
+
+/** Look up a previously persisted dunning output by idempotency key. */
+async function findExistingDunning(
+  idempotencyKey: string,
+): Promise<GenerateDunningResult | null> {
+  const res = await query<{
+    id: string;
+    content: Record<string, unknown>;
+    model: string;
+    provider: string;
+    latency_ms: number;
+    is_fallback: boolean;
+  }>(
+    `SELECT id, content, model, provider, latency_ms, is_fallback
+       FROM ai_outputs
+      WHERE idempotency_key = $1 AND output_type = 'dunning_email'
+      LIMIT 1`,
+    [idempotencyKey],
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  const parsed = DunningEmailSchema.safeParse(row.content);
+  if (!parsed.success) return null;
+  return {
+    aiOutputId: row.id,
+    email: parsed.data,
+    isFallback: row.is_fallback,
+    model: row.model ?? "",
+    provider: row.provider ?? "",
+    latencyMs: row.latency_ms ?? 0,
+  };
+}
+
+/**
+ * Generate (or retrieve) a dunning reminder email using the Professional-Mode
+ * provider (Gemini). JSON-only, Zod-validated, with a deterministic template
+ * fallback. Persisted to `ai_outputs` with `execution_id = NULL` (no workflow
+ * execution backs the synchronous send path).
+ */
+export async function generateDunningEmail(
+  params: GenerateDunningParams,
+): Promise<GenerateDunningResult> {
+  const existing = await findExistingDunning(params.idempotencyKey);
+  if (existing) return existing;
+
+  let email: DunningEmail;
+  let model = "";
+  let provider = "";
+  let latencyMs = 0;
+  let isFallback = false;
+
+  const maxPerHour = parseInt(
+    process.env.AI_RATE_LIMIT_PER_USER_PER_HOUR ?? "20",
+    10,
+  );
+  const rlCheck = await checkWorkerRateLimit({
+    bucketName: "ai-dunning-email",
+    identifier: params.userId,
+    maxRequests: maxPerHour,
+    windowMs: 60 * 60 * 1_000,
+  });
+
+  try {
+    if (!rlCheck.allowed) {
+      throw new Error(
+        `AI_RATE_LIMITED: per-user ceiling of ${maxPerHour} calls/hour exceeded`,
+      );
+    }
+
+    const aiProvider = getProvider({ mode: "professional" });
+    const { system, user } = buildDunningPrompt(params.context);
+    const result = await aiProvider.generateText(system, user);
+    model = result.model;
+    provider = result.provider;
+    latencyMs = result.latencyMs;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.raw);
+    } catch {
+      throw new Error(
+        `Dunning provider returned non-JSON output: ${result.raw.slice(0, 300)}`,
+      );
+    }
+    const validated = DunningEmailSchema.safeParse(parsed);
+    if (!validated.success) {
+      throw new Error(
+        `Dunning output failed schema validation: ${validated.error.message}`,
+      );
+    }
+    email = validated.data;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[ai.service] dunning generation failed — falling back to template. Reason: ${msg}`,
+    );
+    email = buildFallbackDunningEmail(params.context);
+    isFallback = true;
+    model = "n/a";
+    provider = process.env.PROFESSIONAL_AI_PROVIDER ?? "gemini";
+    latencyMs = 0;
+  }
+
+  // Persist (execution_id NULL — no workflow execution backs this path).
+  const insertRes = await query<{ id: string }>(
+    `INSERT INTO ai_outputs
+          (execution_id, output_type, content, model, provider, latency_ms,
+           is_fallback, idempotency_key)
+     VALUES (NULL, 'dunning_email', $1::jsonb, $2, $3, $4, $5, $6)
+     ON CONFLICT (idempotency_key)
+       WHERE idempotency_key IS NOT NULL
+     DO NOTHING
+     RETURNING id`,
+    [JSON.stringify(email), model, provider, latencyMs, isFallback, params.idempotencyKey],
+  );
+  let aiOutputId = insertRes.rows[0]?.id ?? "";
+  if (!aiOutputId) {
+    const existingRow = await query<{ id: string }>(
+      `SELECT id FROM ai_outputs WHERE idempotency_key = $1 LIMIT 1`,
+      [params.idempotencyKey],
+    );
+    aiOutputId = existingRow.rows[0]?.id ?? "";
+  }
+
+  recordAuditLog({
+    userId: params.userId,
+    actorType: "worker",
+    action: "ai.dunning_email.generate",
+    entityType: "ai_output",
+    entityId: aiOutputId || undefined,
+    idempotencyKey: params.idempotencyKey,
+    payload: { isFallback, model, provider, latencyMs },
+  }).catch((e) => console.error("[ai.service] audit_log write failed:", e));
+
+  return { aiOutputId, email, isFallback, model, provider, latencyMs };
 }

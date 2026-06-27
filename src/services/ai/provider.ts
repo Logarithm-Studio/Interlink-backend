@@ -2,20 +2,34 @@
  * AI provider abstraction.
  *
  * Exposes a single interface (`AIProvider`) so that the AI service is
- * decoupled from any specific vendor.  Only OpenAI is wired up initially;
- * adding a second provider (Anthropic, Gemini, etc.) requires:
+ * decoupled from any specific vendor.
+ *
+ * Provider selection is **per mode** (Interlink v2 dual-core):
+ *   - Personal Mode  → OpenAI   (env: AI_PROVIDER / AI_API_KEY / AI_MODEL)
+ *   - Professional Mode → Gemini (env: PROFESSIONAL_AI_PROVIDER / GEMINI_API_KEY / GEMINI_MODEL)
+ *
+ * Call `getProvider({ mode })`.  The no-arg call defaults to personal/OpenAI so
+ * existing personal-mode callers keep working unchanged.
+ *
+ * Adding another provider requires:
  *   1. A new class implementing `AIProvider`.
- *   2. A new branch in `getProvider()`.
- *   3. A new `AI_PROVIDER` value in the env.
+ *   2. A new branch in `resolveProvider()`.
+ *   3. A new provider value in the env.
  *
  * Design constraints:
- * - Every call is JSON-only (enforced by `response_format: { type: "json_object" }` on OpenAI).
+ * - Every call is JSON-only (OpenAI: response_format json_object; Gemini:
+ *   generationConfig.responseMimeType = application/json).
  * - Temperature is fixed at 0 for deterministic outputs.
  * - A hard 30-second timeout is enforced per call; callers handle retries.
- * - The singleton is lazy-initialized once and reused.
+ * - One singleton per mode, lazy-initialized and reused.
+ *
+ * The Gemini implementation uses the REST API via global `fetch` (Node 20) so
+ * no extra SDK dependency is required.
  */
 
 import OpenAI from "openai";
+
+export type AIMode = "personal" | "professional";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -115,31 +129,126 @@ class OpenAIProvider implements AIProvider {
   }
 }
 
-// ─── Factory ──────────────────────────────────────────────────────────────────
+// ─── Gemini implementation (REST via fetch — no SDK dependency) ───────────────
 
-let _singleton: AIProvider | null = null;
+class GeminiProvider implements AIProvider {
+  readonly name = "gemini";
+  private readonly apiKey: string;
+  private readonly model: string;
 
-/**
- * Return the configured AI provider singleton.
- * Reads AI_PROVIDER, AI_API_KEY, and AI_MODEL from process.env.
- *
- * @throws If `AI_API_KEY` is not set.
- * @throws If `AI_PROVIDER` refers to an unsupported provider.
- */
-export function getProvider(): AIProvider {
-  if (_singleton) return _singleton;
+  constructor(apiKey: string, model: string) {
+    this.apiKey = apiKey;
+    this.model = model;
+  }
 
-  // Trim to avoid stray whitespace/CR characters from .env (e.g., "demo\r").
+  async generateText(
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<AIGenerationResult> {
+    const start = Date.now();
+
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/` +
+      `${encodeURIComponent(this.model)}:generateContent?key=${this.apiKey}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0,
+            maxOutputTokens: 1024,
+          },
+        }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      throw new Error(
+        `Gemini API error ${response.status}: ${errText.slice(0, 300)}`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+      modelVersion?: string;
+    };
+
+    const raw =
+      data.candidates?.[0]?.content?.parts
+        ?.map((p) => p.text ?? "")
+        .join("") ?? "";
+
+    return {
+      raw,
+      model: data.modelVersion ?? this.model,
+      latencyMs: Date.now() - start,
+      provider: "gemini",
+    };
+  }
+}
+
+// ─── Factory (per-mode singletons) ────────────────────────────────────────────
+
+const _singletons: Partial<Record<AIMode, AIProvider>> = {};
+
+function resolveProvider(mode: AIMode): AIProvider {
+  if (mode === "professional") {
+    // Trim to avoid stray whitespace/CR characters from .env.
+    const providerName = (process.env.PROFESSIONAL_AI_PROVIDER ?? "gemini")
+      .toLowerCase()
+      .trim();
+
+    if (providerName === "demo") return new DemoProvider();
+
+    if (providerName === "gemini") {
+      const apiKey = process.env.GEMINI_API_KEY;
+      const model = process.env.GEMINI_MODEL ?? "gemini-1.5-flash";
+      if (!apiKey) {
+        throw new Error(
+          "GEMINI_API_KEY environment variable is required for Professional Mode " +
+            "but not set. Add it to your .env file (or set PROFESSIONAL_AI_PROVIDER=demo).",
+        );
+      }
+      return new GeminiProvider(apiKey, model);
+    }
+
+    // Allow professional mode to fall back to the OpenAI config if explicitly set.
+    if (providerName === "openai") {
+      const apiKey = process.env.AI_API_KEY;
+      const model = process.env.AI_MODEL ?? "gpt-4o";
+      if (!apiKey) {
+        throw new Error("AI_API_KEY is required when PROFESSIONAL_AI_PROVIDER=openai.");
+      }
+      return new OpenAIProvider(apiKey, model);
+    }
+
+    throw new Error(
+      `Unsupported PROFESSIONAL_AI_PROVIDER="${providerName}". ` +
+        `Supported values: gemini, openai, demo`,
+    );
+  }
+
+  // ── Personal mode (default) ──────────────────────────────────────────────
   const providerName = (process.env.AI_PROVIDER ?? "openai")
     .toLowerCase()
     .trim();
   const apiKey = process.env.AI_API_KEY;
   const model = process.env.AI_MODEL ?? "gpt-4o";
 
-  if (providerName === "demo") {
-    _singleton = new DemoProvider();
-    return _singleton;
-  }
+  if (providerName === "demo") return new DemoProvider();
 
   if (!apiKey) {
     throw new Error(
@@ -148,21 +257,39 @@ export function getProvider(): AIProvider {
     );
   }
 
-  if (providerName === "openai") {
-    _singleton = new OpenAIProvider(apiKey, model);
-    return _singleton;
-  }
+  if (providerName === "openai") return new OpenAIProvider(apiKey, model);
 
   throw new Error(
-    `Unsupported AI_PROVIDER="${providerName}". ` +
-      `Supported values: openai, demo`,
+    `Unsupported AI_PROVIDER="${providerName}". Supported values: openai, demo`,
   );
 }
 
 /**
- * Override the provider singleton (test / DI use only).
- * Pass `null` to reset to auto-initialization.
+ * Return the configured AI provider singleton for the given mode.
+ * Defaults to personal/OpenAI when no mode is supplied (back-compat).
+ *
+ * @throws If the required API key is not set or the provider is unsupported.
  */
-export function setProvider(provider: AIProvider | null): void {
-  _singleton = provider;
+export function getProvider(opts?: { mode?: AIMode }): AIProvider {
+  const mode: AIMode = opts?.mode ?? "personal";
+  const cached = _singletons[mode];
+  if (cached) return cached;
+  const provider = resolveProvider(mode);
+  _singletons[mode] = provider;
+  return provider;
+}
+
+/**
+ * Override a provider singleton (test / DI use only).
+ * Pass `null` to reset that mode to auto-initialization.
+ */
+export function setProvider(
+  provider: AIProvider | null,
+  mode: AIMode = "personal",
+): void {
+  if (provider) {
+    _singletons[mode] = provider;
+  } else {
+    delete _singletons[mode];
+  }
 }

@@ -31,6 +31,10 @@ function entityIdFromTrigger(trigger: TriggerPayload): string {
     case TriggerType.CALENDAR_CONFLICT_DETECTED:
       // Sorted join so A+B and B+A produce the same key.
       return [...trigger.conflict.conflictingEvents].sort().join("+");
+    case TriggerType.SCHEDULE_WEEKLY:
+      return `schedule:${trigger.userId}`;
+    case TriggerType.FINANCE_INVOICE_OVERDUE:
+      return trigger.invoice.id;
   }
 }
 

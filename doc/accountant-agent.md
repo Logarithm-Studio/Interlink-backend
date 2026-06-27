@@ -5,8 +5,19 @@ the Gemini PRD §4.4 ("Financial Analysts & Accountants") in
 [../../docs/PRODUCT-VISION-AND-STATUS.md](../../docs/PRODUCT-VISION-AND-STATUS.md) and mapped onto
 the **existing** Interlink workflow engine so it can be built incrementally without a rewrite.
 
-> Status: **planning / not yet implemented.** Track progress in the root
-> [BUILD-LOG.md](../../BUILD-LOG.md).
+> Status: **Iteration 1 implemented** (2026-06-27). Dunning is built end-to-end over seeded
+> data with Gemini drafting + real Gmail send; the other 4 workflows are scaffolded ("coming
+> soon"). Execution tracker: [../../plan/professional-accountant-mode.md](../../plan/professional-accountant-mode.md).
+> History: [BUILD-LOG.md](../../BUILD-LOG.md).
+>
+> **Shipped in iteration 1:**
+> - Gemini provider + per-mode `getProvider({ mode })` (`src/services/ai/provider.ts`); Personal stays on OpenAI.
+> - `invoices` + `invoice_reminder_logs` tables (migrations 035–036); demo seed via `POST /accountant/seed-demo`.
+> - `generateDunningEmail` (`ai.service.ts`) + `dunningReminder` prompt/schema/fallback.
+> - `dunning.service.ts` (shared) + `accountant.routes.ts` (`/api/v1/accountant/*`).
+> - `schedule.weekly` / `finance.invoice.overdue` triggers + seeded "Accountant — Dunning" workflow (037).
+> - App: `ModeContext` + animated mode toggle/transition, parallel `(work)` shell (Tasks/Mails/Settings)
+>   reusing `HomeTabBar` + `InterlinkWorkingModal`, invoice cards + approve/sent sheets, 5 workflow tiles.
 
 ## 0. Key decision — Gemini is the AI provider for Professional Mode
 

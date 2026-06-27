@@ -103,6 +103,22 @@ the only non-JWT routes — they authenticate via Google channel headers and the
 | GET | `/executions/:id` | Execution detail |
 | POST | `/actions` | Signed workflow action callback (e.g. from email links) |
 
+### `/api/v1/accountant` (Professional Mode — Accountant)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/invoices` | List invoices (optional `?status=open\|overdue\|reminded\|paid`) |
+| GET | `/invoices/:id` | Invoice detail |
+| POST | `/invoices/:id/send-reminder` | One-call dunning send (Gemini draft → Gmail → log → mark reminded) |
+| GET | `/invoices/:id/reminder-logs` | Per-invoice reminder send history |
+| POST | `/scan` | Mark overdue (open→overdue past due) + push-notify; weekly via QStash Schedule in prod |
+| POST | `/seed-demo` | Seed demo invoices for the user (idempotent; defaults client email to the user's own) |
+
+**Dunning send** mirrors `events/:id/send-decline-email`: synchronous, returns the sent email
+(`{ invoiceId, status, recipients, subject, body, messageId, reminderLogId, isAiFallback }`). The AI
+draft uses the **Professional-Mode provider (Gemini)**; set `PROFESSIONAL_AI_PROVIDER=demo` to run
+offline. Reminders address `client_email`; demo invoices use the caller's own email so sends are
+verifiable. See [doc/accountant-agent.md](doc/accountant-agent.md).
+
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.
 Not called directly — published to via `enqueueJob()`. See [CLAUDE.md](CLAUDE.md) for the retry contract.

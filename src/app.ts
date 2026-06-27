@@ -18,6 +18,7 @@ import googleRoutes from "./routes/google.routes";
 import remindersRoutes from "./routes/reminders.routes";
 import pushTokensRoutes from "./routes/pushTokens.routes";
 import workersRoutes from "./routes/workers.routes";
+import accountantRoutes from "./routes/accountant.routes";
 
 const app: Express = express();
 
@@ -63,6 +64,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/google", googleRoutes);
   app.use("/api/v1/reminders", remindersRoutes);
   app.use("/api/v1/push-tokens", pushTokensRoutes);
+  app.use("/api/v1/accountant", accountantRoutes);
   app.use("/api/v1/workers", workersRoutes);
 }
 

@@ -14,6 +14,9 @@ export const TriggerType = {
   CALENDAR_EVENT_UPSERTED: "calendar.event.upserted",
   CALENDAR_EVENT_DELETED: "calendar.event.deleted",
   CALENDAR_CONFLICT_DETECTED: "calendar.conflict.detected",
+  // ─── Professional Mode (Accountant) ───────────────────────────────────────
+  SCHEDULE_WEEKLY: "schedule.weekly",
+  FINANCE_INVOICE_OVERDUE: "finance.invoice.overdue",
 } as const;
 
 export type TriggerTypeValue = (typeof TriggerType)[keyof typeof TriggerType];
@@ -69,11 +72,39 @@ export const CalendarConflictDetectedSchema = z.object({
   observedAt: z.string(), // ISO-8601
 });
 
+/**
+ * Emitted by the weekly accountant scan (Professional Mode). Drives the seeded
+ * "Accountant — Dunning" workflow that notifies the user of overdue invoices.
+ */
+export const ScheduleWeeklySchema = z.object({
+  triggerType: z.literal(TriggerType.SCHEDULE_WEEKLY),
+  userId: z.string().uuid(),
+  /** Optional scope hint, e.g. "accountant.dunning". */
+  scope: z.string().optional(),
+  observedAt: z.string(), // ISO-8601
+});
+
+/** Emitted when an invoice transitions to overdue. */
+export const FinanceInvoiceOverdueSchema = z.object({
+  triggerType: z.literal(TriggerType.FINANCE_INVOICE_OVERDUE),
+  userId: z.string().uuid(),
+  invoice: z.object({
+    id: z.string().uuid(),
+    invoiceNumber: z.string(),
+    amountCents: z.number(),
+    currency: z.string(),
+    dueDate: z.string(),
+  }),
+  observedAt: z.string(), // ISO-8601
+});
+
 /** Discriminated union of all supported trigger payloads. */
 export const TriggerPayloadSchema = z.discriminatedUnion("triggerType", [
   CalendarEventUpsertedSchema,
   CalendarEventDeletedSchema,
   CalendarConflictDetectedSchema,
+  ScheduleWeeklySchema,
+  FinanceInvoiceOverdueSchema,
 ]);
 
 export type TriggerPayload = z.infer<typeof TriggerPayloadSchema>;
@@ -82,6 +113,8 @@ export type CalendarEventDeleted = z.infer<typeof CalendarEventDeletedSchema>;
 export type CalendarConflictDetected = z.infer<
   typeof CalendarConflictDetectedSchema
 >;
+export type ScheduleWeekly = z.infer<typeof ScheduleWeeklySchema>;
+export type FinanceInvoiceOverdue = z.infer<typeof FinanceInvoiceOverdueSchema>;
 
 // ─── Workflow definition shape (subset used for trigger evaluation) ────────
 
