@@ -5,10 +5,18 @@ the Gemini PRD §4.4 ("Financial Analysts & Accountants") in
 [../../docs/PRODUCT-VISION-AND-STATUS.md](../../docs/PRODUCT-VISION-AND-STATUS.md) and mapped onto
 the **existing** Interlink workflow engine so it can be built incrementally without a rewrite.
 
-> Status: **Iteration 1 implemented** (2026-06-27). Dunning is built end-to-end over seeded
-> data with Gemini drafting + real Gmail send; the other 4 workflows are scaffolded ("coming
-> soon"). Execution tracker: [../../plan/professional-accountant-mode.md](../../plan/professional-accountant-mode.md).
+> Status: **Iteration 2 implemented** (2026-06-29). Live Gemini (`gemini-2.5-flash`). Now built:
+> **Dunning v2** (history/relationship-aware drafts, AI escalation tone, preview→regenerate→edit→send,
+> bulk "remind all overdue"), **Expense Auditing** (Gemini flags duplicates / missing receipts /
+> policy / uncategorized, with approve/dismiss), **Flash Financial Reporting** (AR + cash summary +
+> insights, email-to-self), a cross-cutting **AI Insights** dashboard, and a conversational
+> **"Ask your AI accountant"** chat grounded in the user's data. Tax Doc Gathering & Regulatory
+> Auto-Fill remain scaffolded. Data still seeded (no external OAuth).
+> Trackers: [../../plan/professional-accountant-mode-iter2.md](../../plan/professional-accountant-mode-iter2.md)
+> (iter2), [../../plan/professional-accountant-mode.md](../../plan/professional-accountant-mode.md) (iter1).
 > History: [BUILD-LOG.md](../../BUILD-LOG.md).
+>
+> **Iteration 1** (2026-06-27): Dunning end-to-end (one-tap), parallel `(work)` shell, mode toggle.
 >
 > **Shipped in iteration 1:**
 > - Gemini provider + per-mode `getProvider({ mode })` (`src/services/ai/provider.ts`); Personal stays on OpenAI.

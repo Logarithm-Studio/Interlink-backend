@@ -28,6 +28,7 @@ export interface Invoice {
   status: InvoiceStatus;
   lastReminderAt: Date | null;
   reminderCount: number;
+  paidAt: Date | null;
   source: string;
   metadata: Record<string, unknown>;
   createdAt: Date;
@@ -60,6 +61,7 @@ interface InvoiceRow {
   status: InvoiceStatus;
   last_reminder_at: Date | null;
   reminder_count: number;
+  paid_at: Date | null;
   source: string;
   metadata: Record<string, unknown> | null;
   created_at: Date;
@@ -70,7 +72,7 @@ const INVOICE_COLUMNS = `
   id, user_id, invoice_number, client_name, client_email, amount_cents, currency,
   to_char(issue_date, 'YYYY-MM-DD') AS issue_date,
   to_char(due_date,   'YYYY-MM-DD') AS due_date,
-  status, last_reminder_at, reminder_count, source, metadata, created_at, updated_at
+  status, last_reminder_at, reminder_count, paid_at, source, metadata, created_at, updated_at
 `;
 
 function mapInvoice(r: InvoiceRow): Invoice {
@@ -87,6 +89,7 @@ function mapInvoice(r: InvoiceRow): Invoice {
     status: r.status,
     lastReminderAt: r.last_reminder_at,
     reminderCount: r.reminder_count,
+    paidAt: r.paid_at,
     source: r.source,
     metadata: r.metadata ?? {},
     createdAt: r.created_at,
@@ -254,28 +257,39 @@ export async function seedDemoInvoices(
   userId: string,
   clientEmail: string,
 ): Promise<number> {
-  // (number, client, amount_cents, issue offset days, due offset days, status)
-  const demo: [string, string, number, number, number, InvoiceStatus][] = [
-    ["INV-1001", "Acme Corp", 480000, -45, -15, "overdue"],
-    ["INV-1002", "Globex LLC", 125000, -38, -8, "overdue"],
-    ["INV-1003", "Initech", 92000, -60, -30, "overdue"],
-    ["INV-1004", "Umbrella Inc", 256000, -10, 5, "open"],
-    ["INV-1005", "Stark Industries", 740000, -5, 20, "open"],
-    ["INV-1006", "Wayne Enterprises", 310000, -90, -60, "paid"],
+  // (number, client, amount_cents, issueOffset, dueOffset, status, paidOffset|null)
+  // paidOffset (days from today) is set for `paid` rows — historical rows below
+  // establish each client's payment behaviour (Acme/Initech pay late; Globex/Stark on time).
+  const demo: [string, string, number, number, number, InvoiceStatus, number | null][] = [
+    // ── Current open / overdue book ──────────────────────────────────────────
+    ["INV-1001", "Acme Corp", 480000, -45, -15, "overdue", null],
+    ["INV-1002", "Globex LLC", 125000, -38, -8, "overdue", null],
+    ["INV-1003", "Initech", 92000, -60, -30, "overdue", null],
+    ["INV-1004", "Umbrella Inc", 256000, -10, 5, "open", null],
+    ["INV-1005", "Stark Industries", 740000, -5, 20, "open", null],
+    ["INV-1006", "Wayne Enterprises", 310000, -90, -60, "paid", -52],
+    // ── Paid history (relationship signal for AI insights + dunning tone) ─────
+    ["INV-0901", "Acme Corp", 300000, -120, -90, "paid", -68], // ~22 days late
+    ["INV-0902", "Acme Corp", 220000, -150, -120, "paid", -95], // ~25 days late
+    ["INV-0903", "Globex LLC", 80000, -130, -100, "paid", -101], // on time
+    ["INV-0904", "Initech", 110000, -140, -110, "paid", -75], // ~35 days late
+    ["INV-0905", "Stark Industries", 500000, -100, -70, "paid", -72], // on time
   ];
 
   let inserted = 0;
-  for (const [number, client, amount, issueOffset, dueOffset, status] of demo) {
+  for (const [number, client, amount, issueOffset, dueOffset, status, paidOffset] of demo) {
     const res = await query(
       `INSERT INTO invoices
          (user_id, invoice_number, client_name, client_email, amount_cents,
-          currency, issue_date, due_date, status, source)
+          currency, issue_date, due_date, status, source, paid_at)
        VALUES ($1, $2, $3, $4, $5, 'USD',
                CURRENT_DATE + ($6 || ' days')::interval,
                CURRENT_DATE + ($7 || ' days')::interval,
-               $8, 'demo')
+               $8, 'demo',
+               CASE WHEN $9::text IS NULL THEN NULL
+                    ELSE (CURRENT_DATE + ($9::text || ' days')::interval) END)
        ON CONFLICT (user_id, invoice_number) DO NOTHING`,
-      [userId, number, client, clientEmail, amount, issueOffset, dueOffset, status],
+      [userId, number, client, clientEmail, amount, issueOffset, dueOffset, status, paidOffset],
     );
     inserted += res.rowCount ?? 0;
   }

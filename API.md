@@ -106,18 +106,31 @@ the only non-JWT routes — they authenticate via Google channel headers and the
 ### `/api/v1/accountant` (Professional Mode — Accountant)
 | Method | Path | Purpose |
 |--------|------|---------|
+| GET | `/insights` | AI (Gemini) AR insights: prioritized, risk-scored collection plan + client risk notes |
 | GET | `/invoices` | List invoices (optional `?status=open\|overdue\|reminded\|paid`) |
 | GET | `/invoices/:id` | Invoice detail |
-| POST | `/invoices/:id/send-reminder` | One-call dunning send (Gemini draft → Gmail → log → mark reminded) |
+| POST | `/invoices/:id/preview-reminder` | Generate a draft **without sending** (`{ regenerate?, escalationTone? }`) |
+| POST | `/invoices/:id/send-reminder` | Dunning send; optional `{ subject, body }` = edited draft (skips AI) |
 | GET | `/invoices/:id/reminder-logs` | Per-invoice reminder send history |
+| POST | `/invoices/bulk-remind/preview` | Tailored drafts for overdue (or `{ invoiceIds }`) |
+| POST | `/invoices/bulk-remind/send` | Send a reviewed batch (`{ items:[{invoiceId,subject?,body?}] }`) |
+| GET | `/expenses` | List expenses (optional `?status=pending\|flagged\|approved\|dismissed`) |
+| GET | `/expenses/:id` | Expense detail |
+| POST | `/expenses/audit` | Run Gemini audit → flag anomalies (duplicate/missing-receipt/policy/uncategorized) |
+| POST | `/expenses/:id/resolve` | `{ action: 'approve' \| 'dismiss' }` |
+| GET | `/reports/flash` | Gemini flash financial report (AR + cash + insights + recommendations) |
+| POST | `/reports/flash/email` | Email the flash report to the user's own inbox |
+| POST | `/assistant/chat` | "Ask your AI accountant" — `{ message, history? }`, grounded in the user's data |
+| GET | `/assistant/history` | Recent assistant conversation |
 | POST | `/scan` | Mark overdue (open→overdue past due) + push-notify; weekly via QStash Schedule in prod |
-| POST | `/seed-demo` | Seed demo invoices for the user (idempotent; defaults client email to the user's own) |
+| POST | `/seed-demo` | Seed demo invoices (+ paid history) **and expenses with anomalies** for the user |
 
-**Dunning send** mirrors `events/:id/send-decline-email`: synchronous, returns the sent email
-(`{ invoiceId, status, recipients, subject, body, messageId, reminderLogId, isAiFallback }`). The AI
-draft uses the **Professional-Mode provider (Gemini)**; set `PROFESSIONAL_AI_PROVIDER=demo` to run
-offline. Reminders address `client_email`; demo invoices use the caller's own email so sends are
-verifiable. See [doc/accountant-agent.md](doc/accountant-agent.md).
+All AI uses the **Professional-Mode provider (Gemini, `gemini-2.5-flash`)**; set
+`PROFESSIONAL_AI_PROVIDER=demo` to run offline (deterministic fallbacks). Every generator is
+JSON-only, Zod-validated, and cached in `ai_outputs`. **Dunning send** mirrors
+`events/:id/send-decline-email` (synchronous, returns the sent email). Reminders address
+`client_email`; demo invoices use the caller's own email so sends are verifiable. See
+[doc/accountant-agent.md](doc/accountant-agent.md).
 
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.

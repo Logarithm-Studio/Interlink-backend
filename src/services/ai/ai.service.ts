@@ -39,6 +39,35 @@ import {
   DunningEmailContext,
   DunningEmailSchema,
 } from "./prompts/dunningReminder";
+import { z } from "zod";
+import {
+  ArInsights,
+  ArInsightsContext,
+  ArInsightsSchema,
+  buildArInsightsPrompt,
+  buildFallbackArInsights,
+} from "./prompts/arInsights";
+import {
+  ExpenseAudit,
+  ExpenseAuditContext,
+  ExpenseAuditSchema,
+  buildExpenseAuditPrompt,
+  buildFallbackExpenseAudit,
+} from "./prompts/expenseAudit";
+import {
+  FlashReport,
+  FlashReportContext,
+  FlashReportSchema,
+  buildFlashReportPrompt,
+  buildFallbackFlashReport,
+} from "./prompts/financialReport";
+import {
+  AssistantContext,
+  AssistantReply,
+  AssistantReplySchema,
+  buildAssistantPrompt,
+  buildFallbackAssistantReply,
+} from "./prompts/assistant";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -599,4 +628,250 @@ export async function generateDunningEmail(
   }).catch((e) => console.error("[ai.service] audit_log write failed:", e));
 
   return { aiOutputId, email, isFallback, model, provider, latencyMs };
+}
+
+// ─── Generic professional JSON generator (insights / audit / report / chat) ───
+
+export interface ProfessionalJsonResult<T> {
+  data: T;
+  isFallback: boolean;
+  model: string;
+  provider: string;
+  latencyMs: number;
+  aiOutputId: string;
+}
+
+interface ProfessionalJsonArgs<T> {
+  userId: string;
+  outputType: string; // ai_outputs.output_type (e.g. "ar_insights")
+  idempotencyKey: string; // distinct prefix per type (e.g. "ai:insights:...")
+  system: string;
+  user: string;
+  // Input typed as `unknown` so schemas with `.default()` (whose input differs
+  // from their output `T`) remain assignable.
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>;
+  fallback: () => T;
+  maxOutputTokens?: number;
+  rateLimitBucket: string;
+  auditAction: string;
+}
+
+/**
+ * Run a Professional-Mode (Gemini) structured-JSON generation with the same
+ * guarantees as the email generators: idempotent cache in `ai_outputs`
+ * (`execution_id NULL`), per-user rate limit, Zod validation, deterministic
+ * fallback, and an audit-log entry.
+ */
+async function runProfessionalJson<T>(
+  args: ProfessionalJsonArgs<T>,
+): Promise<ProfessionalJsonResult<T>> {
+  // Cache lookup by idempotency key + output type.
+  const cached = await query<{
+    id: string;
+    content: Record<string, unknown>;
+    model: string;
+    provider: string;
+    latency_ms: number;
+    is_fallback: boolean;
+  }>(
+    `SELECT id, content, model, provider, latency_ms, is_fallback
+       FROM ai_outputs
+      WHERE idempotency_key = $1 AND output_type = $2
+      LIMIT 1`,
+    [args.idempotencyKey, args.outputType],
+  );
+  if (cached.rows[0]) {
+    const parsed = args.schema.safeParse(cached.rows[0].content);
+    if (parsed.success) {
+      return {
+        data: parsed.data,
+        isFallback: cached.rows[0].is_fallback,
+        model: cached.rows[0].model ?? "",
+        provider: cached.rows[0].provider ?? "",
+        latencyMs: cached.rows[0].latency_ms ?? 0,
+        aiOutputId: cached.rows[0].id,
+      };
+    }
+  }
+
+  let data: T;
+  let model = "";
+  let provider = "";
+  let latencyMs = 0;
+  let isFallback = false;
+
+  const maxPerHour = parseInt(
+    process.env.AI_RATE_LIMIT_PER_USER_PER_HOUR ?? "20",
+    10,
+  );
+  const rlCheck = await checkWorkerRateLimit({
+    bucketName: args.rateLimitBucket,
+    identifier: args.userId,
+    maxRequests: maxPerHour,
+    windowMs: 60 * 60 * 1_000,
+  });
+
+  try {
+    if (!rlCheck.allowed) {
+      throw new Error(
+        `AI_RATE_LIMITED: per-user ceiling of ${maxPerHour} calls/hour exceeded`,
+      );
+    }
+    const aiProvider = getProvider({ mode: "professional" });
+    const result = await aiProvider.generateText(args.system, args.user, {
+      maxOutputTokens: args.maxOutputTokens ?? 4096,
+    });
+    model = result.model;
+    provider = result.provider;
+    latencyMs = result.latencyMs;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.raw);
+    } catch {
+      throw new Error(
+        `${args.outputType} provider returned non-JSON: ${result.raw.slice(0, 300)}`,
+      );
+    }
+    const validated = args.schema.safeParse(parsed);
+    if (!validated.success) {
+      throw new Error(
+        `${args.outputType} failed schema validation: ${validated.error.message}`,
+      );
+    }
+    data = validated.data;
+  } catch (err) {
+    console.error(
+      `[ai.service] ${args.outputType} failed — using fallback. Reason: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    data = args.fallback();
+    isFallback = true;
+    model = "n/a";
+    provider = process.env.PROFESSIONAL_AI_PROVIDER ?? "gemini";
+    latencyMs = 0;
+  }
+
+  const ins = await query<{ id: string }>(
+    `INSERT INTO ai_outputs
+          (execution_id, output_type, content, model, provider, latency_ms,
+           is_fallback, idempotency_key)
+     VALUES (NULL, $1, $2::jsonb, $3, $4, $5, $6, $7)
+     ON CONFLICT (idempotency_key)
+       WHERE idempotency_key IS NOT NULL
+     DO NOTHING
+     RETURNING id`,
+    [
+      args.outputType,
+      JSON.stringify(data),
+      model,
+      provider,
+      latencyMs,
+      isFallback,
+      args.idempotencyKey,
+    ],
+  );
+  let aiOutputId = ins.rows[0]?.id ?? "";
+  if (!aiOutputId) {
+    const existingRow = await query<{ id: string }>(
+      `SELECT id FROM ai_outputs WHERE idempotency_key = $1 LIMIT 1`,
+      [args.idempotencyKey],
+    );
+    aiOutputId = existingRow.rows[0]?.id ?? "";
+  }
+
+  recordAuditLog({
+    userId: args.userId,
+    actorType: "api",
+    action: args.auditAction,
+    entityType: "ai_output",
+    entityId: aiOutputId || undefined,
+    idempotencyKey: args.idempotencyKey,
+    payload: { isFallback, model, provider, latencyMs },
+  }).catch((e) => console.error("[ai.service] audit_log write failed:", e));
+
+  return { data, isFallback, model, provider, latencyMs, aiOutputId };
+}
+
+/** AR insights — prioritized, risk-scored collection plan. */
+export function generateArInsights(params: {
+  userId: string;
+  context: ArInsightsContext;
+  idempotencyKey: string;
+}): Promise<ProfessionalJsonResult<ArInsights>> {
+  const { system, user } = buildArInsightsPrompt(params.context);
+  return runProfessionalJson<ArInsights>({
+    userId: params.userId,
+    outputType: "ar_insights",
+    idempotencyKey: params.idempotencyKey,
+    system,
+    user,
+    schema: ArInsightsSchema,
+    fallback: () => buildFallbackArInsights(params.context),
+    maxOutputTokens: 4096,
+    rateLimitBucket: "ai-ar-insights",
+    auditAction: "ai.ar_insights.generate",
+  });
+}
+
+/** Expense audit — per-expense findings with reasoning. */
+export function generateExpenseAudit(params: {
+  userId: string;
+  context: ExpenseAuditContext;
+  idempotencyKey: string;
+}): Promise<ProfessionalJsonResult<ExpenseAudit>> {
+  const { system, user } = buildExpenseAuditPrompt(params.context);
+  return runProfessionalJson<ExpenseAudit>({
+    userId: params.userId,
+    outputType: "expense_audit",
+    idempotencyKey: params.idempotencyKey,
+    system,
+    user,
+    schema: ExpenseAuditSchema,
+    fallback: () => buildFallbackExpenseAudit(params.context),
+    maxOutputTokens: 4096,
+    rateLimitBucket: "ai-expense-audit",
+    auditAction: "ai.expense_audit.generate",
+  });
+}
+
+/** Flash financial report. */
+export function generateFlashReport(params: {
+  userId: string;
+  context: FlashReportContext;
+  idempotencyKey: string;
+}): Promise<ProfessionalJsonResult<FlashReport>> {
+  const { system, user } = buildFlashReportPrompt(params.context);
+  return runProfessionalJson<FlashReport>({
+    userId: params.userId,
+    outputType: "flash_report",
+    idempotencyKey: params.idempotencyKey,
+    system,
+    user,
+    schema: FlashReportSchema,
+    fallback: () => buildFallbackFlashReport(params.context),
+    maxOutputTokens: 2048,
+    rateLimitBucket: "ai-flash-report",
+    auditAction: "ai.flash_report.generate",
+  });
+}
+
+/** Conversational assistant reply grounded in the user's AR/expense snapshot. */
+export function generateAssistantReply(params: {
+  userId: string;
+  context: AssistantContext;
+  idempotencyKey: string;
+}): Promise<ProfessionalJsonResult<AssistantReply>> {
+  const { system, user } = buildAssistantPrompt(params.context);
+  return runProfessionalJson<AssistantReply>({
+    userId: params.userId,
+    outputType: "assistant_reply",
+    idempotencyKey: params.idempotencyKey,
+    system,
+    user,
+    schema: AssistantReplySchema,
+    fallback: () => buildFallbackAssistantReply(),
+    maxOutputTokens: 1024,
+    rateLimitBucket: "ai-assistant",
+    auditAction: "ai.assistant.reply",
+  });
 }

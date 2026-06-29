@@ -20,6 +20,8 @@ export type DunningEmail = z.infer<typeof DunningEmailSchema>;
 
 // ─── Prompt context ───────────────────────────────────────────────────────────
 
+export type EscalationTone = "friendly" | "firm" | "final";
+
 export interface DunningEmailContext {
   clientName: string;
   invoiceNumber: string;
@@ -31,16 +33,30 @@ export interface DunningEmailContext {
   reminderCount: number;
   senderName: string;
   companyName?: string;
+  /** Explicit tone override (e.g. chosen by AR insights). Falls back to reminderCount. */
+  escalationTone?: EscalationTone;
+  /** Relationship signal: how many days late this client typically pays. */
+  avgDaysLatePaid?: number;
+  /** How many invoices this client has paid historically. */
+  priorPaidCount?: number;
 }
 
-function escalationGuidance(reminderCount: number): string {
-  if (reminderCount <= 0)
-    return "This is the FIRST reminder — warm, friendly, assume good faith (it may be an oversight).";
-  if (reminderCount === 1)
-    return "This is a SECOND reminder — still polite but a little more direct about the outstanding balance.";
-  if (reminderCount === 2)
-    return "This is a THIRD reminder — firm and clear that payment is now significantly overdue.";
-  return "This is a FINAL notice — professional but firm, noting that this is the last reminder before escalation.";
+function toneGuidance(tone: EscalationTone): string {
+  switch (tone) {
+    case "friendly":
+      return "Tone: warm and friendly — assume good faith (it may be an oversight).";
+    case "firm":
+      return "Tone: polite but firm and direct that payment is now overdue.";
+    case "final":
+      return "Tone: professional but firm FINAL notice — this is the last reminder before escalation.";
+  }
+}
+
+function resolveTone(ctx: DunningEmailContext): EscalationTone {
+  if (ctx.escalationTone) return ctx.escalationTone;
+  if (ctx.reminderCount >= 2 || ctx.daysOverdue > 30) return "final";
+  if (ctx.reminderCount === 1 || ctx.daysOverdue > 14) return "firm";
+  return "friendly";
 }
 
 /**
@@ -62,9 +78,15 @@ export function buildDunningPrompt(ctx: DunningEmailContext): {
     "- Do not include any URLs or attachments.",
     "- Plain text only (no markdown, no HTML).",
     `- Sign the email as "${signer}".`,
-    `- Tone: ${escalationGuidance(ctx.reminderCount)}`,
+    `- ${toneGuidance(resolveTone(ctx))}`,
+    "- Do NOT mention the client's payment history explicitly; only let it inform the tone.",
     'Return ONLY a JSON object: {"subject": string, "body": string}.',
   ].join("\n");
+
+  const historyLine =
+    ctx.priorPaidCount && ctx.priorPaidCount > 0
+      ? `- Client history (for tone only): paid ${ctx.priorPaidCount} prior invoice(s), typically ~${ctx.avgDaysLatePaid ?? 0} days late.`
+      : "";
 
   const user = [
     "Draft a payment reminder email with these facts:",
@@ -73,8 +95,12 @@ export function buildDunningPrompt(ctx: DunningEmailContext): {
     `- Amount due: ${ctx.amountFormatted} ${ctx.currency}`,
     `- Due date: ${ctx.dueDateHuman}`,
     `- Days overdue: ${ctx.daysOverdue}`,
+    `- This is reminder #${ctx.reminderCount + 1}.`,
+    historyLine,
     `- Sender: ${signer}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return { system, user };
 }

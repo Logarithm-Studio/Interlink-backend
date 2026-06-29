@@ -44,6 +44,16 @@ export interface AIGenerationResult {
   provider: string;
 }
 
+export interface AIGenerateOptions {
+  /**
+   * Provider-native structured-output schema (JSON Schema subset). Gemini maps
+   * it to `generationConfig.responseSchema`. Optional — Zod still validates.
+   */
+  responseSchema?: Record<string, unknown>;
+  /** Max output tokens (default 1024). Insights/reports need more (e.g. 4096). */
+  maxOutputTokens?: number;
+}
+
 export interface AIProvider {
   readonly name: string;
   /**
@@ -51,12 +61,14 @@ export interface AIProvider {
    *
    * @param systemPrompt  Instruction block (schema description, constraints).
    * @param userPrompt    Per-call context (event data, conflict details).
+   * @param opts          Optional structured-output schema + token budget.
    * @returns `AIGenerationResult` with raw JSON string.
    * @throws  On timeout, rate-limit, or provider error — caller handles fallback.
    */
   generateText(
     systemPrompt: string,
     userPrompt: string,
+    opts?: AIGenerateOptions,
   ): Promise<AIGenerationResult>;
 }
 
@@ -98,6 +110,7 @@ class OpenAIProvider implements AIProvider {
   async generateText(
     systemPrompt: string,
     userPrompt: string,
+    opts?: AIGenerateOptions,
   ): Promise<AIGenerationResult> {
     const start = Date.now();
 
@@ -110,7 +123,7 @@ class OpenAIProvider implements AIProvider {
         ],
         response_format: { type: "json_object" },
         temperature: 0,
-        max_tokens: 1024,
+        max_tokens: opts?.maxOutputTokens ?? 1024,
       },
       {
         timeout: 30_000, // 30 s hard timeout
@@ -144,6 +157,7 @@ class GeminiProvider implements AIProvider {
   async generateText(
     systemPrompt: string,
     userPrompt: string,
+    opts?: AIGenerateOptions,
   ): Promise<AIGenerationResult> {
     const start = Date.now();
 
@@ -166,7 +180,10 @@ class GeminiProvider implements AIProvider {
           generationConfig: {
             responseMimeType: "application/json",
             temperature: 0,
-            maxOutputTokens: 1024,
+            maxOutputTokens: opts?.maxOutputTokens ?? 1024,
+            ...(opts?.responseSchema
+              ? { responseSchema: opts.responseSchema }
+              : {}),
           },
         }),
       });
