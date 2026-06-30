@@ -67,11 +67,20 @@ export function errorHandler(
     return;
   }
 
-  // Unknown / unexpected error
+  // Unknown / unexpected error. Log with full context (stack + request id) and
+  // surface the underlying message so failures are debuggable instead of an
+  // opaque "Internal server error".
   const log = req.log ?? logger;
-  log.error("Unhandled error", err);
+  log.error("Unhandled error", {
+    message: err?.message,
+    stack: err?.stack,
+    name: err?.name,
+    path: req.originalUrl,
+    method: req.method,
+  });
   res.status(500).json({
     error: "Internal server error",
+    detail: err?.message ?? String(err),
     statusCode: 500,
   });
 }

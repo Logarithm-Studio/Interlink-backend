@@ -23,7 +23,10 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  return process.env.SPOTIFY_REDIRECT_URI ?? `${process.env.API_BASE_URL}/api/v1/spotify/auth/callback`;
+  // Mobile OAuth: the provider redirects back to the app's custom scheme; the
+  // app parses the `code` + `state` and POSTs them to /auth/callback. Override
+  // with SPOTIFY_REDIRECT_URI (must match what's registered in the Spotify app).
+  return process.env.SPOTIFY_REDIRECT_URI ?? "interlinkapp://oauth/spotify";
 }
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────

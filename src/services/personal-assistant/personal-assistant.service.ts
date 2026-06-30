@@ -8,7 +8,28 @@
 
 import { randomUUID } from "crypto";
 import { query } from "../../config/db";
-import { geminiGenerateContent, type GeminiPart, type GeminiToolFunction } from "../ai/geminiClient";
+import { logger } from "../../observability/logger";
+import {
+  geminiGenerateContent,
+  isGeminiLive,
+  type GeminiPart,
+  type GeminiToolFunction,
+} from "../ai/geminiClient";
+
+// Integration services used by executeAction (function dispatch).
+import {
+  resumePlayback,
+  pausePlayback,
+  skipToNext,
+  search as spotifySearch,
+  playContext,
+  playTrack,
+} from "../spotify/spotify.service";
+import { getCurrentWeather } from "../weather/weather.service";
+import { getDailySummary } from "../fitness/fitness.service";
+import { getTaskLists, getTasksInList, createTask as createGoogleTask } from "../tasks/tasks.service";
+import { createTask as createTodoistTask } from "../todoist/todoist.service";
+import { getUserEvents } from "../events.service";
 
 // ─── Profession-aware system prompts ─────────────────────────────────────────
 
@@ -186,11 +207,154 @@ export interface PersonalChatResult {
 // ─── Get persona for user ─────────────────────────────────────────────────────
 
 async function getPersonalPersona(userId: string): Promise<string> {
-  const res = await query<{ persona: string }>(
-    `SELECT persona FROM profession_profiles WHERE user_id = $1 AND mode = 'personal'`,
-    [userId],
-  );
-  return res.rows[0]?.persona ?? "general";
+  try {
+    const res = await query<{ persona: string }>(
+      `SELECT persona FROM profession_profiles WHERE user_id = $1 AND mode = 'personal'`,
+      [userId],
+    );
+    return res.rows[0]?.persona ?? "general";
+  } catch (err) {
+    logger.warn("[personal-assistant] getPersonalPersona failed, defaulting to general", { err: String(err) });
+    return "general";
+  }
+}
+
+async function persistMessage(userId: string, role: "user" | "assistant", content: string): Promise<void> {
+  if (!content) return;
+  try {
+    await query(
+      `INSERT INTO personal_chat_messages (user_id, role, content) VALUES ($1, $2, $3)`,
+      [userId, role, content],
+    );
+  } catch (err) {
+    logger.warn("[personal-assistant] failed to persist chat message", { err: String(err) });
+  }
+}
+
+// ─── Action execution (function dispatch) ──────────────────────────────────────
+
+export interface ExecuteContext {
+  /** Caller's current coordinates, used by location-aware actions (weather). */
+  lat?: number;
+  lon?: number;
+}
+
+export interface ExecuteResult {
+  ok: boolean;
+  message: string;
+  data?: unknown;
+}
+
+/**
+ * Execute a single personal-assistant action. Used both for confirmed write
+ * actions (via /execute) and for auto-running read-only actions inside command().
+ * Always resolves (never throws) so the assistant can report failures cleanly.
+ */
+export async function executeAction(
+  userId: string,
+  name: string,
+  args: Record<string, unknown> = {},
+  ctx: ExecuteContext = {},
+): Promise<ExecuteResult> {
+  try {
+    switch (name) {
+      case "play_spotify": {
+        if (args.contextUri) await playContext(userId, String(args.contextUri));
+        else await resumePlayback(userId);
+        return { ok: true, message: "Playing on Spotify." };
+      }
+      case "search_and_play_spotify": {
+        const q = String(args.query ?? "");
+        const type = String(args.type ?? "track,playlist");
+        const results = await spotifySearch(userId, q, type);
+        const uri = results.playlists[0]?.uri ?? results.tracks[0]?.uri;
+        if (!uri) return { ok: false, message: `No Spotify results for "${q}".` };
+        if (uri.includes(":playlist:") || uri.includes(":album:")) await playContext(userId, uri);
+        else await playTrack(userId, uri);
+        return { ok: true, message: `Playing "${q}" on Spotify.` };
+      }
+      case "pause_spotify":
+        await pausePlayback(userId);
+        return { ok: true, message: "Playback paused." };
+      case "skip_spotify":
+        await skipToNext(userId);
+        return { ok: true, message: "Skipped to the next track." };
+      case "get_weather": {
+        if (ctx.lat == null || ctx.lon == null) {
+          return { ok: false, message: "I need your location to check the weather. Enable location access and try again." };
+        }
+        const w = await getCurrentWeather(ctx.lat, ctx.lon);
+        return {
+          ok: true,
+          message: `It's currently ${w.temp}°C and ${w.description}${w.isRain ? " — bring an umbrella" : ""}.`,
+          data: w,
+        };
+      }
+      case "get_fitness_summary": {
+        const s = await getDailySummary(userId);
+        return {
+          ok: true,
+          message: `Today you've taken ${s.steps.toLocaleString()} steps, burned ${s.caloriesBurned} calories, and logged ${s.activeMinutes} active minutes.`,
+          data: s,
+        };
+      }
+      case "get_calendar_events": {
+        const days = args.days ? Number(args.days) : 7;
+        const from = new Date().toISOString();
+        const to = new Date(Date.now() + days * 86_400_000).toISOString();
+        const events = await getUserEvents(userId, from, to);
+        if (events.length === 0) {
+          return { ok: true, message: `You have no events in the next ${days} day${days === 1 ? "" : "s"}.`, data: { count: 0 } };
+        }
+        const lines = events.slice(0, 5).map((e) => {
+          const when = e.startTime.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+          return `• ${e.title} — ${when}`;
+        });
+        return {
+          ok: true,
+          message: `You have ${events.length} upcoming event${events.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
+          data: { count: events.length },
+        };
+      }
+      case "create_google_task": {
+        const lists = await getTaskLists(userId);
+        const listId = lists[0]?.id;
+        if (!listId) return { ok: false, message: "No Google Task lists found. Connect Google Tasks first." };
+        const task = await createGoogleTask(userId, listId, {
+          title: String(args.title ?? "New task"),
+          notes: args.notes ? String(args.notes) : undefined,
+          due: args.due ? String(args.due) : undefined,
+        });
+        return { ok: true, message: `Task created: "${task.title}".`, data: task };
+      }
+      case "list_google_tasks": {
+        const lists = await getTaskLists(userId);
+        const listId = lists[0]?.id;
+        if (!listId) return { ok: false, message: "No Google Task lists found. Connect Google Tasks first." };
+        const tasks = await getTasksInList(userId, listId);
+        if (tasks.length === 0) return { ok: true, message: "You're all caught up — no pending tasks.", data: [] };
+        const lines = tasks.slice(0, 8).map((t) => `• ${t.title}`);
+        return { ok: true, message: `You have ${tasks.length} pending task${tasks.length === 1 ? "" : "s"}:\n${lines.join("\n")}`, data: tasks };
+      }
+      case "create_todoist_task": {
+        const task = await createTodoistTask(userId, {
+          content: String(args.content ?? "New task"),
+          dueString: args.dueString ? String(args.dueString) : undefined,
+          priority: args.priority ? Number(args.priority) : undefined,
+        });
+        return { ok: true, message: `Added to Todoist: "${task.content}".`, data: task };
+      }
+      case "create_notion_note":
+        return { ok: false, message: "To save a Notion note, open Connected Accounts and pick a parent page first." };
+      case "get_gmail_inbox":
+        return { ok: true, message: "Opening your Gmail inbox.", data: { action: "open_inbox" } };
+      default:
+        return { ok: false, message: `Action "${name}" isn't supported yet.` };
+    }
+  } catch (err) {
+    logger.error("[personal-assistant] executeAction failed", { name, err: String(err) });
+    return { ok: false, message: err instanceof Error ? err.message : "That action failed." };
+  }
 }
 
 // ─── Command (function-calling) ───────────────────────────────────────────────
@@ -213,21 +377,38 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
 
 const READ_ONLY_ACTIONS = new Set(["get_weather", "get_fitness_summary", "get_gmail_inbox", "get_calendar_events", "list_google_tasks"]);
 
+export interface CommandOptions {
+  image?: { mimeType: string; data: string };
+  /** Caller's coordinates for location-aware tools (weather). */
+  lat?: number;
+  lon?: number;
+}
+
 export async function command(
   userId: string,
   message: string,
-  image?: { mimeType: string; data: string },
+  opts: CommandOptions = {},
 ): Promise<PersonalCommandResult> {
+  // Fail fast with a clear, actionable message when the AI isn't configured —
+  // instead of a silent generic "trouble connecting".
+  if (!isGeminiLive()) {
+    const answer = "The AI assistant isn't configured yet. Add a GEMINI_API_KEY on the server to enable it.";
+    await persistMessage(userId, "user", message);
+    await persistMessage(userId, "assistant", answer);
+    return { answer, action: null, isLive: false };
+  }
+
   const persona = await getPersonalPersona(userId);
   const systemPrompt = buildSystemPrompt(persona);
 
   // Multimodal: when an image is attached, pass it alongside the text prompt as
   // an inline_data part so Gemini can reason about it (receipts, screenshots, …).
-  const parts: GeminiPart[] = image
-    ? [{ text: message }, { inlineData: { mimeType: image.mimeType, data: image.data } }]
+  const parts: GeminiPart[] = opts.image
+    ? [{ text: message }, { inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } }]
     : [{ text: message }];
 
-  let isLive = false;
+  await persistMessage(userId, "user", message);
+
   try {
     const result = await geminiGenerateContent({
       system: systemPrompt,
@@ -236,31 +417,35 @@ export async function command(
       tools: PERSONAL_TOOLS,
     });
 
-    isLive = true;
-
     if (result.functionCall) {
       const { name, args } = result.functionCall;
-      const needsConfirm = !READ_ONLY_ACTIONS.has(name);
+
+      // Read-only actions run immediately and answer conversationally — no
+      // confirmation round-trip — so the assistant feels like a real chat.
+      if (READ_ONLY_ACTIONS.has(name)) {
+        const exec = await executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon });
+        await persistMessage(userId, "assistant", exec.message);
+        return { answer: exec.message, action: null, isLive: true };
+      }
+
+      // Write actions are returned for user confirmation before executing.
+      const summary = summarizeAction(name, args);
+      await persistMessage(userId, "assistant", summary);
       return {
         answer: result.raw?.trim() || null,
-        action: {
-          id: randomUUID(),
-          name,
-          args,
-          summary: summarizeAction(name, args),
-          needsConfirm,
-        },
-        isLive,
+        action: { id: randomUUID(), name, args, summary, needsConfirm: true },
+        isLive: true,
       };
     }
 
-    return { answer: result.raw?.trim() || "I'm not sure how to help with that.", action: null, isLive };
-  } catch {
-    return {
-      answer: "I'm having trouble connecting right now. Please try again.",
-      action: null,
-      isLive: false,
-    };
+    const answer = result.raw?.trim() || "I'm not sure how to help with that.";
+    await persistMessage(userId, "assistant", answer);
+    return { answer, action: null, isLive: true };
+  } catch (err) {
+    logger.error("[personal-assistant] command failed", { err: String(err) });
+    const answer = "I ran into a problem reaching the AI service. Please try again in a moment.";
+    await persistMessage(userId, "assistant", answer);
+    return { answer, action: null, isLive: false };
   }
 }
 
@@ -281,10 +466,14 @@ export async function chat(
 
   const userPrompt = historyText ? `${historyText}\nUser: ${message}` : message;
 
-  await query(
-    `INSERT INTO personal_chat_messages (user_id, role, content) VALUES ($1, 'user', $2)`,
-    [userId, message],
-  ).catch(() => {});
+  if (!isGeminiLive()) {
+    const answer = "The AI assistant isn't configured yet. Add a GEMINI_API_KEY on the server to enable it.";
+    await persistMessage(userId, "user", message);
+    await persistMessage(userId, "assistant", answer);
+    return { answer, isFallback: true };
+  }
+
+  await persistMessage(userId, "user", message);
 
   try {
     const result = await geminiGenerateContent({
@@ -295,22 +484,25 @@ export async function chat(
     });
 
     const answer = result.raw?.trim() || "I'm not sure about that.";
-
-    await query(
-      `INSERT INTO personal_chat_messages (user_id, role, content) VALUES ($1, 'assistant', $2)`,
-      [userId, answer],
-    ).catch(() => {});
-
+    await persistMessage(userId, "assistant", answer);
     return { answer, isFallback: false };
-  } catch {
-    return { answer: "I'm having trouble connecting right now. Please try again.", isFallback: true };
+  } catch (err) {
+    logger.error("[personal-assistant] chat failed", { err: String(err) });
+    const answer = "I ran into a problem reaching the AI service. Please try again in a moment.";
+    await persistMessage(userId, "assistant", answer);
+    return { answer, isFallback: true };
   }
 }
 
 export async function getChatHistory(userId: string): Promise<PersonalChatTurn[]> {
-  const res = await query<{ role: "user" | "assistant"; content: string }>(
-    `SELECT role, content FROM personal_chat_messages WHERE user_id = $1 ORDER BY created_at ASC LIMIT 50`,
-    [userId],
-  ).catch(() => ({ rows: [] }));
-  return res.rows.map((r) => ({ role: r.role, content: r.content }));
+  try {
+    const res = await query<{ role: "user" | "assistant"; content: string }>(
+      `SELECT role, content FROM personal_chat_messages WHERE user_id = $1 ORDER BY created_at ASC LIMIT 50`,
+      [userId],
+    );
+    return res.rows.map((r) => ({ role: r.role, content: r.content }));
+  } catch (err) {
+    logger.warn("[personal-assistant] getChatHistory failed", { err: String(err) });
+    return [];
+  }
 }

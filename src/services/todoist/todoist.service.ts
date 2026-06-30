@@ -20,7 +20,9 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  return process.env.TODOIST_REDIRECT_URI ?? `${process.env.API_BASE_URL}/api/v1/todoist/auth/callback`;
+  // Mobile OAuth: redirect to the app's custom scheme; the app completes the
+  // exchange via /auth/callback. Override with TODOIST_REDIRECT_URI.
+  return process.env.TODOIST_REDIRECT_URI ?? "interlinkapp://oauth/todoist";
 }
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────
