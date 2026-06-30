@@ -262,10 +262,25 @@ function resolveProvider(mode: AIMode): AIProvider {
   const providerName = (process.env.AI_PROVIDER ?? "openai")
     .toLowerCase()
     .trim();
-  const apiKey = process.env.AI_API_KEY;
-  const model = process.env.AI_MODEL ?? "gpt-4o";
 
   if (providerName === "demo") return new DemoProvider();
+
+  // Gemini for personal mode (PRD: "Gemini as universal brain").
+  // Set AI_PROVIDER=gemini in .env to enable; GEMINI_API_KEY must be set.
+  if (providerName === "gemini") {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+    if (!apiKey) {
+      throw new Error(
+        "GEMINI_API_KEY environment variable is required when AI_PROVIDER=gemini. " +
+          "Add it to your .env file (or set AI_PROVIDER=openai).",
+      );
+    }
+    return new GeminiProvider(apiKey, model);
+  }
+
+  const apiKey = process.env.AI_API_KEY;
+  const model = process.env.AI_MODEL ?? "gpt-4o";
 
   if (!apiKey) {
     throw new Error(
@@ -277,7 +292,7 @@ function resolveProvider(mode: AIMode): AIProvider {
   if (providerName === "openai") return new OpenAIProvider(apiKey, model);
 
   throw new Error(
-    `Unsupported AI_PROVIDER="${providerName}". Supported values: openai, demo`,
+    `Unsupported AI_PROVIDER="${providerName}". Supported values: openai, gemini, demo`,
   );
 }
 

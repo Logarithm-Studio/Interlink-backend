@@ -19,6 +19,19 @@ import remindersRoutes from "./routes/reminders.routes";
 import pushTokensRoutes from "./routes/pushTokens.routes";
 import workersRoutes from "./routes/workers.routes";
 import accountantRoutes from "./routes/accountant.routes";
+// Personal mode integrations
+import personaRoutes from "./routes/persona.routes";
+import spotifyRoutes from "./routes/spotify.routes";
+import weatherRoutes from "./routes/weather.routes";
+import tasksRoutes from "./routes/tasks.routes";
+import todoistRoutes from "./routes/todoist.routes";
+import notionRoutes from "./routes/notion.routes";
+import fitnessRoutes from "./routes/fitness.routes";
+import personalAssistantRoutes from "./routes/personal-assistant.routes";
+// Professional mode personas
+import pmRoutes from "./routes/pm.routes";
+import hrRoutes from "./routes/hr.routes";
+import professionalStubsRoutes from "./routes/professional-stubs.routes";
 
 const app: Express = express();
 
@@ -66,6 +79,19 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/push-tokens", pushTokensRoutes);
   app.use("/api/v1/accountant", accountantRoutes);
   app.use("/api/v1/workers", workersRoutes);
+  // Personal mode
+  app.use("/api/v1", personaRoutes);
+  app.use("/api/v1/spotify", spotifyRoutes);
+  app.use("/api/v1/weather", weatherRoutes);
+  app.use("/api/v1/tasks", tasksRoutes);
+  app.use("/api/v1/todoist", todoistRoutes);
+  app.use("/api/v1/notion", notionRoutes);
+  app.use("/api/v1/fitness", fitnessRoutes);
+  app.use("/api/v1/personal-assistant", personalAssistantRoutes);
+  // Professional mode
+  app.use("/api/v1/pm", pmRoutes);
+  app.use("/api/v1/hr", hrRoutes);
+  app.use("/api/v1/professional", professionalStubsRoutes);
 }
 
 function setupErrorHandling(app: Express) {

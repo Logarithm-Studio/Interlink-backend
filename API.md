@@ -132,6 +132,29 @@ JSON-only, Zod-validated, and cached in `ai_outputs`. **Dunning send** mirrors
 `client_email`; demo invoices use the caller's own email so sends are verifiable. See
 [doc/accountant-agent.md](doc/accountant-agent.md).
 
+**Iteration 3 — autonomy, agentic command center, tax, receipt vision:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/automations` | Automation rules (autonomy + guardrails) + per-client settings |
+| PUT | `/automations/:type` | Set `{ enabled?, autonomy:'off'\|'suggest'\|'auto', config?, guardrails? }` |
+| POST | `/automations/run-now` | Run the caller's due automations now (testing) |
+| PUT | `/clients/:clientName/dunning` | `{ paused }` — pause/resume automated dunning for a client |
+| GET | `/activity` | Agent activity feed (incl. `suggested` items awaiting approval) |
+| POST | `/activity/:id/approve` | Execute a suggested item |
+| POST | `/activity/:id/dismiss` | Dismiss a suggested item |
+| POST | `/assistant/command` | Agentic command (function-calling) → answer and/or a `pendingAction` |
+| POST | `/assistant/execute` | Execute a user-confirmed action (`{ name, args }`) |
+| POST | `/assistant/transcribe` | Voice → text (`{ audioBase64, mimeType? }` → Gemini audio) |
+| GET | `/tax/contractors` | Contractors + `needsW9` flag |
+| POST | `/tax/contractors/:id/request-w9` | AI-draft + send a W-9 request; mark `requested` |
+| POST | `/tax/contractors/:id/status` | `{ status:'missing'\|'requested'\|'received'\|'filed' }` |
+| POST | `/expenses/scan-receipt` | Gemini-vision receipt OCR (`{ imageBase64 }`) → pending expense |
+
+Internal: `POST /api/v1/workers/accountant-automations` (QStash-signed) runs the daily global
+autonomy tick. Autonomy honors guardrails (daily send cap, business-hours, per-client opt-out,
+escalation capped at "final"); `suggest` queues approvals, `auto` acts directly.
+
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.
 Not called directly — published to via `enqueueJob()`. See [CLAUDE.md](CLAUDE.md) for the retry contract.

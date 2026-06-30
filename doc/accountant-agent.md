@@ -5,6 +5,19 @@ the Gemini PRD §4.4 ("Financial Analysts & Accountants") in
 [../../docs/PRODUCT-VISION-AND-STATUS.md](../../docs/PRODUCT-VISION-AND-STATUS.md) and mapped onto
 the **existing** Interlink workflow engine so it can be built incrementally without a rewrite.
 
+> Status: **Iteration 3 implemented** (2026-06-30) — AI-native & autonomous. Added: an **autonomy
+> engine** (per-automation Off/Suggest/Auto + guardrails: daily cap, business-hours, per-client opt-out,
+> escalation cap) with **scheduled autonomous dunning sequences**, auto-audit, and scheduled flash report;
+> an **Agent Activity feed** with one-tap approvals; an **agentic command center** (Gemini
+> function-calling — the assistant plans + executes confirmed actions) with **voice input** (Gemini audio
+> transcription); **Tax Document Gathering** (contractors → AI W-9 requests); and **receipt-photo OCR**
+> (Gemini vision → auto-created expense). UI: an agent-presence dashboard hero + command bar, and new
+> hidden `(work)` screens (activity, automations, tax) — all reusing the design system. Multimodal +
+> function-calling live in a standalone `src/services/ai/geminiClient.ts` (the per-mode `provider.ts` is
+> unchanged). Trackers: [../../plan/professional-accountant-mode-iter3.md](../../plan/professional-accountant-mode-iter3.md).
+>
+> ---
+>
 > Status: **Iteration 2 implemented** (2026-06-29). Live Gemini (`gemini-2.5-flash`). Now built:
 > **Dunning v2** (history/relationship-aware drafts, AI escalation tone, preview→regenerate→edit→send,
 > bulk "remind all overdue"), **Expense Auditing** (Gemini flags duplicates / missing receipts /

@@ -18,6 +18,7 @@ import { processConflictsJob } from "../workers/processors/conflicts.processor";
 import { processNotificationsJob } from "../workers/processors/notifications.processor";
 import { processEmailJob } from "../workers/processors/email.processor";
 import { processDlqJob } from "../workers/processors/dlq.processor";
+import { runDueAutomations } from "../services/accountant/automationRunner.service";
 
 const router = Router();
 
@@ -76,6 +77,18 @@ router.post("/email", (req, res) => {
 
 router.post("/dlq", (req, res) => {
   void runWorker(res, processDlqJob, req.body, getJobId(req));
+});
+
+// Professional Mode (Accountant) — scheduled autonomy tick (QStash Schedule, daily).
+router.post("/accountant-automations", (req, res) => {
+  void runWorker(
+    res,
+    async () => {
+      await runDueAutomations();
+    },
+    req.body,
+    getJobId(req),
+  );
 });
 
 export default router;

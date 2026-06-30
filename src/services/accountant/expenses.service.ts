@@ -207,6 +207,46 @@ export async function runExpenseAudit(userId: string): Promise<ExpenseAuditResul
   };
 }
 
+// ─── Create from a scanned receipt (Gemini vision) ────────────────────────────
+
+export async function createExpenseFromReceipt(
+  userId: string,
+  receipt: {
+    merchant: string;
+    amountCents: number;
+    currency: string;
+    txnDate: string; // YYYY-MM-DD or ""
+    category: string | null;
+  },
+): Promise<Expense> {
+  const merchant = receipt.merchant.trim() || "Scanned receipt";
+  const res = await query<{ id: string }>(
+    `INSERT INTO expenses
+       (user_id, merchant, amount_cents, currency, txn_date, category,
+        has_receipt, status, source)
+     VALUES ($1, $2, $3, $4,
+             COALESCE(NULLIF($5, '')::date, CURRENT_DATE),
+             $6, true, 'pending', 'receipt_scan')
+     ON CONFLICT (user_id, merchant, amount_cents, txn_date) DO NOTHING
+     RETURNING id`,
+    [userId, merchant, receipt.amountCents, receipt.currency || "USD", receipt.txnDate, receipt.category],
+  );
+
+  let id = res.rows[0]?.id;
+  if (!id) {
+    const existing = await query<{ id: string }>(
+      `SELECT id FROM expenses
+        WHERE user_id = $1 AND merchant = $2 AND amount_cents = $3
+        ORDER BY created_at DESC LIMIT 1`,
+      [userId, merchant, receipt.amountCents],
+    );
+    id = existing.rows[0]?.id;
+  }
+  const created = id ? await getExpenseById(userId, id) : null;
+  if (!created) throw new Error("Failed to create expense from receipt.");
+  return created;
+}
+
 // ─── Demo seeding (with intentional anomalies) ────────────────────────────────
 
 export async function seedDemoExpenses(userId: string): Promise<number> {

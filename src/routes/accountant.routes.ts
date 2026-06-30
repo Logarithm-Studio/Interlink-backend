@@ -28,6 +28,7 @@ import {
   sendInvoiceReminder,
 } from "../services/accountant/dunning.service";
 import {
+  createExpenseFromReceipt,
   getExpenseById,
   listExpenses,
   resolveExpense,
@@ -35,9 +36,40 @@ import {
   seedDemoExpenses,
   type ExpenseStatus,
 } from "../services/accountant/expenses.service";
+import { extractReceipt } from "../services/ai/multimodal.service";
 import { getArInsights } from "../services/accountant/insights.service";
 import { emailFlashReport, getFlashReport } from "../services/accountant/reporting.service";
-import { chat, getChatHistory } from "../services/accountant/assistant.service";
+import {
+  chat,
+  command,
+  executeAction,
+  getChatHistory,
+} from "../services/accountant/assistant.service";
+import { transcribeAudio } from "../services/ai/multimodal.service";
+import {
+  listContractors,
+  needsW9,
+  seedDemoContractors,
+  sendW9Request,
+  setContractorStatus,
+  type W9Status,
+} from "../services/accountant/tax.service";
+import {
+  getAutomations,
+  listClientSettings,
+  setClientDunningPaused,
+  updateAutomation,
+  type AutomationType,
+  type AutonomyLevel,
+} from "../services/accountant/automations.service";
+import {
+  listActivity,
+  setActivityStatus,
+} from "../services/accountant/activity.service";
+import {
+  approveSuggestedActivity,
+  runAutomationsForUser,
+} from "../services/accountant/automationRunner.service";
 import { sendPushNotification } from "../services/notifications/push.service";
 
 const router = Router();
@@ -222,6 +254,33 @@ router.post("/expenses/audit", async (req: Request, res: Response, next: NextFun
   }
 });
 
+// Receipt photo → Gemini vision → create a pending expense for review.
+const ScanReceiptBody = z.object({
+  imageBase64: z.string().min(1),
+  mimeType: z.string().optional(),
+});
+router.post("/expenses/scan-receipt", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ScanReceiptBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("imageBase64 is required.");
+    const { receipt, isFallback } = await extractReceipt(
+      parsed.data.imageBase64,
+      parsed.data.mimeType,
+    );
+    const expense = await createExpenseFromReceipt(user.id, {
+      merchant: receipt.merchant,
+      amountCents: receipt.amountCents,
+      currency: receipt.currency,
+      txnDate: receipt.txnDate,
+      category: receipt.category,
+    });
+    res.json({ expense, isFallback });
+  } catch (err) {
+    next(err);
+  }
+});
+
 const ResolveBody = z.object({ action: z.enum(["approve", "dismiss"]) });
 router.post("/expenses/:id/resolve", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -283,6 +342,184 @@ router.get("/assistant/history", async (req: Request, res: Response, next: NextF
   }
 });
 
+// Agentic command center — plan an action (or answer) from a natural-language command.
+const CommandBody = z.object({ message: z.string().min(1).max(2000) });
+router.post("/assistant/command", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = CommandBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("message is required.");
+    res.json(await command(user.id, parsed.data.message));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Execute a user-confirmed action.
+const ExecuteBody = z.object({
+  name: z.string().min(1),
+  args: z.record(z.unknown()).optional(),
+});
+router.post("/assistant/execute", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ExecuteBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("name is required.");
+    res.json(await executeAction(user, parsed.data.name, parsed.data.args ?? {}));
+  } catch (err) {
+    mapSendError(err, next);
+  }
+});
+
+// Voice → text (Gemini audio transcription) for the command bar.
+const TranscribeBody = z.object({
+  audioBase64: z.string().min(1),
+  mimeType: z.string().optional(),
+});
+router.post("/assistant/transcribe", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = TranscribeBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("audioBase64 is required.");
+    const result = await transcribeAudio(parsed.data.audioBase64, parsed.data.mimeType);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Automations + autonomy ───────────────────────────────────────────────────
+const AUTOMATION_TYPES: AutomationType[] = [
+  "dunning_sequence",
+  "expense_audit",
+  "flash_report",
+  "tax_docs",
+];
+
+router.get("/automations", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({
+      automations: await getAutomations(user.id),
+      clientSettings: await listClientSettings(user.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const UpdateAutomationBody = z.object({
+  enabled: z.boolean().optional(),
+  autonomy: z.enum(["off", "suggest", "auto"]).optional(),
+  config: z.record(z.unknown()).optional(),
+  guardrails: z.record(z.unknown()).optional(),
+});
+router.put("/automations/:type", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const type = req.params.type as AutomationType;
+    if (!AUTOMATION_TYPES.includes(type)) throw new BadRequestError("Unknown automation type.");
+    const parsed = UpdateAutomationBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid request body.");
+    res.json({ automation: await updateAutomation(user.id, type, parsed.data as { autonomy?: AutonomyLevel }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const ClientDunningBody = z.object({ paused: z.boolean() });
+router.put("/clients/:clientName/dunning", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ClientDunningBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("paused (boolean) is required.");
+    await setClientDunningPaused(user.id, req.params.clientName, parsed.data.paused);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Agent activity feed ──────────────────────────────────────────────────────
+router.get("/activity", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ activity: await listActivity(user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/activity/:id/approve", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const result = await approveSuggestedActivity(user, req.params.id);
+    res.json(result);
+  } catch (err) {
+    mapSendError(err, next);
+  }
+});
+
+router.post("/activity/:id/dismiss", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    await setActivityStatus(user.id, req.params.id, "dismissed");
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Run the user's due automations now (testing; QStash schedule hits the worker route).
+router.post("/automations/run-now", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json(await runAutomationsForUser(user));
+  } catch (err) {
+    mapSendError(err, next);
+  }
+});
+
+// ─── Tax Document Gathering ───────────────────────────────────────────────────
+router.get("/tax/contractors", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const contractors = await listContractors(user.id);
+    res.json({ contractors: contractors.map((c) => ({ ...c, needsW9: needsW9(c) })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post(
+  "/tax/contractors/:id/request-w9",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      res.json(await sendW9Request(user, req.params.id));
+    } catch (err) {
+      mapSendError(err, next);
+    }
+  },
+);
+
+const ContractorStatusBody = z.object({
+  status: z.enum(["missing", "requested", "received", "filed"]),
+});
+router.post(
+  "/tax/contractors/:id/status",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const parsed = ContractorStatusBody.safeParse(req.body ?? {});
+      if (!parsed.success) throw new BadRequestError("Invalid status.");
+      await setContractorStatus(user.id, req.params.id, parsed.data.status as W9Status);
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── Scan + seed ────────────────────────────────────────────────────────────
 router.post("/scan", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -317,9 +554,11 @@ router.post("/seed-demo", async (req: Request, res: Response, next: NextFunction
     const clientEmail = parsed.data.clientEmail ?? user.email;
     const insertedInvoices = await seedDemoInvoices(user.id, clientEmail);
     const insertedExpenses = await seedDemoExpenses(user.id);
+    const insertedContractors = await seedDemoContractors(user.id);
     res.json({
       insertedInvoices,
       insertedExpenses,
+      insertedContractors,
       invoices: await listInvoices(user.id),
       expenses: await listExpenses(user.id),
     });

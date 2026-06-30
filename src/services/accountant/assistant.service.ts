@@ -5,12 +5,25 @@
  * Gemini to answer grounded in it, and persists the conversation for memory.
  */
 
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { query } from "../../config/db";
 import { generateAssistantReply } from "../ai/ai.service";
 import type { AssistantReply, AssistantChatTurn } from "../ai/prompts/assistant";
 import { listInvoices } from "./invoices.service";
 import { listExpenses } from "./expenses.service";
+import { planAgentActions } from "../ai/multimodal.service";
+import { summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
+import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
+import { runExpenseAudit } from "./expenses.service";
+import { emailFlashReport } from "./reporting.service";
+import {
+  setClientDunningPaused,
+  updateAutomation,
+  type AutomationType,
+  type AutonomyLevel,
+} from "./automations.service";
+import { recordActivity } from "./activity.service";
+import { AppUser } from "../../types";
 
 function daysOverdue(due: string): number {
   const d = new Date(`${due}T00:00:00`).getTime();
@@ -108,3 +121,141 @@ export async function getChatHistory(
   );
   return res.rows.map((r) => ({ role: r.role, content: r.content, createdAt: r.created_at }));
 }
+
+// ─── Agentic command center (function-calling) ────────────────────────────────
+
+export interface PendingAction {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  summary: string;
+  needsConfirm: boolean;
+}
+
+export interface CommandResult {
+  answer: string | null;
+  action: PendingAction | null;
+  isLive: boolean;
+}
+
+/** Run one agentic command: returns an answer and/or a proposed action to confirm. */
+export async function command(
+  userId: string,
+  message: string,
+): Promise<CommandResult> {
+  const snapshot = await buildSnapshot(userId);
+  const plan = await planAgentActions({ message, snapshot });
+
+  let action: PendingAction | null = null;
+  if (plan.action) {
+    action = {
+      id: randomUUID(),
+      name: plan.action.name,
+      args: plan.action.args,
+      summary: summarizeAction(plan.action.name, plan.action.args),
+      needsConfirm: true,
+    };
+  }
+
+  // Persist the turn (best-effort).
+  const assistantText = action ? action.summary : (plan.answer ?? "");
+  await query(
+    `INSERT INTO accountant_chat_messages (user_id, role, content)
+     VALUES ($1, 'user', $2), ($1, 'assistant', $3)`,
+    [userId, message, assistantText],
+  ).catch(() => {});
+
+  return { answer: plan.answer ?? null, action, isLive: plan.isLive };
+}
+
+/** Execute a user-confirmed agent action via the existing services. */
+export async function executeAction(
+  user: AppUser,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    switch (name) {
+      case "send_reminder": {
+        let invoiceId = String(args.invoiceId ?? "");
+        if (!invoiceId && args.clientName) {
+          const match = (await listInvoices(user.id)).find(
+            (i) =>
+              i.status !== "paid" &&
+              i.clientName.toLowerCase() === String(args.clientName).toLowerCase(),
+          );
+          invoiceId = match?.id ?? "";
+        }
+        if (!invoiceId) return { ok: false, message: "Couldn't find that invoice." };
+        const tone = args.tone as "friendly" | "firm" | "final" | undefined;
+        const res = await sendInvoiceReminder({ user, invoiceId, escalationTone: tone });
+        await recordActivity({
+          userId: user.id,
+          kind: "reminder_sent",
+          title: `Reminder sent to ${res.recipients.join(", ")}`,
+          detail: "via AI command",
+          entityType: "invoice",
+          entityId: invoiceId,
+          status: "done",
+        });
+        return { ok: true, message: "Reminder sent." };
+      }
+      case "remind_all_overdue": {
+        const overdue = (await listInvoices(user.id)).filter(
+          (i) => i.status === "overdue" || i.status === "reminded",
+        );
+        const outcomes = await bulkSendReminders(
+          user,
+          overdue.map((i) => ({ invoiceId: i.id })),
+        );
+        const sent = outcomes.filter((o) => o.ok).length;
+        await recordActivity({
+          userId: user.id,
+          kind: "reminder_sent",
+          title: `Sent ${sent} reminders to overdue clients`,
+          detail: "via AI command",
+          status: "done",
+        });
+        return { ok: true, message: `Sent ${sent} reminder${sent === 1 ? "" : "s"}.` };
+      }
+      case "run_expense_audit": {
+        const r = await runExpenseAudit(user.id);
+        await recordActivity({
+          userId: user.id,
+          kind: "audit_run",
+          title: `Expense audit flagged ${r.flaggedCount} item${r.flaggedCount === 1 ? "" : "s"}`,
+          status: "done",
+        });
+        return { ok: true, message: `Flagged ${r.flaggedCount} expense(s).` };
+      }
+      case "email_flash_report": {
+        await emailFlashReport(user);
+        await recordActivity({
+          userId: user.id,
+          kind: "report_emailed",
+          title: "Flash report emailed to you",
+          status: "done",
+        });
+        return { ok: true, message: "Report emailed." };
+      }
+      case "pause_client": {
+        const clientName = String(args.clientName ?? "");
+        if (!clientName) return { ok: false, message: "Which client?" };
+        await setClientDunningPaused(user.id, clientName, true);
+        return { ok: true, message: `Paused reminders for ${clientName}.` };
+      }
+      case "set_automation": {
+        await updateAutomation(user.id, args.type as AutomationType, {
+          autonomy: args.autonomy as AutonomyLevel,
+        });
+        return { ok: true, message: `Updated ${args.type} to ${args.autonomy}.` };
+      }
+      default:
+        return { ok: false, message: `Unsupported action: ${name}.` };
+    }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export { isMoneyAdjacent };

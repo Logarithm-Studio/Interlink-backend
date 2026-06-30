@@ -68,6 +68,13 @@ import {
   buildAssistantPrompt,
   buildFallbackAssistantReply,
 } from "./prompts/assistant";
+import {
+  buildTaxRequestPrompt,
+  buildFallbackTaxRequest,
+  TaxRequest,
+  TaxRequestContext,
+  TaxRequestSchema,
+} from "./prompts/taxRequest";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -873,5 +880,26 @@ export function generateAssistantReply(params: {
     maxOutputTokens: 1024,
     rateLimitBucket: "ai-assistant",
     auditAction: "ai.assistant.reply",
+  });
+}
+
+/** W-9 / tax-form request email for a contractor (Tax Document Gathering). */
+export function generateTaxRequestEmail(params: {
+  userId: string;
+  context: TaxRequestContext;
+  idempotencyKey: string;
+}): Promise<ProfessionalJsonResult<TaxRequest>> {
+  const { system, user } = buildTaxRequestPrompt(params.context);
+  return runProfessionalJson<TaxRequest>({
+    userId: params.userId,
+    outputType: "tax_request",
+    idempotencyKey: params.idempotencyKey,
+    system,
+    user,
+    schema: TaxRequestSchema,
+    fallback: () => buildFallbackTaxRequest(params.context),
+    maxOutputTokens: 1024,
+    rateLimitBucket: "ai-tax-request",
+    auditAction: "ai.tax_request.generate",
   });
 }

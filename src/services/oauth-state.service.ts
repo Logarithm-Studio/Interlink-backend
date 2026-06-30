@@ -29,7 +29,10 @@ import { logger } from "../observability/logger";
 
 export interface OAuthStatePayload {
   userId: string;
-  provider: "google" | "microsoft";
+  // Calendar providers ("google" | "microsoft") plus the generic third-party
+  // integration providers (spotify, todoist, notion, trello, github, …). The
+  // oauth_states.provider column is plain text, so any provider string is valid.
+  provider: string;
   successRedirectUri?: string;
   errorRedirectUri?: string;
 }

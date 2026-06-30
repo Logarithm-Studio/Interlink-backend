@@ -30,12 +30,18 @@ const router = Router();
 
 // Requires read/write for Calendar and Gmail draft creation. Users must
 // re-consent after scope changes to obtain tokens with the new scopes.
+// The tasks / fitness / spreadsheets scopes power the Personal Mode
+// (Google Tasks, Google Fit) and Professional HR (Sheets headcount) features
+// — all of which reuse these same Google OAuth tokens.
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/userinfo.profile",
   "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/tasks",
+  "https://www.googleapis.com/auth/fitness.activity.read",
+  "https://www.googleapis.com/auth/spreadsheets",
 ];
 
 const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =
