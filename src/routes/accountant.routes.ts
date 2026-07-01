@@ -13,6 +13,7 @@ import { AuthenticatedRequest } from "../types";
 import { BadRequestError, NotFoundError, UnauthorizedError } from "../utils/errors";
 import {
   countOverdue,
+  createInvoice,
   getInvoiceById,
   getReminderLogs,
   listInvoices,
@@ -29,6 +30,7 @@ import {
 } from "../services/accountant/dunning.service";
 import {
   createExpenseFromReceipt,
+  createExpenseManual,
   getExpenseById,
   listExpenses,
   resolveExpense,
@@ -114,6 +116,26 @@ router.get("/invoices", async (req: Request, res: Response, next: NextFunction) 
         ? (statusParam as InvoiceStatus)
         : undefined;
     res.json({ invoices: await listInvoices(user.id, { status }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Manual invoice creation (entered in the app).
+const CreateInvoiceBody = z.object({
+  clientName: z.string().min(1).max(200),
+  clientEmail: z.string().email().optional(),
+  amountCents: z.number().int().positive(),
+  dueDate: z.string().optional(),
+  invoiceNumber: z.string().max(60).optional(),
+  currency: z.string().max(8).optional(),
+});
+router.post("/invoices", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = CreateInvoiceBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("clientName and amountCents are required.");
+    res.json({ invoice: await createInvoice(user.id, parsed.data) });
   } catch (err) {
     next(err);
   }
@@ -230,6 +252,25 @@ router.get("/expenses", async (req: Request, res: Response, next: NextFunction) 
         ? (statusParam as ExpenseStatus)
         : undefined;
     res.json({ expenses: await listExpenses(user.id, { status }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Manual expense creation (entered in the app).
+const CreateExpenseBody = z.object({
+  merchant: z.string().min(1).max(200),
+  amountCents: z.number().int().positive(),
+  currency: z.string().max(8).optional(),
+  txnDate: z.string().optional(),
+  category: z.string().max(80).optional(),
+});
+router.post("/expenses", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = CreateExpenseBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("merchant and amountCents are required.");
+    res.json({ expense: await createExpenseManual(user.id, parsed.data) });
   } catch (err) {
     next(err);
   }
@@ -370,13 +411,18 @@ router.get(
 const CommandBody = z.object({
   message: z.string().min(1).max(2000),
   conversationId: z.string().uuid().optional(),
+  attachmentBase64: z.string().min(1).optional(),
+  attachmentMimeType: z.string().min(1).optional(),
 });
 router.post("/assistant/command", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = CommandBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("message is required.");
-    res.json(await command(user.id, parsed.data.message, parsed.data.conversationId));
+    const attachment = parsed.data.attachmentBase64
+      ? { data: parsed.data.attachmentBase64, mimeType: parsed.data.attachmentMimeType ?? "application/octet-stream" }
+      : undefined;
+    res.json(await command(user.id, parsed.data.message, parsed.data.conversationId, attachment));
   } catch (err) {
     next(err);
   }

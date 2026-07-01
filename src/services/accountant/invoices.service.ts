@@ -132,6 +132,45 @@ export async function getInvoiceById(
   return result.rows[0] ? mapInvoice(result.rows[0]) : null;
 }
 
+/** Manually create an invoice (entered in the app). Auto-numbers if omitted. */
+export async function createInvoice(
+  userId: string,
+  data: {
+    clientName: string;
+    clientEmail?: string;
+    amountCents: number;
+    dueDate?: string; // YYYY-MM-DD
+    invoiceNumber?: string;
+    currency?: string;
+  },
+): Promise<Invoice> {
+  const number = data.invoiceNumber?.trim() || `INV-${Date.now().toString().slice(-6)}`;
+  const res = await query<{ id: string }>(
+    `INSERT INTO invoices
+       (user_id, invoice_number, client_name, client_email, amount_cents, currency,
+        issue_date, due_date, status, source)
+     VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE,
+             COALESCE(NULLIF($7, '')::date, CURRENT_DATE + INTERVAL '14 days'),
+             CASE WHEN COALESCE(NULLIF($7, '')::date, CURRENT_DATE + INTERVAL '14 days') < CURRENT_DATE
+                  THEN 'overdue' ELSE 'open' END,
+             'manual')
+     ON CONFLICT (user_id, invoice_number) DO NOTHING
+     RETURNING id`,
+    [userId, number, data.clientName.trim(), data.clientEmail ?? null, data.amountCents, data.currency ?? "USD", data.dueDate ?? ""],
+  );
+  let id = res.rows[0]?.id;
+  if (!id) {
+    const existing = await query<{ id: string }>(
+      `SELECT id FROM invoices WHERE user_id = $1 AND invoice_number = $2 LIMIT 1`,
+      [userId, number],
+    );
+    id = existing.rows[0]?.id;
+  }
+  const inv = id ? await getInvoiceById(userId, id) : null;
+  if (!inv) throw new Error("Failed to create invoice.");
+  return inv;
+}
+
 export async function countOverdue(userId: string): Promise<number> {
   const result = await query<{ count: string }>(
     `SELECT COUNT(*) AS count FROM invoices

@@ -8,7 +8,7 @@
  * All gate on `isGeminiLive()` with deterministic fallbacks for the offline/demo case.
  */
 
-import { geminiGenerateContent, isGeminiLive } from "./geminiClient";
+import { geminiGenerateContent, isGeminiLive, type GeminiToolFunction } from "./geminiClient";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
 import {
   buildFallbackReceiptExtract,
@@ -147,22 +147,31 @@ export async function planPersonaReply(params: {
 export async function planAgentActions(params: {
   message: string;
   snapshot: string;
+  /** Persona-specific tool declarations (defaults to the finance/accountant set). */
+  tools?: GeminiToolFunction[];
+  /** Persona-specific system prompt (defaults to the finance/accountant agent). */
+  system?: string;
+  /** Optional attached file (image/PDF/…) the user sent with the message. */
+  attachment?: { data: string; mimeType: string };
 }): Promise<AgentPlan> {
   if (!isGeminiLive()) {
     return {
       answer:
-        "The AI service is offline right now. You can still send reminders and run audits from the dashboard.",
+        "The AI service is offline right now. You can still take actions from the dashboard.",
       isLive: false,
     };
   }
   try {
     const result = await geminiGenerateContent({
-      system: AGENT_SYSTEM,
+      system: params.system ?? AGENT_SYSTEM,
       parts: [
         { text: `DATA SNAPSHOT:\n${params.snapshot}` },
+        ...(params.attachment
+          ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as const]
+          : []),
         { text: `USER: ${params.message}` },
       ],
-      tools: AGENT_TOOLS,
+      tools: params.tools ?? AGENT_TOOLS,
       maxOutputTokens: 1024,
     });
     if (result.functionCall) {

@@ -247,6 +247,35 @@ export async function createExpenseFromReceipt(
   return created;
 }
 
+/** Manually create an expense (entered in the app). */
+export async function createExpenseManual(
+  userId: string,
+  data: { merchant: string; amountCents: number; currency?: string; txnDate?: string; category?: string },
+): Promise<Expense> {
+  const merchant = data.merchant.trim() || "Expense";
+  const res = await query<{ id: string }>(
+    `INSERT INTO expenses
+       (user_id, merchant, amount_cents, currency, txn_date, category, has_receipt, status, source)
+     VALUES ($1, $2, $3, $4,
+             COALESCE(NULLIF($5, '')::date, CURRENT_DATE),
+             $6, false, 'pending', 'manual')
+     ON CONFLICT (user_id, merchant, amount_cents, txn_date) DO NOTHING
+     RETURNING id`,
+    [userId, merchant, data.amountCents, data.currency ?? "USD", data.txnDate ?? "", data.category ?? null],
+  );
+  let id = res.rows[0]?.id;
+  if (!id) {
+    const existing = await query<{ id: string }>(
+      `SELECT id FROM expenses WHERE user_id = $1 AND merchant = $2 AND amount_cents = $3 ORDER BY created_at DESC LIMIT 1`,
+      [userId, merchant, data.amountCents],
+    );
+    id = existing.rows[0]?.id;
+  }
+  const created = id ? await getExpenseById(userId, id) : null;
+  if (!created) throw new Error("Failed to create expense.");
+  return created;
+}
+
 // ─── Demo seeding (with intentional anomalies) ────────────────────────────────
 
 export async function seedDemoExpenses(userId: string): Promise<number> {

@@ -28,11 +28,13 @@ export async function recordActivity(params: {
   entityId?: string;
   status?: ActivityStatus;
   payload?: Record<string, unknown>;
+  /** Which professional persona produced this activity (defaults to finance). */
+  persona?: string;
 }): Promise<{ id: string }> {
   const res = await query<{ id: string }>(
     `INSERT INTO accountant_activity
-       (user_id, kind, title, detail, entity_type, entity_id, status, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       (user_id, kind, title, detail, entity_type, entity_id, status, payload, persona)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
      RETURNING id`,
     [
       params.userId,
@@ -43,9 +45,27 @@ export async function recordActivity(params: {
       params.entityId ?? null,
       params.status ?? "done",
       JSON.stringify(params.payload ?? {}),
+      params.persona ?? "finance",
     ],
   );
   return { id: res.rows[0].id };
+}
+
+/** List activity for one persona (used by the non-finance dashboards). */
+export async function listActivityByPersona(
+  userId: string,
+  persona: string,
+  limit = 50,
+): Promise<Activity[]> {
+  const res = await query(
+    `SELECT id, kind, title, detail, entity_type, entity_id, status, payload, created_at
+       FROM accountant_activity
+      WHERE user_id = $1 AND persona = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [userId, persona, limit],
+  );
+  return res.rows.map(mapRow as never);
 }
 
 function mapRow(r: {

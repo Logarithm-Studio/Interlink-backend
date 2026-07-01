@@ -21,9 +21,9 @@ const PERSONAL_PERSONAS = [
   "business_professional", "freelancer", "creative", "educator", "general",
 ];
 
+// The six focus professions (Recruiter merged into HR, Marketing into Sales).
 const PROFESSIONAL_PERSONAS = [
-  "finance", "product_manager", "hr", "sales", "marketing",
-  "legal", "real_estate", "healthcare", "operations", "recruiter", "customer_support",
+  "finance", "sales", "hr", "customer_support", "real_estate", "product_manager",
 ];
 
 router.get("/persona", async (req: Request, res: Response, next: NextFunction) => {

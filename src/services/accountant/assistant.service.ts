@@ -12,6 +12,7 @@ import type { AssistantReply, AssistantChatTurn } from "../ai/prompts/assistant"
 import { listInvoices } from "./invoices.service";
 import { listExpenses } from "./expenses.service";
 import { planAgentActions, planPersonaReply } from "../ai/multimodal.service";
+import { getVertical } from "../professional/registry";
 import { summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
 import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
@@ -231,13 +232,44 @@ export async function command(
   userId: string,
   message: string,
   conversationId?: string,
+  attachment?: { data: string; mimeType: string },
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
   const persona = await getProfessionalPersona(userId);
 
-  // Non-finance roles don't have the accountant tools/data snapshot — answer as
-  // a domain assistant for their persona instead of the AR/expenses script.
+  // Non-finance roles are served by their persona vertical: agentic tools +
+  // data snapshot when one is registered, else a plain domain-expert reply.
   if (persona !== "finance") {
+    const vertical = getVertical(persona);
+    if (vertical) {
+      const snapshot = await vertical.buildSnapshot(userId);
+      const plan = await planAgentActions({
+        message,
+        snapshot,
+        tools: vertical.tools,
+        system: vertical.systemPrompt,
+        attachment,
+      });
+      let vAction: PendingAction | null = null;
+      if (plan.action) {
+        vAction = {
+          id: randomUUID(),
+          name: plan.action.name,
+          args: plan.action.args,
+          summary: vertical.summarizeAction(plan.action.name, plan.action.args),
+          needsConfirm: true,
+        };
+      }
+      const vText = vAction ? vAction.summary : (plan.answer ?? "");
+      await query(
+        `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+         VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+        [userId, message, vText, convId],
+      ).catch(() => {});
+      await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
+      return { answer: plan.answer ?? null, action: vAction, isLive: plan.isLive, conversationId: convId };
+    }
+
     const histRes = await query<{ role: "user" | "assistant"; content: string }>(
       `SELECT role, content FROM accountant_chat_messages
         WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 6`,
@@ -261,7 +293,7 @@ export async function command(
   }
 
   const snapshot = await buildSnapshot(userId);
-  const plan = await planAgentActions({ message, snapshot });
+  const plan = await planAgentActions({ message, snapshot, attachment });
 
   let action: PendingAction | null = null;
   if (plan.action) {
@@ -295,6 +327,13 @@ export async function executeAction(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ ok: boolean; message: string }> {
+  // Non-finance personas dispatch to their vertical's tool executor.
+  const persona = await getProfessionalPersona(user.id);
+  if (persona !== "finance") {
+    const vertical = getVertical(persona);
+    if (vertical) return vertical.executeTool(user, name, args);
+    return { ok: false, message: `No actions available for this role.` };
+  }
   try {
     switch (name) {
       case "send_reminder": {
