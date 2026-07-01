@@ -227,6 +227,18 @@ async function getProfessionalPersona(userId: string): Promise<string> {
   return res.rows[0]?.persona ?? "finance";
 }
 
+/** The last few turns of a conversation, oldest-first — gives the agent memory. */
+async function loadRecentHistory(
+  convId: string,
+): Promise<{ role: "user" | "assistant"; content: string }[]> {
+  const res = await query<{ role: "user" | "assistant"; content: string }>(
+    `SELECT role, content FROM accountant_chat_messages
+      WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 8`,
+    [convId],
+  );
+  return res.rows.reverse();
+}
+
 /** Run one agentic command: returns an answer and/or a proposed action to confirm. */
 export async function command(
   userId: string,
@@ -243,12 +255,14 @@ export async function command(
     const vertical = getVertical(persona);
     if (vertical) {
       const snapshot = await vertical.buildSnapshot(userId);
+      const history = await loadRecentHistory(convId);
       const plan = await planAgentActions({
         message,
         snapshot,
         tools: vertical.tools,
         system: vertical.systemPrompt,
         attachment,
+        history,
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {
@@ -293,7 +307,8 @@ export async function command(
   }
 
   const snapshot = await buildSnapshot(userId);
-  const plan = await planAgentActions({ message, snapshot, attachment });
+  const financeHistory = await loadRecentHistory(convId);
+  const plan = await planAgentActions({ message, snapshot, attachment, history: financeHistory });
 
   let action: PendingAction | null = null;
   if (plan.action) {

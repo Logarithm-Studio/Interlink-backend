@@ -153,6 +153,8 @@ export async function planAgentActions(params: {
   system?: string;
   /** Optional attached file (image/PDF/…) the user sent with the message. */
   attachment?: { data: string; mimeType: string };
+  /** Prior conversation turns (oldest-first) so the agent has memory. */
+  history?: { role: "user" | "assistant"; content: string }[];
 }): Promise<AgentPlan> {
   if (!isGeminiLive()) {
     return {
@@ -161,11 +163,18 @@ export async function planAgentActions(params: {
       isLive: false,
     };
   }
+  const historyText = (params.history ?? [])
+    .slice(-8)
+    .map((t) => `${t.role === "user" ? "USER" : "ASSISTANT"}: ${t.content}`)
+    .join("\n");
   try {
     const result = await geminiGenerateContent({
       system: params.system ?? AGENT_SYSTEM,
       parts: [
         { text: `DATA SNAPSHOT:\n${params.snapshot}` },
+        ...(historyText
+          ? [{ text: `CONVERSATION SO FAR (resolve references like "him"/"that ticket" from this):\n${historyText}` } as const]
+          : []),
         ...(params.attachment
           ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as const]
           : []),

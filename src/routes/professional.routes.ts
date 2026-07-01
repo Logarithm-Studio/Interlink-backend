@@ -91,6 +91,25 @@ router.post("/entities", async (req: Request, res: Response, next: NextFunction)
   }
 });
 
+// ─── Direct entity action (tapped from the dashboard, no AI round-trip) ─────
+const ActionBody = z.object({
+  name: z.string().min(1),
+  args: z.record(z.unknown()).optional(),
+});
+router.post("/action", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const persona = await currentPersona(user.id);
+    const vertical = getVertical(persona);
+    if (!vertical) throw new BadRequestError("No actions available for this role.");
+    const parsed = ActionBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("name is required.");
+    res.json(await vertical.executeTool(user, parsed.data.name, parsed.data.args ?? {}));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Google-Sheet import ────────────────────────────────────────────────────
 const ImportBody = z.object({ spreadsheetId: z.string().min(1), range: z.string().optional() });
 
