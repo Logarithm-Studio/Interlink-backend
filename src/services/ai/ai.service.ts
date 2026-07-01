@@ -681,9 +681,14 @@ async function runProfessionalJson<T>(
     latency_ms: number;
     is_fallback: boolean;
   }>(
+    // Only treat a *live* result as a cache hit. A previously persisted
+    // fallback (written while the provider was misconfigured/unreachable) must
+    // not be served forever — it would pin the feature "offline" even after the
+    // key is fixed, because the idempotency key only changes when the underlying
+    // data changes. Skipping fallback rows here forces a fresh live attempt.
     `SELECT id, content, model, provider, latency_ms, is_fallback
        FROM ai_outputs
-      WHERE idempotency_key = $1 AND output_type = $2
+      WHERE idempotency_key = $1 AND output_type = $2 AND is_fallback = false
       LIMIT 1`,
     [args.idempotencyKey, args.outputType],
   );
@@ -765,7 +770,15 @@ async function runProfessionalJson<T>(
      VALUES (NULL, $1, $2::jsonb, $3, $4, $5, $6, $7)
      ON CONFLICT (idempotency_key)
        WHERE idempotency_key IS NOT NULL
-     DO NOTHING
+     -- A fresh *live* result upgrades a previously cached fallback for the same
+     -- key (DO NOTHING would otherwise pin the stale fallback permanently).
+     DO UPDATE SET
+       content     = EXCLUDED.content,
+       model       = EXCLUDED.model,
+       provider    = EXCLUDED.provider,
+       latency_ms  = EXCLUDED.latency_ms,
+       is_fallback = EXCLUDED.is_fallback
+     WHERE ai_outputs.is_fallback = true AND EXCLUDED.is_fallback = false
      RETURNING id`,
     [
       args.outputType,

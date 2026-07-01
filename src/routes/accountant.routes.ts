@@ -44,6 +44,8 @@ import {
   command,
   executeAction,
   getChatHistory,
+  getConversationMessages,
+  listConversations,
 } from "../services/accountant/assistant.service";
 import { transcribeAudio } from "../services/ai/multimodal.service";
 import {
@@ -342,14 +344,39 @@ router.get("/assistant/history", async (req: Request, res: Response, next: NextF
   }
 });
 
+// Conversation history (hamburger menu) — list threads + fetch one thread.
+router.get("/assistant/conversations", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ conversations: await listConversations(user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get(
+  "/assistant/conversations/:id/messages",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      res.json({ messages: await getConversationMessages(user.id, req.params.id) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // Agentic command center — plan an action (or answer) from a natural-language command.
-const CommandBody = z.object({ message: z.string().min(1).max(2000) });
+const CommandBody = z.object({
+  message: z.string().min(1).max(2000),
+  conversationId: z.string().uuid().optional(),
+});
 router.post("/assistant/command", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = CommandBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("message is required.");
-    res.json(await command(user.id, parsed.data.message));
+    res.json(await command(user.id, parsed.data.message, parsed.data.conversationId));
   } catch (err) {
     next(err);
   }

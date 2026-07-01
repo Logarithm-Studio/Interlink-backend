@@ -11,7 +11,7 @@ import { generateAssistantReply } from "../ai/ai.service";
 import type { AssistantReply, AssistantChatTurn } from "../ai/prompts/assistant";
 import { listInvoices } from "./invoices.service";
 import { listExpenses } from "./expenses.service";
-import { planAgentActions } from "../ai/multimodal.service";
+import { planAgentActions, planPersonaReply } from "../ai/multimodal.service";
 import { summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
 import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
@@ -136,13 +136,130 @@ export interface CommandResult {
   answer: string | null;
   action: PendingAction | null;
   isLive: boolean;
+  conversationId: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: Date;
+}
+
+/** Derive a short title from the first user message of a conversation. */
+function titleFromMessage(message: string): string {
+  const clean = message.trim().replace(/\s+/g, " ");
+  return clean.length > 48 ? `${clean.slice(0, 47)}…` : clean || "New chat";
+}
+
+/**
+ * Resolve the conversation to write into. When `conversationId` is missing (or
+ * doesn't belong to the user) a fresh conversation is created and titled from
+ * the opening message, so the app's history list stays per-thread.
+ */
+async function ensureConversation(
+  userId: string,
+  conversationId: string | undefined,
+  firstMessage: string,
+): Promise<string> {
+  if (conversationId) {
+    const owned = await query<{ id: string }>(
+      `SELECT id FROM accountant_conversations WHERE id = $1 AND user_id = $2 LIMIT 1`,
+      [conversationId, userId],
+    );
+    if (owned.rows[0]) return owned.rows[0].id;
+  }
+  const created = await query<{ id: string }>(
+    `INSERT INTO accountant_conversations (user_id, title) VALUES ($1, $2) RETURNING id`,
+    [userId, titleFromMessage(firstMessage)],
+  );
+  return created.rows[0].id;
+}
+
+/** List a user's conversations, most recently active first. */
+export async function listConversations(
+  userId: string,
+): Promise<ConversationSummary[]> {
+  const res = await query<{ id: string; title: string; updated_at: Date }>(
+    `SELECT id, title, updated_at FROM accountant_conversations
+      WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 50`,
+    [userId],
+  );
+  return res.rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }));
+}
+
+/** Fetch the messages of one conversation (oldest first), scoped to the user. */
+export async function getConversationMessages(
+  userId: string,
+  conversationId: string,
+): Promise<{ role: "user" | "assistant"; content: string; createdAt: Date }[]> {
+  const res = await query<{ role: "user" | "assistant"; content: string; created_at: Date }>(
+    `SELECT m.role, m.content, m.created_at
+       FROM accountant_chat_messages m
+       JOIN accountant_conversations c ON c.id = m.conversation_id
+      WHERE m.conversation_id = $1 AND c.user_id = $2
+      ORDER BY m.created_at ASC`,
+    [conversationId, userId],
+  );
+  return res.rows.map((r) => ({ role: r.role, content: r.content, createdAt: r.created_at }));
+}
+
+/** A user's Professional-Mode persona (defaults to finance). */
+const PERSONA_LABELS: Record<string, string> = {
+  finance: "Finance / Accountant",
+  product_manager: "Product Manager",
+  hr: "HR",
+  sales: "Sales",
+  marketing: "Marketing",
+  legal: "Legal",
+  real_estate: "Real Estate",
+  healthcare: "Healthcare",
+  operations: "Operations",
+  recruiter: "Recruiter",
+  customer_support: "Customer Support",
+};
+
+async function getProfessionalPersona(userId: string): Promise<string> {
+  const res = await query<{ persona: string }>(
+    `SELECT persona FROM profession_profiles WHERE user_id = $1 AND mode = 'professional' LIMIT 1`,
+    [userId],
+  );
+  return res.rows[0]?.persona ?? "finance";
 }
 
 /** Run one agentic command: returns an answer and/or a proposed action to confirm. */
 export async function command(
   userId: string,
   message: string,
+  conversationId?: string,
 ): Promise<CommandResult> {
+  const convId = await ensureConversation(userId, conversationId, message);
+  const persona = await getProfessionalPersona(userId);
+
+  // Non-finance roles don't have the accountant tools/data snapshot — answer as
+  // a domain assistant for their persona instead of the AR/expenses script.
+  if (persona !== "finance") {
+    const histRes = await query<{ role: "user" | "assistant"; content: string }>(
+      `SELECT role, content FROM accountant_chat_messages
+        WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 6`,
+      [convId],
+    );
+    const reply = await planPersonaReply({
+      personaLabel: PERSONA_LABELS[persona] ?? persona,
+      message,
+      history: histRes.rows.reverse(),
+    });
+    await query(
+      `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+       VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+      [userId, message, reply.answer, convId],
+    ).catch(() => {});
+    await query(
+      `UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`,
+      [convId],
+    ).catch(() => {});
+    return { answer: reply.answer, action: null, isLive: reply.isLive, conversationId: convId };
+  }
+
   const snapshot = await buildSnapshot(userId);
   const plan = await planAgentActions({ message, snapshot });
 
@@ -157,15 +274,19 @@ export async function command(
     };
   }
 
-  // Persist the turn (best-effort).
+  // Persist the turn + bump conversation recency (best-effort).
   const assistantText = action ? action.summary : (plan.answer ?? "");
   await query(
-    `INSERT INTO accountant_chat_messages (user_id, role, content)
-     VALUES ($1, 'user', $2), ($1, 'assistant', $3)`,
-    [userId, message, assistantText],
+    `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+     VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+    [userId, message, assistantText, convId],
+  ).catch(() => {});
+  await query(
+    `UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`,
+    [convId],
   ).catch(() => {});
 
-  return { answer: plan.answer ?? null, action, isLive: plan.isLive };
+  return { answer: plan.answer ?? null, action, isLive: plan.isLive, conversationId: convId };
 }
 
 /** Execute a user-confirmed agent action via the existing services. */

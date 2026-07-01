@@ -92,6 +92,58 @@ export interface AgentPlan {
   isLive: boolean;
 }
 
+/**
+ * Persona-general assistant reply (non-finance professional roles).
+ *
+ * Finance has bespoke tools + a live data snapshot; the other roles don't have
+ * data integrations wired yet, so the agent answers as a domain expert for that
+ * role (HR, sales, legal, …) and is honest that live records aren't connected,
+ * instead of refusing with the accountant script.
+ */
+export async function planPersonaReply(params: {
+  personaLabel: string;
+  message: string;
+  history?: { role: "user" | "assistant"; content: string }[];
+}): Promise<{ answer: string; isLive: boolean }> {
+  if (!isGeminiLive()) {
+    return {
+      answer:
+        "The AI service is offline right now. Add a GEMINI_API_KEY to enable live answers.",
+      isLive: false,
+    };
+  }
+  const system = [
+    `You are the user's AI ${params.personaLabel} assistant inside the Interlink app.`,
+    `Help with ${params.personaLabel} work: answering questions, drafting messages/emails,`,
+    "planning, summarizing, and giving practical step-by-step guidance.",
+    "Be concise and useful. Use short markdown bullet lists when enumerating.",
+    "Live data integrations (CRM, ATS, GitHub, calendars, etc.) are not connected yet.",
+    "When asked for specific live records you don't have, say so briefly and offer a useful",
+    "template, checklist, or next step instead of inventing data.",
+  ].join("\n");
+
+  const historyText = (params.history ?? [])
+    .slice(-6)
+    .map((t) => `${t.role === "user" ? "USER" : "ASSISTANT"}: ${t.content}`)
+    .join("\n");
+
+  try {
+    const result = await geminiGenerateContent({
+      system,
+      parts: [
+        ...(historyText ? [{ text: `CONVERSATION SO FAR:\n${historyText}` }] : []),
+        { text: `USER: ${params.message}` },
+      ],
+      json: false,
+      maxOutputTokens: 1024,
+    });
+    return { answer: result.raw.trim() || "Done.", isLive: true };
+  } catch (err) {
+    console.error("[multimodal] persona reply failed:", err);
+    return { answer: "Sorry, I couldn't process that just now.", isLive: true };
+  }
+}
+
 export async function planAgentActions(params: {
   message: string;
   snapshot: string;
