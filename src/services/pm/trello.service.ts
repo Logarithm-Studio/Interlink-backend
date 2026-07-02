@@ -18,15 +18,21 @@ function redirectUri(): string {
 }
 
 export function buildAuthUrl(state: string): string {
+  // Trello's client-side token flow returns the token in the URL *fragment* of
+  // return_url (fragments never reach a server). We point return_url at our
+  // https callback with `state` in the query so the backend can recover the
+  // user; a small JS bridge on that page reads the fragment token and forwards
+  // it to /trello/store. (Trello does not echo a standalone `state` param, so it
+  // must live in return_url.)
+  const returnUrl = `${redirectUri()}?state=${encodeURIComponent(state)}`;
   const params = new URLSearchParams({
     key: appKey(),
     name: "Interlink",
     expiration: "never",
     response_type: "token",
     scope: "read,write",
-    callback_method: "postMessage",
-    return_url: redirectUri(),
-    state,
+    callback_method: "fragment",
+    return_url: returnUrl,
   });
   return `https://trello.com/1/authorize?${params}`;
 }
