@@ -183,36 +183,72 @@ export async function getNowPlaying(userId: string): Promise<NowPlaying | null> 
   };
 }
 
+async function spotifyErrorDetail(res: Response): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: string } | string; message?: string };
+    if (typeof parsed.error === "string") return parsed.error;
+    return parsed.error?.message ?? parsed.message ?? text.slice(0, 200);
+  } catch {
+    return text.slice(0, 200);
+  }
+}
+
+async function ensureSpotifyOk(res: Response, action: string): Promise<void> {
+  if (res.ok || res.status === 204) return;
+
+  const detail = await spotifyErrorDetail(res);
+  const lower = detail.toLowerCase();
+  if (res.status === 404 || lower.includes("no active device")) {
+    throw new BadRequestError("No active Spotify device found. Open Spotify on your phone or desktop, then try again.");
+  }
+  if (res.status === 403 || lower.includes("premium")) {
+    throw new BadRequestError("Spotify playback control requires Spotify Premium and an active Spotify app/device.");
+  }
+  if (res.status === 429) {
+    throw new BadRequestError("Spotify is rate limiting requests. Wait a moment and try again.");
+  }
+
+  throw new BadRequestError(`${action} failed on Spotify${detail ? `: ${detail}` : "."}`);
+}
+
 export async function resumePlayback(userId: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/play", { method: "PUT" });
+  await ensureSpotifyOk(await spotifyFetch(userId, "/me/player/play", { method: "PUT" }), "Resume playback");
 }
 
 export async function pausePlayback(userId: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/pause", { method: "PUT" });
+  await ensureSpotifyOk(await spotifyFetch(userId, "/me/player/pause", { method: "PUT" }), "Pause playback");
 }
 
 export async function skipToNext(userId: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/next", { method: "POST" });
+  await ensureSpotifyOk(await spotifyFetch(userId, "/me/player/next", { method: "POST" }), "Skip track");
 }
 
 export async function skipToPrevious(userId: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/previous", { method: "POST" });
+  await ensureSpotifyOk(await spotifyFetch(userId, "/me/player/previous", { method: "POST" }), "Previous track");
 }
 
 export async function playContext(userId: string, contextUri: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/play", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ context_uri: contextUri }),
-  });
+  await ensureSpotifyOk(
+    await spotifyFetch(userId, "/me/player/play", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ context_uri: contextUri }),
+    }),
+    "Play context",
+  );
 }
 
 export async function playTrack(userId: string, trackUri: string): Promise<void> {
-  await spotifyFetch(userId, "/me/player/play", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uris: [trackUri] }),
-  });
+  await ensureSpotifyOk(
+    await spotifyFetch(userId, "/me/player/play", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uris: [trackUri] }),
+    }),
+    "Play track",
+  );
 }
 
 // ─── Library ─────────────────────────────────────────────────────────────────
@@ -255,16 +291,18 @@ export async function getUserPlaylists(userId: string): Promise<SpotifyPlaylist[
 
 export interface SearchResult {
   tracks: { id: string; name: string; artistName: string; uri: string }[];
+  albums: { id: string; name: string; artistName: string; uri: string }[];
   playlists: { id: string; name: string; uri: string }[];
 }
 
-export async function search(userId: string, q: string, types: string = "track,playlist"): Promise<SearchResult> {
+export async function search(userId: string, q: string, types: string = "track,album,playlist"): Promise<SearchResult> {
   const params = new URLSearchParams({ q, type: types, limit: "10" });
   const res = await spotifyFetch(userId, `/search?${params}`);
-  if (!res.ok) return { tracks: [], playlists: [] };
+  if (!res.ok) await ensureSpotifyOk(res, "Search");
 
   const data = (await res.json()) as {
     tracks?: { items?: { id?: string; name?: string; artists?: { name?: string }[]; uri?: string }[] };
+    albums?: { items?: { id?: string; name?: string; artists?: { name?: string }[]; uri?: string }[] };
     playlists?: { items?: { id?: string; name?: string; uri?: string }[] };
   };
 
@@ -272,6 +310,9 @@ export async function search(userId: string, q: string, types: string = "track,p
     tracks: (data.tracks?.items ?? [])
       .filter((t) => t.id)
       .map((t) => ({ id: t.id!, name: t.name ?? "", artistName: t.artists?.[0]?.name ?? "", uri: t.uri! })),
+    albums: (data.albums?.items ?? [])
+      .filter((a) => a.id)
+      .map((a) => ({ id: a.id!, name: a.name ?? "", artistName: a.artists?.[0]?.name ?? "", uri: a.uri! })),
     playlists: (data.playlists?.items ?? [])
       .filter((p) => p.id)
       .map((p) => ({ id: p.id!, name: p.name ?? "", uri: p.uri! })),

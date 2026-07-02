@@ -13,7 +13,14 @@ import { listInvoices } from "./invoices.service";
 import { listExpenses } from "./expenses.service";
 import { planAgentActions, planPersonaReply } from "../ai/multimodal.service";
 import { getVertical } from "../professional/registry";
-import { summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
+import { AGENT_SYSTEM, AGENT_TOOLS, summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
+import {
+  CONNECTED_APP_ORCHESTRATION_PROMPT,
+  connectedAppsSummary,
+  executeAction as executePersonalAction,
+  PERSONAL_TOOLS,
+  summarizeAction as summarizePersonalAction,
+} from "../personal-assistant/personal-assistant.service";
 import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
 import { emailFlashReport } from "./reporting.service";
@@ -227,6 +234,30 @@ async function getProfessionalPersona(userId: string): Promise<string> {
   return res.rows[0]?.persona ?? "finance";
 }
 
+const PERSONAL_TOOL_NAMES = new Set(PERSONAL_TOOLS.map((tool) => tool.name));
+
+function professionalToolsWithPersonal(tools: typeof PERSONAL_TOOLS): typeof PERSONAL_TOOLS {
+  const seen = new Set<string>();
+  return [...tools, ...PERSONAL_TOOLS].filter((tool) => {
+    if (seen.has(tool.name)) return false;
+    seen.add(tool.name);
+    return true;
+  });
+}
+
+function summarizeProfessionalAction(
+  name: string,
+  args: Record<string, unknown>,
+  verticalSummary?: (name: string, args: Record<string, unknown>) => string,
+): string {
+  if (PERSONAL_TOOL_NAMES.has(name)) return summarizePersonalAction(name, args);
+  return verticalSummary ? verticalSummary(name, args) : summarizeAction(name, args);
+}
+
+async function withConnectedApps(userId: string, snapshot: string): Promise<string> {
+  return `${await connectedAppsSummary(userId)}\n${snapshot}`;
+}
+
 /** The last few turns of a conversation, oldest-first — gives the agent memory. */
 async function loadRecentHistory(
   convId: string,
@@ -254,13 +285,13 @@ export async function command(
   if (persona !== "finance") {
     const vertical = getVertical(persona);
     if (vertical) {
-      const snapshot = await vertical.buildSnapshot(userId);
+      const snapshot = await withConnectedApps(userId, await vertical.buildSnapshot(userId));
       const history = await loadRecentHistory(convId);
       const plan = await planAgentActions({
         message,
         snapshot,
-        tools: vertical.tools,
-        system: vertical.systemPrompt,
+        tools: professionalToolsWithPersonal(vertical.tools),
+        system: `${vertical.systemPrompt}\nYou can also use the user's personal assistant tools, including Spotify playback, Google/Todoist tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
         attachment,
         history,
       });
@@ -270,7 +301,7 @@ export async function command(
           id: randomUUID(),
           name: plan.action.name,
           args: plan.action.args,
-          summary: vertical.summarizeAction(plan.action.name, plan.action.args),
+          summary: summarizeProfessionalAction(plan.action.name, plan.action.args, vertical.summarizeAction),
           needsConfirm: true,
         };
       }
@@ -306,9 +337,16 @@ export async function command(
     return { answer: reply.answer, action: null, isLive: reply.isLive, conversationId: convId };
   }
 
-  const snapshot = await buildSnapshot(userId);
+  const snapshot = await withConnectedApps(userId, await buildSnapshot(userId));
   const financeHistory = await loadRecentHistory(convId);
-  const plan = await planAgentActions({ message, snapshot, attachment, history: financeHistory });
+  const plan = await planAgentActions({
+    message,
+    snapshot,
+    tools: professionalToolsWithPersonal(AGENT_TOOLS),
+    system: `${AGENT_SYSTEM}\nYou can also use the user's personal assistant tools, including Spotify playback, tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
+    attachment,
+    history: financeHistory,
+  });
 
   let action: PendingAction | null = null;
   if (plan.action) {
@@ -316,7 +354,7 @@ export async function command(
       id: randomUUID(),
       name: plan.action.name,
       args: plan.action.args,
-      summary: summarizeAction(plan.action.name, plan.action.args),
+      summary: summarizeProfessionalAction(plan.action.name, plan.action.args),
       needsConfirm: true,
     };
   }
@@ -345,11 +383,13 @@ export async function executeAction(
   // Non-finance personas dispatch to their vertical's tool executor.
   const persona = await getProfessionalPersona(user.id);
   if (persona !== "finance") {
+    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args);
     const vertical = getVertical(persona);
     if (vertical) return vertical.executeTool(user, name, args);
     return { ok: false, message: `No actions available for this role.` };
   }
   try {
+    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args);
     switch (name) {
       case "send_reminder": {
         let invoiceId = String(args.invoiceId ?? "");

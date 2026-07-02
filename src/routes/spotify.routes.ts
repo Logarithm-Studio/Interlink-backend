@@ -145,7 +145,7 @@ router.get("/search", async (req: Request, res: Response, next: NextFunction) =>
     const user = (req as AuthenticatedRequest).user;
     const q = String(req.query.q ?? "").trim();
     if (!q) throw new BadRequestError("q is required.");
-    const type = String(req.query.type ?? "track,playlist");
+    const type = String(req.query.type ?? "track,album,playlist");
     res.json(await search(user.id, q, type));
   } catch (err) {
     next(err);

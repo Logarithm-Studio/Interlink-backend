@@ -14,11 +14,20 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { getIntegration, upsertIntegration } from "../integrations/tokenStore";
 import { BadRequestError } from "../../utils/errors";
+import { appRedirect as oauthAppRedirect } from "../integrations/oauthAppRedirect";
 
 const SLACK_API = "https://slack.com/api";
 const SLACK_OAUTH = "https://slack.com/oauth/v2/authorize";
 
-const SLACK_BOT_SCOPES = ["chat:write", "channels:read", "channels:history", "users:read"];
+const SLACK_BOT_SCOPES = [
+  "chat:write",
+  "chat:write.public",
+  "channels:read",
+  "channels:history",
+  "groups:read",
+  "groups:history",
+  "users:read",
+];
 
 function clientId(): string {
   const id = process.env.SLACK_CLIENT_ID;
@@ -40,7 +49,8 @@ function redirectUri(): string {
 
 /** Deep link the browser is sent to after the backend finishes the exchange. */
 export function appRedirect(status: "success" | "error", detail?: string): string {
-  const base = process.env.SLACK_APP_REDIRECT ?? "interlinkapp://oauth/slack";
+  if (!process.env.SLACK_APP_REDIRECT) return oauthAppRedirect("slack", status, detail);
+  const base = process.env.SLACK_APP_REDIRECT;
   const params = new URLSearchParams({ provider: "slack", status, ...(detail ? { detail } : {}) });
   return `${base}?${params}`;
 }
@@ -128,9 +138,25 @@ async function slackApi<T>(
 
   const data = (await res.json()) as T & { ok: boolean; error?: string };
   if (!data.ok) {
-    throw new BadRequestError(`Slack API error (${method}): ${data.error ?? "unknown"}`);
+    throw new BadRequestError(slackErrorMessage(method, data.error));
   }
   return data;
+}
+
+function slackErrorMessage(method: string, error?: string): string {
+  switch (error) {
+    case "missing_scope":
+      return "Slack permission is missing. Disconnect and reconnect Slack in Connected Accounts to approve the updated permissions.";
+    case "not_in_channel":
+      return "The Slack app is not in that channel. Reconnect Slack to grant public posting, or invite the app to the channel.";
+    case "channel_not_found":
+      return "Slack could not find that channel, or the app does not have access to it.";
+    case "invalid_auth":
+    case "token_revoked":
+      return "Slack authorization is no longer valid. Reconnect Slack in Connected Accounts.";
+    default:
+      return `Slack API error (${method}): ${error ?? "unknown"}`;
+  }
 }
 
 // ─── Channels ──────────────────────────────────────────────────────────────────
@@ -143,9 +169,21 @@ export interface SlackChannel {
 }
 
 export async function getChannels(userId: string): Promise<SlackChannel[]> {
-  const data = await slackApi<{
-    channels?: { id?: string; name?: string; is_private?: boolean; is_member?: boolean }[];
-  }>(userId, "conversations.list", { types: "public_channel", limit: "200", exclude_archived: "true" });
+  let data: { channels?: { id?: string; name?: string; is_private?: boolean; is_member?: boolean }[] };
+  try {
+    data = await slackApi(
+      userId,
+      "conversations.list",
+      { types: "public_channel,private_channel", limit: "200", exclude_archived: "true" },
+    );
+  } catch (err) {
+    if (!(err instanceof BadRequestError) || !err.message.includes("permission is missing")) throw err;
+    data = await slackApi(
+      userId,
+      "conversations.list",
+      { types: "public_channel", limit: "200", exclude_archived: "true" },
+    );
+  }
   return (data.channels ?? []).map((c) => ({
     id: c.id ?? "",
     name: c.name ?? "",
