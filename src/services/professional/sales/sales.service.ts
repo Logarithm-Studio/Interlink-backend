@@ -15,6 +15,12 @@ import { sendProfessionalEmail } from "../email";
 import { draftEmail } from "../draft";
 import { geminiGenerateContent, isGeminiLive } from "../../ai/geminiClient";
 import { scheduleLeadMeeting } from "../../sales/calendar-sales.service";
+import {
+  syncPipelineToTrello,
+  importDealsFromTrello,
+  postPipelineDigestToSlack,
+  salesConnectionsLine,
+} from "./integrations";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
 
@@ -425,10 +431,13 @@ export async function seedDemo(userId: string): Promise<{ count: number }> {
 
 // ─── AI snapshot ────────────────────────────────────────────────────────────
 async function buildSnapshot(userId: string): Promise<string> {
-  const [deals, contacts, contracts] = await Promise.all([listDeals(userId), listContacts(userId), listContracts(userId)]);
+  const [deals, contacts, contracts, connLine] = await Promise.all([
+    listDeals(userId), listContacts(userId), listContracts(userId), salesConnectionsLine(userId),
+  ]);
   const open = deals.filter((d) => d.stage !== "won" && d.stage !== "lost");
   const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US")}`;
   return [
+    connLine,
     `Open pipeline: ${fmt(open.reduce((s, d) => s + d.amountCents, 0))} across ${open.length} deal(s). Contacts: ${contacts.length}. Contracts out: ${contracts.filter((c) => c.status === "sent").length}.`,
     "Deals:",
     ...deals.slice(0, 20).map((d) => `- ${d.title} | ${d.company ?? "—"} | ${fmt(d.amountCents)} | stage=${d.stage} | contact=${d.contactName ?? "—"}`),
@@ -458,6 +467,9 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "mark_contract_signed", description: "Mark a deal's contract as signed (moves the deal to won).", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
   { name: "route_lead", description: "Assign a lead to a rep by territory and schedule an intro meeting.", parameters: { type: "object", properties: { contactName: { type: "string" } }, required: ["contactName"] } },
   { name: "reengage_deal", description: "Send a re-engagement email for a stalled deal and move it to nurture.", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
+  { name: "sync_pipeline_to_trello", description: "Push your open deals to your Trello board as cards (one per stage list).", parameters: { type: "object", properties: {} } },
+  { name: "import_from_trello", description: "Pull cards from your Trello board and create deals for any that aren't in the pipeline yet.", parameters: { type: "object", properties: {} } },
+  { name: "post_pipeline_to_slack", description: "Post a pipeline digest to a Slack channel.", parameters: { type: "object", properties: { channel: { type: "string", description: "Channel name or id (defaults to a channel you're in)." } } } },
   { name: "log_activity", description: "Log a note to the feed.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] } },
 ];
 
@@ -474,6 +486,9 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "mark_contract_signed": return `Mark "${args.dealTitle ?? "the deal"}"'s contract signed.`;
     case "route_lead": return `Route ${args.contactName ?? "the lead"} to a rep & schedule a meeting.`;
     case "reengage_deal": return `Re-engage "${args.dealTitle ?? "the deal"}" (→ nurture).`;
+    case "sync_pipeline_to_trello": return `Sync your open deals to your Trello board.`;
+    case "import_from_trello": return `Import new cards from your Trello board as deals.`;
+    case "post_pipeline_to_slack": return `Post a pipeline digest to Slack${args.channel ? ` (#${String(args.channel).replace(/^#/, "")})` : ""}.`;
     case "log_activity": return `Log: ${args.note ?? ""}`;
     default: return `Run ${name}.`;
   }
@@ -541,6 +556,9 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       }
       case "route_lead": return routeLead(user, String(args.contactName ?? ""));
       case "reengage_deal": return reengageDeal(user, String(args.dealTitle ?? ""));
+      case "sync_pipeline_to_trello": return syncPipelineToTrello(user);
+      case "import_from_trello": return importDealsFromTrello(user);
+      case "post_pipeline_to_slack": return postPipelineDigestToSlack(user, args.channel ? String(args.channel) : undefined);
       case "log_activity": {
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "note", title: String(args.note ?? "Note") });
         return { ok: true, message: "Logged." };

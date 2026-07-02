@@ -120,6 +120,9 @@ the only non-JWT routes — they authenticate via Google channel headers and the
 | POST | `/expenses/:id/resolve` | `{ action: 'approve' \| 'dismiss' }` |
 | GET | `/reports/flash` | Gemini flash financial report (AR + cash + insights + recommendations) |
 | POST | `/reports/flash/email` | Email the flash report to the user's own inbox |
+| POST | `/reports/flash/slack` | Push the flash report to Slack (`{ channel? }`; gated on Slack connected) |
+| POST | `/reports/flash/notion` | Export the flash report as a Notion page (`{ parentId? }`; gated on Notion connected) |
+| POST | `/invoices/import/notion` | Import invoices from a Notion database (`{ databaseId }`; gated on Notion connected) |
 | POST | `/assistant/chat` | "Ask your AI accountant" — `{ message, history? }`, grounded in the user's data |
 | GET | `/assistant/history` | Recent assistant conversation |
 | POST | `/scan` | Mark overdue (open→overdue past due) + push-notify; weekly via QStash Schedule in prod |
@@ -154,6 +157,30 @@ JSON-only, Zod-validated, and cached in `ai_outputs`. **Dunning send** mirrors
 Internal: `POST /api/v1/workers/accountant-automations` (QStash-signed) runs the daily global
 autonomy tick. Autonomy honors guardrails (daily send cap, business-hours, per-client opt-out,
 escalation capped at "final"); `suggest` queues approvals, `auto` acts directly.
+
+### `/api/v1/pm` (Professional Mode — Product Manager: GitHub · Trello · Jira · Notion · Slack)
+
+OAuth + CRUD for GitHub/Trello plus the PM PRD workflow dashboard. All workflow actions are
+**gated on the relevant integration being connected** and return a friendly "connect X" message
+otherwise.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/overview` | Connection status (`github/jira/notion/slack/trello`) + repos + Jira projects |
+| GET | `/jira/projects` | Jira projects for the project picker |
+| GET | `/notion/prd-pages?q=` | Search Notion pages (PRD / baseline-scope pickers) |
+| GET | `/slack/channels` | Slack channels for the alert/publish picker |
+| POST | `/workflows/:name` | Run a PRD workflow; `:name` ∈ `prd_to_tickets`, `sprint_interruption`, `release_notes`, `status_sync`, `scope_creep_check` |
+| GET | `/repos`, `/boards`, `/standup/:owner/:repo`, … | GitHub/Trello reads + standup/sprint-plan (unchanged) |
+
+Workflow bodies (JSON): `prd_to_tickets` `{ notionPageId\|notionPageQuery, projectKey? }`;
+`sprint_interruption` `{ defect\|slackChannel, alertChannel, projectKey? }`;
+`release_notes` `{ repo, slackChannel?, notionParentId? }`;
+`status_sync` `{ repo?, slackChannel?, notionParentId? }`;
+`scope_creep_check` `{ amendmentText, baselinePageId\|baselineQuery\|baselineText }`.
+
+Sales exposes the same pattern via three agent tools (`sync_pipeline_to_trello`,
+`import_from_trello`, `post_pipeline_to_slack`) invoked through `POST /api/v1/professional/action`.
 
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.

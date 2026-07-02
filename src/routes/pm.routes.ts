@@ -12,6 +12,11 @@ import { appRedirect } from "../services/integrations/oauthAppRedirect";
 import { buildAuthUrl as buildTrelloUrl, storeToken, getBoards, getListsForBoard, createCard, updateCard, getCardsForBoard } from "../services/pm/trello.service";
 import { buildAuthUrl as buildGitHubUrl, exchangeCode as ghExchangeCode, getRepos, getPullRequests, getIssues, createIssue } from "../services/pm/github.service";
 import { generateStandupSummary, planSprint, getTrelloBoardSummary } from "../services/pm/pm-workflows.service";
+import { getProjects as getJiraProjects } from "../services/jira/jira.service";
+import { searchPages as searchNotionPages } from "../services/notion/notion.service";
+import { getChannels as getSlackChannels } from "../services/slack/slack.service";
+import { pmConnections } from "../services/professional/pm/pm-integrations";
+import { pmVertical } from "../services/professional/pm/pm.vertical";
 
 const router = Router();
 
@@ -227,6 +232,57 @@ router.get("/sprint-plan/:owner/:repo", async (req: Request, res: Response, next
 router.get("/trello-summary", async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.json({ boards: await getTrelloBoardSummary((req as AuthenticatedRequest).user.id) });
+  } catch (err) { next(err); }
+});
+
+// ─── Dashboard (bespoke PM workspace) ──────────────────────────────────────────
+
+// Connection status + light data to populate the dashboard + workflow pickers.
+router.get("/overview", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as AuthenticatedRequest).user.id;
+    const connections = await pmConnections(userId);
+    const [repos, jiraProjects] = await Promise.all([
+      connections.github ? getRepos(userId).catch(() => []) : Promise.resolve([]),
+      connections.jira ? getJiraProjects(userId).catch(() => []) : Promise.resolve([]),
+    ]);
+    res.json({
+      connections,
+      repos: repos.map((r) => ({ fullName: r.fullName, openIssues: r.openIssues })),
+      jiraProjects: jiraProjects.map((p) => ({ key: p.key, name: p.name })),
+    });
+  } catch (err) { next(err); }
+});
+
+router.get("/jira/projects", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({ projects: await getJiraProjects((req as AuthenticatedRequest).user.id) });
+  } catch (err) { next(err); }
+});
+
+router.get("/notion/prd-pages", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q : "";
+    res.json({ pages: await searchNotionPages((req as AuthenticatedRequest).user.id, q) });
+  } catch (err) { next(err); }
+});
+
+router.get("/slack/channels", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({ channels: await getSlackChannels((req as AuthenticatedRequest).user.id) });
+  } catch (err) { next(err); }
+});
+
+// Run one of the PM PRD workflows. Delegates to the vertical so logic lives in one place.
+const PM_WORKFLOWS = new Set(["prd_to_tickets", "sprint_interruption", "release_notes", "status_sync", "scope_creep_check"]);
+const WorkflowBody = z.record(z.unknown());
+router.post("/workflows/:name", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const name = req.params.name;
+    if (!PM_WORKFLOWS.has(name)) throw new BadRequestError("Unknown PM workflow.");
+    const args = WorkflowBody.parse(req.body ?? {});
+    res.json(await pmVertical.executeTool(user, name, args as Record<string, unknown>));
   } catch (err) { next(err); }
 });
 

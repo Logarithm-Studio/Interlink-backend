@@ -191,3 +191,30 @@ export async function queryDatabase(
   const data = (await res.json()) as { results?: Record<string, unknown>[] };
   return data.results ?? [];
 }
+
+// ─── Page content (read the body blocks of a page as plain text) ───────────────
+
+/** Pull the plain-text content of a page's top-level blocks (paragraphs, lists,
+ *  headings, to-dos, quotes). Used to feed a PRD / scoping doc to the AI. */
+export async function getPageContent(userId: string, pageId: string): Promise<string> {
+  const res = await notionFetch(userId, `/blocks/${pageId}/children?page_size=100`, { method: "GET" });
+  if (!res.ok) return "";
+  const data = (await res.json()) as {
+    results?: { type?: string; [k: string]: unknown }[];
+  };
+
+  const lines: string[] = [];
+  for (const block of data.results ?? []) {
+    const type = block.type;
+    if (!type) continue;
+    // Each block nests its rich_text under a key matching its type.
+    const payload = block[type] as { rich_text?: { plain_text?: string }[] } | undefined;
+    const text = (payload?.rich_text ?? []).map((r) => r.plain_text ?? "").join("");
+    if (!text.trim()) continue;
+    if (type.startsWith("heading")) lines.push(`\n## ${text}`);
+    else if (type === "bulleted_list_item" || type === "numbered_list_item") lines.push(`- ${text}`);
+    else if (type === "to_do") lines.push(`- [ ] ${text}`);
+    else lines.push(text);
+  }
+  return lines.join("\n").trim();
+}

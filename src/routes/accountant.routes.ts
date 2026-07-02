@@ -42,6 +42,11 @@ import { extractReceipt } from "../services/ai/multimodal.service";
 import { getArInsights } from "../services/accountant/insights.service";
 import { emailFlashReport, getFlashReport } from "../services/accountant/reporting.service";
 import {
+  postFlashReportToSlack,
+  exportFlashReportToNotion,
+  importInvoicesFromNotion,
+} from "../services/accountant/integrations.service";
+import {
   chat,
   command,
   executeAction,
@@ -355,6 +360,46 @@ router.post("/reports/flash/email", async (req: Request, res: Response, next: Ne
     res.json(await emailFlashReport(user));
   } catch (err) {
     mapSendError(err, next);
+  }
+});
+
+// Push the flash report to a Slack channel (gated on Slack being connected).
+const FlashSlackBody = z.object({ channel: z.string().optional() });
+router.post("/reports/flash/slack", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = FlashSlackBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid request body.");
+    res.json(await postFlashReportToSlack(user, parsed.data.channel));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Export the flash report to a Notion page (gated on Notion being connected).
+const FlashNotionBody = z.object({ parentId: z.string().optional() });
+router.post("/reports/flash/notion", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = FlashNotionBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid request body.");
+    res.json(await exportFlashReportToNotion(user, parsed.data.parentId));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Pull invoices from a Notion database (gated on Notion being connected).
+const ImportNotionBody = z.object({ databaseId: z.string().min(1) });
+router.post("/invoices/import/notion", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ImportNotionBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("databaseId is required.");
+    const result = await importInvoicesFromNotion(user, parsed.data.databaseId);
+    res.json({ ...result, invoices: await listInvoices(user.id) });
+  } catch (err) {
+    next(err);
   }
 });
 

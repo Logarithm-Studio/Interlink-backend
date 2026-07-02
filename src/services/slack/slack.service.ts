@@ -171,6 +171,18 @@ export async function postMessage(userId: string, channel: string, text: string)
   return { channel: data.channel ?? channel, ts: data.ts ?? "" };
 }
 
+/** Read recent messages from a channel (newest first) — used to monitor bug/alert channels. */
+export async function getRecentMessages(userId: string, channel: string, limit = 20): Promise<string[]> {
+  const data = await slackApi<{ messages?: { text?: string; subtype?: string }[] }>(
+    userId,
+    "conversations.history",
+    { channel, limit: String(limit) },
+  );
+  return (data.messages ?? [])
+    .filter((m) => !m.subtype && (m.text ?? "").trim().length > 0)
+    .map((m) => m.text ?? "");
+}
+
 // ─── Users ─────────────────────────────────────────────────────────────────────
 
 export interface SlackUser {
