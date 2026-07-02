@@ -260,6 +260,33 @@ async function withConnectedApps(userId: string, snapshot: string): Promise<stri
 }
 
 /** The last few turns of a conversation, oldest-first — gives the agent memory. */
+function actionErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim()) return err.message.trim();
+  return fallback;
+}
+
+async function runReadOnlyPersonalAction(
+  userId: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ message: string }> {
+  try {
+    return await executePersonalAction(userId, name, args);
+  } catch (err) {
+    return {
+      message: actionErrorMessage(err, "I could not load that connected-app information right now."),
+    };
+  }
+}
+
+function directConnectedAppReadOnlyAction(message: string): { name: string; args: Record<string, unknown> } | null {
+  const normalized = message.trim().toLowerCase().replace(/[.!?]+$/g, "");
+  if (["slack", "slack channels", "list slack", "list slack channels", "show slack channels"].includes(normalized)) {
+    return { name: "list_slack_channels", args: {} };
+  }
+  return null;
+}
+
 async function loadRecentHistory(
   convId: string,
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
@@ -279,6 +306,17 @@ export async function command(
   attachment?: { data: string; mimeType: string },
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
+  const directAction = directConnectedAppReadOnlyAction(message);
+  if (directAction) {
+    const exec = await runReadOnlyPersonalAction(userId, directAction.name, directAction.args);
+    await query(
+      `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+       VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+      [userId, message, exec.message, convId],
+    ).catch(() => {});
+    await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
+    return { answer: exec.message, action: null, isLive: true, conversationId: convId };
+  }
   const persona = await getProfessionalPersona(userId);
 
   // Non-finance roles are served by their persona vertical: agentic tools +
@@ -299,7 +337,7 @@ export async function command(
       let vAction: PendingAction | null = null;
       if (plan.action) {
         if (isReadOnlyPersonalAction(plan.action.name)) {
-          const exec = await executePersonalAction(userId, plan.action.name, plan.action.args);
+          const exec = await runReadOnlyPersonalAction(userId, plan.action.name, plan.action.args);
           await query(
             `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
              VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
@@ -362,7 +400,7 @@ export async function command(
   let action: PendingAction | null = null;
   if (plan.action) {
     if (isReadOnlyPersonalAction(plan.action.name)) {
-      const exec = await executePersonalAction(userId, plan.action.name, plan.action.args);
+      const exec = await runReadOnlyPersonalAction(userId, plan.action.name, plan.action.args);
       await query(
         `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
          VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,

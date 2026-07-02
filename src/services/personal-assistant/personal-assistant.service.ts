@@ -624,12 +624,13 @@ export async function executeAction(
       }
       case "list_slack_channels": {
         const channels = await getSlackChannels(userId);
-        const message = linesOrNone(
+        const channelLines = linesOrNone(
           channels,
           (c) => `- #${c.name} (${c.id})${c.isMember ? "" : " - app not joined"}`,
           "No Slack channels are available.",
           12,
         );
+        const message = channels.length > 0 ? `Slack channels I can access:\n${channelLines}` : channelLines;
         return { ok: true, message, data: channels };
       }
       case "post_slack_message": {
@@ -848,9 +849,18 @@ export async function command(
       // Read-only actions run immediately and answer conversationally — no
       // confirmation round-trip — so the assistant feels like a real chat.
       if (READ_ONLY_ACTIONS.has(name)) {
-        const exec = await executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon });
-        await persistMessage(userId, "assistant", exec.message);
-        return { answer: exec.message, action: null, isLive: true };
+        try {
+          const exec = await executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon });
+          await persistMessage(userId, "assistant", exec.message);
+          return { answer: exec.message, action: null, isLive: true };
+        } catch (err) {
+          const answer =
+            err instanceof Error && err.message.trim()
+              ? err.message.trim()
+              : "I could not load that connected-app information right now.";
+          await persistMessage(userId, "assistant", answer);
+          return { answer, action: null, isLive: true };
+        }
       }
 
       // Write actions are returned for user confirmation before executing.

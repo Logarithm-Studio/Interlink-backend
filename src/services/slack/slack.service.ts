@@ -29,6 +29,10 @@ const SLACK_BOT_SCOPES = [
   "users:read",
 ];
 
+const SLACK_USER_SCOPES = [
+  "chat:write",
+];
+
 function clientId(): string {
   const id = process.env.SLACK_CLIENT_ID;
   if (!id) throw new Error("SLACK_CLIENT_ID is not configured.");
@@ -61,6 +65,7 @@ export function buildAuthUrl(state: string): string {
   const params = new URLSearchParams({
     client_id: clientId(),
     scope: SLACK_BOT_SCOPES.join(","),
+    user_scope: SLACK_USER_SCOPES.join(","),
     redirect_uri: redirectUri(),
     state,
   });
@@ -86,21 +91,32 @@ export async function exchangeCode(userId: string, code: string): Promise<void> 
     scope?: string;
     team?: { id?: string; name?: string };
     bot_user_id?: string;
-    authed_user?: { id?: string };
+    authed_user?: { id?: string; access_token?: string; scope?: string; token_type?: string };
   };
   if (!data.ok || !data.access_token) {
     throw new BadRequestError(`Slack authorization failed: ${data.error ?? "unknown error"}`);
+  }
+  if (!data.authed_user?.access_token) {
+    throw new BadRequestError("Slack authorization did not return a user token. Reconnect Slack and approve posting as yourself.");
   }
 
   await upsertIntegration(
     userId,
     "slack",
-    { accessToken: data.access_token, scopes: (data.scope ?? "").split(",").filter(Boolean) },
+    {
+      accessToken: data.access_token,
+      refreshToken: data.authed_user.access_token,
+      scopes: [
+        ...(data.scope ?? "").split(",").filter(Boolean).map((scope) => `bot:${scope}`),
+        ...(data.authed_user.scope ?? "").split(",").filter(Boolean).map((scope) => `user:${scope}`),
+      ],
+    },
     {
       teamId: data.team?.id,
       teamName: data.team?.name,
       botUserId: data.bot_user_id,
       authedUserId: data.authed_user?.id,
+      postsAs: "user",
     },
   );
 }
@@ -112,12 +128,16 @@ async function slackApi<T>(
   method: string,
   params: Record<string, string> = {},
   httpMethod: "GET" | "POST" = "GET",
+  tokenKind: "bot" | "user" = "bot",
 ): Promise<T> {
   const integration = await getIntegration(userId, "slack");
   if (!integration || integration.status === "revoked") {
     throw new BadRequestError("Slack is not connected. Connect it from Settings → Connected Accounts.");
   }
-  const token = integration.accessToken;
+  const token = tokenKind === "user" ? integration.refreshToken : integration.accessToken;
+  if (!token) {
+    throw new BadRequestError("Reconnect Slack in Connected Accounts to approve posting as yourself.");
+  }
 
   let res: Response;
   if (httpMethod === "GET") {
@@ -199,12 +219,18 @@ export interface SlackPostedMessage {
   ts: string;
 }
 
-export async function postMessage(userId: string, channel: string, text: string): Promise<SlackPostedMessage> {
+export async function postMessage(
+  userId: string,
+  channel: string,
+  text: string,
+  opts: { asUser?: boolean } = {},
+): Promise<SlackPostedMessage> {
   const data = await slackApi<{ channel?: string; ts?: string }>(
     userId,
     "chat.postMessage",
     { channel, text },
     "POST",
+    opts.asUser === false ? "bot" : "user",
   );
   return { channel: data.channel ?? channel, ts: data.ts ?? "" };
 }
