@@ -12,7 +12,7 @@ import { appRedirect } from "../services/integrations/oauthAppRedirect";
 import { buildAuthUrl as buildTrelloUrl, storeToken, getBoards, getListsForBoard, createCard, updateCard, getCardsForBoard } from "../services/pm/trello.service";
 import { buildAuthUrl as buildGitHubUrl, exchangeCode as ghExchangeCode, getRepos, getPullRequests, getIssues, createIssue } from "../services/pm/github.service";
 import { generateStandupSummary, planSprint, getTrelloBoardSummary } from "../services/pm/pm-workflows.service";
-import { getProjects as getJiraProjects } from "../services/jira/jira.service";
+import { getProjects as getJiraProjects, createIssue as createJiraIssue } from "../services/jira/jira.service";
 import { searchPages as searchNotionPages } from "../services/notion/notion.service";
 import { getChannels as getSlackChannels } from "../services/slack/slack.service";
 import { pmConnections } from "../services/professional/pm/pm-integrations";
@@ -257,6 +257,17 @@ router.get("/overview", async (req: Request, res: Response, next: NextFunction) 
 router.get("/jira/projects", async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.json({ projects: await getJiraProjects((req as AuthenticatedRequest).user.id) });
+  } catch (err) { next(err); }
+});
+
+// Manually create a single Jira ticket (data-entry, gated on Jira connected).
+const JiraIssueBody = z.object({ projectKey: z.string().min(1), summary: z.string().min(1), description: z.string().optional() });
+router.post("/jira/issue", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const p = JiraIssueBody.safeParse(req.body ?? {});
+    if (!p.success) throw new BadRequestError("projectKey and summary are required.");
+    res.status(201).json({ issue: await createJiraIssue(user.id, p.data) });
   } catch (err) { next(err); }
 });
 

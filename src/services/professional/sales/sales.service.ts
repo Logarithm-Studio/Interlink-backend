@@ -128,14 +128,14 @@ export async function createDeal(
 }
 export async function updateDeal(
   userId: string, id: string,
-  patch: { stage?: DealStage; amountCents?: number; notes?: string; ownerRep?: string },
+  patch: { stage?: DealStage; amountCents?: number; notes?: string; ownerRep?: string; contactName?: string },
 ): Promise<SalesDeal | null> {
   const res = await query(
     `UPDATE sales_deals SET
        stage=COALESCE($3,stage), amount_cents=COALESCE($4,amount_cents), notes=COALESCE($5,notes),
-       owner_rep=COALESCE($6,owner_rep), last_activity_at=now(), updated_at=now()
+       owner_rep=COALESCE($6,owner_rep), contact_name=COALESCE($7,contact_name), last_activity_at=now(), updated_at=now()
      WHERE id=$1 AND user_id=$2 RETURNING ${DEAL_COLS}`,
-    [id, userId, patch.stage ?? null, patch.amountCents ?? null, patch.notes ?? null, patch.ownerRep ?? null],
+    [id, userId, patch.stage ?? null, patch.amountCents ?? null, patch.notes ?? null, patch.ownerRep ?? null, patch.contactName ?? null],
   );
   return res.rows[0] ? mapDeal(res.rows[0] as never) : null;
 }
@@ -340,7 +340,7 @@ export async function generateContract(user: AppUser, dealId: string): Promise<{
   }
   await logActivity(user.id, { dealId: deal.id, kind: "contract_sent", note: `Contract sent (${fmt})` });
   await recordActivity({ userId: user.id, persona: PERSONA, kind: "contract_sent", title: `Contract sent for ${deal.title}`, detail: contact?.email ? `to ${contact.name}` : "generated (no email)", entityType: "sales_deal", entityId: deal.id });
-  return { ok: true, message: contact?.email ? `Contract emailed to ${contact.name}.` : "Contract generated (no contact email on file).", contract };
+  return { ok: true, message: contact?.email ? `Contract emailed to ${contact.name}.` : "Contract generated but not emailed — add a contact with an email to this deal, then generate again to send it.", contract };
 }
 
 export async function markContractSigned(user: AppUser, dealId: string): Promise<{ ok: boolean; message: string }> {

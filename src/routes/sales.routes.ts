@@ -12,7 +12,7 @@ import { AuthenticatedRequest } from "../types";
 import { BadRequestError, NotFoundError } from "../utils/errors";
 import {
   listDeals, getDealDetail, createDeal, updateDeal,
-  listContacts, getContact, createContact,
+  listContacts, getContact, createContact, updateContact,
   listContracts, listReps, createRep,
   getOverview, enrichLead, generateContract, markContractSigned,
   routeLead, processMeetingTranscript, getOrCreateFormKey, captureInboundLead,
@@ -85,6 +85,7 @@ const DealPatch = z.object({
   stage: z.string().optional(),
   amountCents: z.number().int().nonnegative().optional(),
   notes: z.string().max(4000).optional(),
+  contactName: z.string().max(200).optional(),
 });
 router.patch("/deals/:id", async (req, res, next) => {
   try {
@@ -116,6 +117,17 @@ router.post("/deals/:id/meeting-followup", async (req, res, next) => {
 router.get("/contacts", async (req, res, next) => {
   try { res.json({ contacts: await listContacts(uid(req)) }); } catch (err) { next(err); }
 });
+
+const EnrichBody = z.object({ emailText: z.string().min(1).max(8000) });
+router.post("/contacts/enrich", async (req, res, next) => {
+  try {
+    const p = EnrichBody.safeParse(req.body ?? {});
+    if (!p.success) throw new BadRequestError("emailText is required.");
+    const { contact, isFallback } = await enrichLead(uid(req), p.data.emailText);
+    res.json({ contact, isFallback });
+  } catch (err) { next(err); }
+});
+
 router.get("/contacts/:id", async (req, res, next) => {
   try {
     const c = await getContact(uid(req), req.params.id);
@@ -138,13 +150,19 @@ router.post("/contacts", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-const EnrichBody = z.object({ emailText: z.string().min(1).max(8000) });
-router.post("/contacts/enrich", async (req, res, next) => {
+const ContactPatch = z.object({
+  email: z.string().email().optional(),
+  company: z.string().max(200).optional(),
+  title: z.string().max(200).optional(),
+  territory: z.string().max(120).optional(),
+});
+router.patch("/contacts/:id", async (req, res, next) => {
   try {
-    const p = EnrichBody.safeParse(req.body ?? {});
-    if (!p.success) throw new BadRequestError("emailText is required.");
-    const { contact, isFallback } = await enrichLead(uid(req), p.data.emailText);
-    res.json({ contact, isFallback });
+    const p = ContactPatch.safeParse(req.body ?? {});
+    if (!p.success) throw new BadRequestError("Invalid patch.");
+    const contact = await updateContact(uid(req), req.params.id, p.data);
+    if (!contact) throw new NotFoundError("Contact not found.");
+    res.json({ contact });
   } catch (err) { next(err); }
 });
 
