@@ -18,6 +18,7 @@ import {
   CONNECTED_APP_ORCHESTRATION_PROMPT,
   connectedAppsSummary,
   executeAction as executePersonalAction,
+  isReadOnlyAction as isReadOnlyPersonalAction,
   PERSONAL_TOOLS,
   summarizeAction as summarizePersonalAction,
 } from "../personal-assistant/personal-assistant.service";
@@ -297,6 +298,16 @@ export async function command(
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {
+        if (isReadOnlyPersonalAction(plan.action.name)) {
+          const exec = await executePersonalAction(userId, plan.action.name, plan.action.args);
+          await query(
+            `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+             VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+            [userId, message, exec.message, convId],
+          ).catch(() => {});
+          await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
+          return { answer: exec.message, action: null, isLive: plan.isLive, conversationId: convId };
+        }
         vAction = {
           id: randomUUID(),
           name: plan.action.name,
@@ -350,6 +361,16 @@ export async function command(
 
   let action: PendingAction | null = null;
   if (plan.action) {
+    if (isReadOnlyPersonalAction(plan.action.name)) {
+      const exec = await executePersonalAction(userId, plan.action.name, plan.action.args);
+      await query(
+        `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+         VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+        [userId, message, exec.message, convId],
+      ).catch(() => {});
+      await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
+      return { answer: exec.message, action: null, isLive: plan.isLive, conversationId: convId };
+    }
     action = {
       id: randomUUID(),
       name: plan.action.name,

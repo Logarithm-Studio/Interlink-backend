@@ -776,7 +776,7 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
   }
 }
 
-const READ_ONLY_ACTIONS = new Set([
+export const READ_ONLY_ACTIONS = new Set([
   "get_weather",
   "get_fitness_summary",
   "get_gmail_inbox",
@@ -796,6 +796,10 @@ const READ_ONLY_ACTIONS = new Set([
   "list_trello_lists",
   "list_trello_cards",
 ]);
+
+export function isReadOnlyAction(name: string): boolean {
+  return READ_ONLY_ACTIONS.has(name);
+}
 
 export interface CommandOptions {
   image?: { mimeType: string; data: string };
