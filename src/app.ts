@@ -33,6 +33,7 @@ import pmRoutes from "./routes/pm.routes";
 import hrRoutes from "./routes/hr.routes";
 import professionalStubsRoutes from "./routes/professional-stubs.routes";
 import professionalRoutes from "./routes/professional.routes";
+import salesRoutes from "./routes/sales.routes";
 
 const app: Express = express();
 
@@ -94,6 +95,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/hr", hrRoutes);
   app.use("/api/v1/professional", professionalRoutes);
   app.use("/api/v1/professional", professionalStubsRoutes);
+  app.use("/api/v1/sales", salesRoutes);
 }
 
 function setupErrorHandling(app: Express) {

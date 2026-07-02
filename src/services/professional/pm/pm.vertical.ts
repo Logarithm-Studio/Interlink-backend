@@ -7,8 +7,9 @@
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
 import { getRepos, getPullRequests, getIssues, createIssue } from "../../pm/github.service";
+import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
-import type { PersonaVertical } from "../registry";
+import type { AutomationProposal, PersonaVertical } from "../registry";
 
 const PERSONA = "product_manager";
 
@@ -41,6 +42,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "create_issue", description: "Create a GitHub issue in a repo.", parameters: { type: "object", properties: { repo: { type: "string", description: "owner/name from the snapshot." }, title: { type: "string" }, body: { type: "string" } }, required: ["repo", "title"] } },
   { name: "summarize_prs", description: "Summarize open pull requests for a repo.", parameters: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] } },
   { name: "generate_standup", description: "Generate a standup summary (open PRs + issues) for a repo.", parameters: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] } },
+  { name: "release_notes", description: "Draft consumer-facing release notes from a repo's recent pull requests.", parameters: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] } },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
@@ -48,6 +50,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "create_issue": return `Create issue "${args.title ?? ""}" in ${args.repo ?? "repo"}.`;
     case "summarize_prs": return `Summarize open PRs in ${args.repo ?? "repo"}.`;
     case "generate_standup": return `Generate a standup for ${args.repo ?? "repo"}.`;
+    case "release_notes": return `Draft release notes for ${args.repo ?? "repo"}.`;
     default: return `Run ${name}.`;
   }
 }
@@ -72,12 +75,36 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "standup_generated", title: `Standup for ${args.repo}` });
         return { ok: true, message: `Standup — ${args.repo}\nOpen PRs: ${prs.length}\n` + prs.slice(0, 8).map((p) => `- #${p.number} ${p.title}`).join("\n") + `\nOpen issues: ${issues.length}\n` + issues.slice(0, 8).map((i) => `- #${i.number} ${i.title}`).join("\n") };
       }
+      case "release_notes": {
+        const prs = await getPullRequests(user.id, parts.owner, parts.repo);
+        if (prs.length === 0) return { ok: true, message: "No recent pull requests to summarize." };
+        const draft = await draftEmail({
+          role: "release manager",
+          purpose: "concise consumer-facing release notes (use the body field for the notes, grouped by theme)",
+          context: `Repo ${args.repo}. Pull requests:\n` + prs.slice(0, 25).map((p) => `- ${p.title}`).join("\n"),
+        });
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "release_notes", title: `Release notes for ${args.repo}` });
+        return { ok: true, message: draft.body };
+      }
       default:
         return { ok: false, message: `Unsupported action: ${name}.` };
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+async function planStandupDigest(userId: string): Promise<AutomationProposal[]> {
+  const repos = await getRepos(userId).catch(() => []);
+  if (repos.length === 0) return [];
+  const r = repos[0];
+  return [{
+    title: `Generate standup for ${r.fullName}`,
+    entityType: "github_repo",
+    entityId: String(r.id),
+    tool: "generate_standup",
+    args: { repo: r.fullName },
+  }];
 }
 
 export const pmVertical: PersonaVertical = {
@@ -88,4 +115,14 @@ export const pmVertical: PersonaVertical = {
   executeTool,
   summarizeAction,
   // No seedDemo — PM works over live GitHub data.
+  automations: [
+    {
+      type: "standup_digest",
+      title: "Daily standup digest",
+      description: "Summarize open PRs + issues for your top repo",
+      cadenceDays: 1,
+      defaultAutonomy: "suggest",
+      plan: planStandupDigest,
+    },
+  ],
 };

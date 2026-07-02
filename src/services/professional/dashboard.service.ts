@@ -7,19 +7,22 @@
 import { listActivityByPersona } from "../accountant/activity.service";
 import { listContacts, listDeals } from "./sales/sales.service";
 import { listTickets } from "./support/support.service";
-import { listListings, listLeads } from "./realestate/realestate.service";
+import { listListings, listLeads, listShowings, listLeases } from "./realestate/realestate.service";
 import { listCandidates, listOpenings } from "./hr/hr.vertical";
 import { getRepos } from "../pm/github.service";
 
 export interface DashboardStat { label: string; value: string; tone?: "default" | "success" | "danger" }
 export interface DashboardItem { id: string; title: string; subtitle?: string; badge?: string; tone?: "default" | "success" | "danger" | "warn" }
 export interface DashboardSection { key: string; title: string; items: DashboardItem[] }
+export interface DashboardActivityRow { id: string; title: string; detail: string | null; kind: string; createdAt: Date }
 export interface DashboardData {
   persona: string;
   headline: string;
   stats: DashboardStat[];
   sections: DashboardSection[];
-  activity: { id: string; title: string; detail: string | null; kind: string; createdAt: Date }[];
+  /** Pending agent suggestions awaiting one-tap approval. */
+  suggestions: DashboardActivityRow[];
+  activity: DashboardActivityRow[];
   isEmpty: boolean;
 }
 
@@ -32,8 +35,10 @@ function stageTone(stage: string): DashboardItem["tone"] {
 }
 
 export async function buildDashboard(userId: string, persona: string): Promise<DashboardData> {
-  const activityRows = await listActivityByPersona(userId, persona, 20);
-  const activity = activityRows.map((a) => ({ id: a.id, title: a.title, detail: a.detail, kind: a.kind, createdAt: a.createdAt }));
+  const activityRows = await listActivityByPersona(userId, persona, 40);
+  const map = (a: (typeof activityRows)[number]) => ({ id: a.id, title: a.title, detail: a.detail, kind: a.kind, createdAt: a.createdAt });
+  const suggestions = activityRows.filter((a) => a.status === "suggested").map(map);
+  const activity = activityRows.filter((a) => a.status === "done").slice(0, 20).map(map);
 
   let stats: DashboardStat[] = [];
   let sections: DashboardSection[] = [];
@@ -69,18 +74,20 @@ export async function buildDashboard(userId: string, persona: string): Promise<D
       { key: "tickets", title: "Tickets", items: tickets.map((t) => ({ id: t.id, title: t.subject, subtitle: `${t.customerName ?? "—"} · ${t.priority}`, badge: t.status, tone: t.status === "escalated" ? "danger" : t.status === "resolved" ? "success" : "default" })) },
     ];
   } else if (persona === "real_estate") {
-    const [listings, leads] = await Promise.all([listListings(userId), listLeads(userId)]);
+    const [listings, leads, showings, leases] = await Promise.all([listListings(userId), listLeads(userId), listShowings(userId), listLeases(userId)]);
     const active = listings.filter((l) => l.status === "active" || l.status === "pending");
     isEmpty = listings.length === 0 && leads.length === 0;
-    headline = `${active.length} active listing(s), ${leads.length} lead(s).`;
+    headline = `${active.length} active listing(s), ${leads.length} lead(s), ${showings.length} showing(s).`;
     stats = [
       { label: "Active", value: String(active.length) },
       { label: "Leads", value: String(leads.length) },
-      { label: "Listings", value: String(listings.length) },
+      { label: "Showings", value: String(showings.length) },
     ];
     sections = [
       { key: "listings", title: "Listings", items: listings.map((l) => ({ id: l.id, title: l.address, subtitle: `${money(l.priceCents)} · ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba`, badge: l.status, tone: l.status === "sold" ? "success" : "default" })) },
       { key: "leads", title: "Buyer leads", items: leads.map((l) => ({ id: l.id, title: l.name, subtitle: l.interest ?? undefined, badge: l.stage, tone: stageTone(l.stage) })) },
+      { key: "showings", title: "Showings", items: showings.map((s) => ({ id: s.id, title: s.address, subtitle: [s.leadName, s.scheduledAt ? new Date(s.scheduledAt).toLocaleString() : ""].filter(Boolean).join(" · ") })) },
+      { key: "leases", title: "Leases", items: leases.map((l) => ({ id: l.id, title: l.property, subtitle: [l.tenantName, l.endDate ? `ends ${l.endDate}` : ""].filter(Boolean).join(" · ") })) },
     ];
   } else if (persona === "hr") {
     const [cands, openings] = await Promise.all([listCandidates(userId), listOpenings(userId)]);
@@ -106,5 +113,5 @@ export async function buildDashboard(userId: string, persona: string): Promise<D
     ];
   }
 
-  return { persona, headline, stats, sections, activity, isEmpty };
+  return { persona, headline, stats, sections, suggestions, activity, isEmpty };
 }

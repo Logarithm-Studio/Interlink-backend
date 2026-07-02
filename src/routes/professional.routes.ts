@@ -13,9 +13,19 @@ import { query } from "../config/db";
 import { getVertical } from "../services/professional/registry";
 import { buildDashboard } from "../services/professional/dashboard.service";
 import { importSheet } from "../services/professional/import.service";
+import {
+  getProfessionalAutomations,
+  updateProfessionalAutomation,
+  type AutonomyLevel,
+} from "../services/professional/automations.service";
+import {
+  approveProfessionalSuggestion,
+  runProfessionalAutomationsForUser,
+} from "../services/professional/automationRunner";
+import { setActivityStatus } from "../services/accountant/activity.service";
 import { createContact, createDeal } from "../services/professional/sales/sales.service";
 import { createTicket } from "../services/professional/support/support.service";
-import { createListing, createLead } from "../services/professional/realestate/realestate.service";
+import { createListing, createLead, createShowing, createLease } from "../services/professional/realestate/realestate.service";
 import { createCandidate, createOpening } from "../services/professional/hr/hr.vertical";
 
 const router = Router();
@@ -59,7 +69,7 @@ router.post("/seed-demo", async (req: Request, res: Response, next: NextFunction
 const CreateBody = z.object({
   type: z.enum([
     "sales_contact", "sales_deal", "support_ticket",
-    "re_listing", "re_lead", "hr_candidate", "hr_opening",
+    "re_listing", "re_lead", "re_showing", "re_lease", "hr_candidate", "hr_opening",
   ]),
   data: z.record(z.unknown()),
 });
@@ -82,10 +92,72 @@ router.post("/entities", async (req: Request, res: Response, next: NextFunction)
       case "support_ticket": entity = await createTicket(user.id, d); break;
       case "re_listing": entity = await createListing(user.id, d); break;
       case "re_lead": entity = await createLead(user.id, d); break;
+      case "re_showing": entity = await createShowing(user.id, d); break;
+      case "re_lease": entity = await createLease(user.id, d); break;
       case "hr_candidate": entity = await createCandidate(user.id, d); break;
       case "hr_opening": entity = await createOpening(user.id, d); break;
     }
     res.json({ entity });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Autonomy: automations config + activity approve/dismiss + run-now ──────
+router.get("/automations", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const persona = await currentPersona(user.id);
+    res.json({ automations: await getProfessionalAutomations(user.id, persona) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const AutomationPatch = z.object({
+  enabled: z.boolean().optional(),
+  autonomy: z.enum(["off", "suggest", "auto"]).optional(),
+});
+router.put("/automations/:type", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const persona = await currentPersona(user.id);
+    const parsed = AutomationPatch.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid automation patch.");
+    await updateProfessionalAutomation(user.id, persona, req.params.type, {
+      enabled: parsed.data.enabled,
+      autonomy: parsed.data.autonomy as AutonomyLevel | undefined,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/automations/run-now", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const persona = await currentPersona(user.id);
+    res.json(await runProfessionalAutomationsForUser(user, persona));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/activity/:id/approve", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json(await approveProfessionalSuggestion(user, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/activity/:id/dismiss", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    await setActivityStatus(user.id, req.params.id, "dismissed");
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

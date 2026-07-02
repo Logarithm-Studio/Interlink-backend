@@ -9,7 +9,7 @@ import { recordActivity } from "../../accountant/activity.service";
 import { sendProfessionalEmail } from "../email";
 import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
-import type { PersonaVertical } from "../registry";
+import type { AutomationProposal, PersonaVertical } from "../registry";
 
 const PERSONA = "customer_support";
 
@@ -43,9 +43,15 @@ export async function createTicket(
   userId: string,
   data: { subject: string; body?: string; customerName?: string; customerEmail?: string; priority?: TicketPriority; category?: string; source?: string },
 ): Promise<SupportTicket> {
+  // SLA target derived from priority so the SLA-watch automation has a deadline.
   const res = await query(
-    `INSERT INTO support_tickets (user_id, subject, body, customer_name, customer_email, priority, category, source)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO support_tickets (user_id, subject, body, customer_name, customer_email, priority, category, source, sla_due_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+             now() + CASE $6
+               WHEN 'urgent' THEN interval '4 hours'
+               WHEN 'high'   THEN interval '8 hours'
+               WHEN 'medium' THEN interval '24 hours'
+               ELSE interval '72 hours' END)
      RETURNING id, subject, body, customer_name, customer_email, priority, status, category, sla_due_at, source, created_at`,
     [userId, data.subject, data.body ?? null, data.customerName ?? null, data.customerEmail ?? null, data.priority ?? "medium", data.category ?? null, data.source ?? "manual"],
   );
@@ -197,6 +203,23 @@ function mapRow(r: {
   return { id: r.id, subject: r.subject, body: r.body, customerName: r.customer_name, customerEmail: r.customer_email, priority: r.priority, status: r.status, category: r.category, slaDueAt: r.sla_due_at, source: r.source, createdAt: r.created_at };
 }
 
+async function planSlaWatch(userId: string): Promise<AutomationProposal[]> {
+  const res = await query<{ id: string; subject: string }>(
+    `SELECT id, subject FROM support_tickets
+      WHERE user_id = $1 AND status IN ('open','pending')
+        AND (priority IN ('high','urgent') OR (sla_due_at IS NOT NULL AND sla_due_at < now()))
+      ORDER BY created_at ASC LIMIT 10`,
+    [userId],
+  );
+  return res.rows.map((t) => ({
+    title: `Reply to "${t.subject}"`,
+    entityType: "support_ticket",
+    entityId: t.id,
+    tool: "draft_reply",
+    args: { subject: t.subject },
+  }));
+}
+
 export const supportVertical: PersonaVertical = {
   persona: PERSONA,
   tools: TOOLS,
@@ -205,4 +228,14 @@ export const supportVertical: PersonaVertical = {
   executeTool,
   summarizeAction,
   seedDemo,
+  automations: [
+    {
+      type: "sla_watch",
+      title: "SLA breach alarm",
+      description: "Reply to urgent / SLA-breaching tickets before they age",
+      cadenceDays: 1,
+      defaultAutonomy: "suggest",
+      plan: planSlaWatch,
+    },
+  ],
 };

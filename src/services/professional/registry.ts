@@ -16,6 +16,29 @@ import { realEstateVertical } from "./realestate/realestate.service";
 import { hrVertical } from "./hr/hr.vertical";
 import { pmVertical } from "./pm/pm.vertical";
 
+/** A single proposed action produced by an automation's `plan()`. */
+export interface AutomationProposal {
+  /** User-facing summary, e.g. "Follow up on Acme — annual platform". */
+  title: string;
+  entityType?: string;
+  entityId?: string;
+  /** The vertical tool to run (Auto) or offer for approval (Suggest). */
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+/** A scheduled Suggest/Auto automation for a persona (mirrors finance dunning/audit/report). */
+export interface AutomationDef {
+  type: string;
+  title: string;
+  description: string;
+  /** Minimum days between runs. */
+  cadenceDays: number;
+  defaultAutonomy: "off" | "suggest" | "auto";
+  /** Find the actions this automation would take on this tick. */
+  plan(userId: string): Promise<AutomationProposal[]>;
+}
+
 export interface PersonaVertical {
   persona: string;
   /** Gemini function-calling declarations for this role. */
@@ -30,6 +53,8 @@ export interface PersonaVertical {
   summarizeAction(name: string, args: Record<string, unknown>): string;
   /** Optional one-tap demo data loader. */
   seedDemo?(userId: string): Promise<{ count: number }>;
+  /** Optional scheduled autonomy automations. */
+  automations?: AutomationDef[];
 }
 
 export const VERTICALS: Record<string, PersonaVertical> = {

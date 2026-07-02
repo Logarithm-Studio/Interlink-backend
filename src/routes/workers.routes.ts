@@ -19,6 +19,7 @@ import { processNotificationsJob } from "../workers/processors/notifications.pro
 import { processEmailJob } from "../workers/processors/email.processor";
 import { processDlqJob } from "../workers/processors/dlq.processor";
 import { runDueAutomations } from "../services/accountant/automationRunner.service";
+import { runDueProfessionalAutomations } from "../services/professional/automationRunner";
 
 const router = Router();
 
@@ -85,6 +86,18 @@ router.post("/accountant-automations", (req, res) => {
     res,
     async () => {
       await runDueAutomations();
+    },
+    req.body,
+    getJobId(req),
+  );
+});
+
+// Professional Mode (Sales/Support/HR/Real Estate/PM) — scheduled autonomy tick.
+router.post("/professional-automations", (req, res) => {
+  void runWorker(
+    res,
+    async () => {
+      await runDueProfessionalAutomations();
     },
     req.body,
     getJobId(req),

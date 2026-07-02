@@ -10,7 +10,8 @@ import { sendProfessionalEmail } from "../email";
 import { draftEmail } from "../draft";
 import { geminiGenerateContent, isGeminiLive } from "../../ai/geminiClient";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
-import type { PersonaVertical } from "../registry";
+import type { AutomationProposal, PersonaVertical } from "../registry";
+import { getUpcomingInterviews, scheduleInterview, findFreeSlots } from "../../hr/calendar-hr.service";
 
 const PERSONA = "hr";
 
@@ -98,6 +99,9 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "screen_resume", description: "AI-score a candidate's resume against their target role (0-100) and set their score.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "advance_candidate", description: "Move a candidate to a new stage.", parameters: { type: "object", properties: { name: { type: "string" }, stage: { type: "string", enum: ["applied", "screening", "interview", "offer", "hired", "rejected"] } }, required: ["name", "stage"] } },
   { name: "draft_outreach", description: "Draft and send an outreach/scheduling email to a candidate.", parameters: { type: "object", properties: { name: { type: "string" }, note: { type: "string" } }, required: ["name"] } },
+  { name: "view_interviews", description: "List the user's upcoming interviews from their Google Calendar.", parameters: { type: "object", properties: {} } },
+  { name: "check_availability", description: "Find free interview slots on a given date (YYYY-MM-DD).", parameters: { type: "object", properties: { date: { type: "string" } }, required: ["date"] } },
+  { name: "schedule_interview", description: "Book a calendar interview for a candidate and email invites.", parameters: { type: "object", properties: { name: { type: "string", description: "Candidate name from the snapshot." }, interviewerEmail: { type: "string" }, startTime: { type: "string", description: "ISO 8601 start datetime." }, endTime: { type: "string", description: "ISO 8601 end datetime." } }, required: ["name", "interviewerEmail", "startTime", "endTime"] } },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
@@ -106,6 +110,9 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "screen_resume": return `AI-screen ${args.name ?? "candidate"}'s resume.`;
     case "advance_candidate": return `Move ${args.name ?? "candidate"} to ${args.stage}.`;
     case "draft_outreach": return `Draft & send outreach to ${args.name ?? "candidate"}.`;
+    case "view_interviews": return "Show upcoming interviews.";
+    case "check_availability": return `Find free interview slots on ${args.date ?? "that date"}.`;
+    case "schedule_interview": return `Schedule an interview for ${args.name ?? "the candidate"}.`;
     default: return `Run ${name}.`;
   }
 }
@@ -162,6 +169,33 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "outreach_sent", title: `Outreach sent to ${c.name}`, detail: draft.subject, entityType: "hr_candidate", entityId: c.id });
         return { ok: true, message: `Outreach sent to ${c.name}.` };
       }
+      case "view_interviews": {
+        const events = await getUpcomingInterviews(user.id);
+        if (events.length === 0) return { ok: true, message: "No upcoming interviews on your calendar." };
+        return { ok: true, message: "Upcoming interviews:\n" + events.slice(0, 10).map((e) => `- ${e.summary} — ${new Date(e.start).toLocaleString()}`).join("\n") };
+      }
+      case "check_availability": {
+        const slots = await findFreeSlots(user.id, String(args.date ?? ""));
+        if (slots.length === 0) return { ok: true, message: "No free slots found that day." };
+        return { ok: true, message: "Free slots:\n" + slots.map((s) => `- ${new Date(s.start).toLocaleTimeString()}–${new Date(s.end).toLocaleTimeString()}`).join("\n") };
+      }
+      case "schedule_interview": {
+        const cands = await listCandidates(user.id);
+        const c = cands.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
+        if (!c) return { ok: false, message: "Couldn't find that candidate." };
+        if (!c.email) return { ok: false, message: `No email on file for ${c.name}.` };
+        const ev = await scheduleInterview(user.id, {
+          candidateName: c.name,
+          candidateEmail: c.email,
+          interviewerEmail: String(args.interviewerEmail ?? ""),
+          role: c.role ?? "the role",
+          startTime: String(args.startTime ?? ""),
+          endTime: String(args.endTime ?? ""),
+        });
+        await updateCandidate(user.id, c.id, { stage: c.stage === "applied" || c.stage === "screening" ? "interview" : c.stage });
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "interview_scheduled", title: `Interview booked for ${c.name}`, detail: ev.summary, entityType: "hr_candidate", entityId: c.id });
+        return { ok: true, message: `Interview scheduled for ${c.name}.` };
+      }
       default:
         return { ok: false, message: `Unsupported action: ${name}.` };
     }
@@ -177,6 +211,23 @@ function mapOpening(r: { id: string; title: string; department: string | null; l
   return { id: r.id, title: r.title, department: r.department, location: r.location, status: r.status, source: r.source, createdAt: r.created_at };
 }
 
+async function planScreenNew(userId: string): Promise<AutomationProposal[]> {
+  const res = await query<{ id: string; name: string }>(
+    `SELECT id, name FROM hr_candidates
+      WHERE user_id = $1 AND stage = 'applied' AND score IS NULL
+        AND resume_text IS NOT NULL AND resume_text <> ''
+      ORDER BY created_at ASC LIMIT 10`,
+    [userId],
+  );
+  return res.rows.map((c) => ({
+    title: `Screen ${c.name}'s resume`,
+    entityType: "hr_candidate",
+    entityId: c.id,
+    tool: "screen_resume",
+    args: { name: c.name },
+  }));
+}
+
 export const hrVertical: PersonaVertical = {
   persona: PERSONA,
   tools: TOOLS,
@@ -185,4 +236,14 @@ export const hrVertical: PersonaVertical = {
   executeTool,
   summarizeAction,
   seedDemo,
+  automations: [
+    {
+      type: "screen_new",
+      title: "Auto-screen new candidates",
+      description: "AI-score new applicants' resumes against their role",
+      cadenceDays: 1,
+      defaultAutonomy: "suggest",
+      plan: planScreenNew,
+    },
+  ],
 };
