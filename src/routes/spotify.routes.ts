@@ -17,6 +17,7 @@ import {
   playContext,
   playTrack,
   getUserPlaylists,
+  getDevices,
   search,
 } from "../services/spotify/spotify.service";
 import { oauthRateLimit } from "../middleware/rateLimit";
@@ -81,6 +82,15 @@ router.get("/now-playing", async (req: Request, res: Response, next: NextFunctio
     const user = (req as AuthenticatedRequest).user;
     const nowPlaying = await getNowPlaying(user.id);
     res.json({ nowPlaying });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/devices", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ devices: await getDevices(user.id) });
   } catch (err) {
     next(err);
   }
