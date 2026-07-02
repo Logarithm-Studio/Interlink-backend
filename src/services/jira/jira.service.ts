@@ -37,9 +37,14 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  // Mobile OAuth: Atlassian redirects to the app's custom scheme; the app parses
-  // the code + state and POSTs them to /auth/callback. Override with JIRA_REDIRECT_URI.
-  return process.env.JIRA_REDIRECT_URI ?? "interlinkapp://oauth/jira";
+  // Backend-mediated OAuth: Atlassian requires an https redirect_uri (custom
+  // schemes are rejected). Atlassian redirects to our https callback, which
+  // exchanges the code and then deep-links into the app. Override with
+  // JIRA_REDIRECT_URI.
+  return (
+    process.env.JIRA_REDIRECT_URI ??
+    `${process.env.API_BASE_URL ?? "http://localhost:5000"}/api/v1/jira/callback`
+  );
 }
 
 interface JiraMetadata {

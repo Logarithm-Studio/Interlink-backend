@@ -20,9 +20,14 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  // Mobile OAuth: redirect to the app's custom scheme; the app completes the
-  // exchange via /auth/callback. Override with TODOIST_REDIRECT_URI.
-  return process.env.TODOIST_REDIRECT_URI ?? "interlinkapp://oauth/todoist";
+  // Backend-mediated OAuth: Todoist redirects to our https callback, which
+  // exchanges the code and deep-links into the app. Custom-scheme redirects do
+  // not reliably hand back to the app from an external browser. Override with
+  // TODOIST_REDIRECT_URI.
+  return (
+    process.env.TODOIST_REDIRECT_URI ??
+    `${process.env.API_BASE_URL ?? "http://localhost:5000"}/api/v1/todoist/callback`
+  );
 }
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────

@@ -14,8 +14,35 @@ import {
   createTask,
   closeTask,
 } from "../services/todoist/todoist.service";
+import { oauthRateLimit } from "../middleware/rateLimit";
+import { appRedirect } from "../services/integrations/oauthAppRedirect";
 
 const router = Router();
+
+// ─── Public Todoist OAuth callback (NO authMiddleware) ─────────────────────────
+// Todoist redirects the browser here after consent — there is no JWT on this
+// request, so the user is resolved from the single-use `state` token. Must be
+// registered before router.use(authMiddleware) so it stays unauthenticated.
+router.get("/callback", oauthRateLimit, async (req: Request, res: Response) => {
+  try {
+    const error = req.query.error ? String(req.query.error) : undefined;
+    if (error) return res.redirect(302, appRedirect("todoist", "error", error));
+
+    const code = req.query.code ? String(req.query.code) : "";
+    const state = req.query.state ? String(req.query.state) : "";
+    if (!code || !state) return res.redirect(302, appRedirect("todoist", "error", "missing_code_or_state"));
+
+    const payload = await consumeOAuthState(state);
+    if (!payload) return res.redirect(302, appRedirect("todoist", "error", "invalid_state"));
+
+    await exchangeCode(payload.userId, code);
+    return res.redirect(302, appRedirect("todoist", "success"));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message.slice(0, 80) : "exchange_failed";
+    return res.redirect(302, appRedirect("todoist", "error", detail));
+  }
+});
+
 router.use(authMiddleware as never);
 
 router.get("/auth/url", async (req: Request, res: Response, next: NextFunction) => {

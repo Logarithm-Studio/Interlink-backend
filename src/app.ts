@@ -86,7 +86,6 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/accountant", accountantRoutes);
   app.use("/api/v1/workers", workersRoutes);
   // Personal mode
-  app.use("/api/v1", personaRoutes);
   app.use("/api/v1/spotify", spotifyRoutes);
   app.use("/api/v1/weather", weatherRoutes);
   app.use("/api/v1/tasks", tasksRoutes);
@@ -100,6 +99,13 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/professional", professionalRoutes);
   app.use("/api/v1/professional", professionalStubsRoutes);
   app.use("/api/v1/sales", salesRoutes);
+
+  // personaRoutes is a catch-all mounted at /api/v1 and applies authMiddleware
+  // to everything that reaches it — so it MUST be registered last, after every
+  // specific router. Otherwise it intercepts unauthenticated public routes (e.g.
+  // the provider OAuth callbacks under /notion, /pm) and returns 401 before they
+  // are reached.
+  app.use("/api/v1", personaRoutes);
 }
 
 function setupErrorHandling(app: Express) {

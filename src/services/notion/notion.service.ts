@@ -22,9 +22,13 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  // Mobile OAuth: redirect to the app's custom scheme; the app completes the
-  // exchange via /auth/callback. Override with NOTION_REDIRECT_URI.
-  return process.env.NOTION_REDIRECT_URI ?? "interlinkapp://oauth/notion";
+  // Backend-mediated OAuth: Notion rejects custom-scheme redirect URIs and
+  // requires https. Notion redirects to our https callback, which exchanges the
+  // code and then deep-links into the app. Override with NOTION_REDIRECT_URI.
+  return (
+    process.env.NOTION_REDIRECT_URI ??
+    `${process.env.API_BASE_URL ?? "http://localhost:5000"}/api/v1/notion/callback`
+  );
 }
 
 // ─── OAuth ────────────────────────────────────────────────────────────────────

@@ -20,9 +20,14 @@ function clientSecret(): string {
   return s;
 }
 function redirectUri(): string {
-  // Mobile OAuth: redirect to the app's custom scheme; the app completes the
-  // exchange via /github/callback. Override with GITHUB_REDIRECT_URI.
-  return process.env.GITHUB_REDIRECT_URI ?? "interlinkapp://oauth/github";
+  // Backend-mediated OAuth: GitHub redirects to our https callback (custom
+  // schemes trigger a "redirecting to the authorized application" interstitial
+  // that never hands back to the app). The callback exchanges the code and then
+  // deep-links into the app. Override with GITHUB_REDIRECT_URI.
+  return (
+    process.env.GITHUB_REDIRECT_URI ??
+    `${process.env.API_BASE_URL ?? "http://localhost:5000"}/api/v1/pm/github/callback`
+  );
 }
 
 export function buildAuthUrl(state: string): string {

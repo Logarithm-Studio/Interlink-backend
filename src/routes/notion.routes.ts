@@ -5,7 +5,9 @@ import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
 import { AuthenticatedRequest } from "../types";
 import { BadRequestError } from "../utils/errors";
+import { oauthRateLimit } from "../middleware/rateLimit";
 import { createOAuthState, consumeOAuthState } from "../services/oauth-state.service";
+import { appRedirect } from "../services/integrations/oauthAppRedirect";
 import {
   buildAuthUrl,
   exchangeCode,
@@ -16,6 +18,31 @@ import {
 } from "../services/notion/notion.service";
 
 const router = Router();
+
+// ─── Public Notion OAuth callback (NO authMiddleware) ──────────────────────────
+// Notion requires an https redirect_uri and redirects the browser here (no JWT);
+// the user is resolved from the single-use `state` token. Must be registered
+// before router.use(authMiddleware) so it stays unauthenticated.
+router.get("/callback", oauthRateLimit, async (req: Request, res: Response) => {
+  try {
+    const error = req.query.error ? String(req.query.error) : undefined;
+    if (error) return res.redirect(302, appRedirect("notion", "error", error));
+
+    const code = req.query.code ? String(req.query.code) : "";
+    const state = req.query.state ? String(req.query.state) : "";
+    if (!code || !state) return res.redirect(302, appRedirect("notion", "error", "missing_code_or_state"));
+
+    const payload = await consumeOAuthState(state);
+    if (!payload) return res.redirect(302, appRedirect("notion", "error", "invalid_state"));
+
+    await exchangeCode(payload.userId, code);
+    return res.redirect(302, appRedirect("notion", "success"));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message.slice(0, 80) : "exchange_failed";
+    return res.redirect(302, appRedirect("notion", "error", detail));
+  }
+});
+
 router.use(authMiddleware as never);
 
 router.get("/auth/url", async (req: Request, res: Response, next: NextFunction) => {

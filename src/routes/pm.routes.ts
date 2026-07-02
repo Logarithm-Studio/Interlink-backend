@@ -5,12 +5,39 @@ import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
 import { AuthenticatedRequest } from "../types";
 import { BadRequestError } from "../utils/errors";
+import { oauthRateLimit } from "../middleware/rateLimit";
 import { createOAuthState, consumeOAuthState } from "../services/oauth-state.service";
+import { appRedirect } from "../services/integrations/oauthAppRedirect";
 import { buildAuthUrl as buildTrelloUrl, storeToken, getBoards, getListsForBoard, createCard, updateCard, getCardsForBoard } from "../services/pm/trello.service";
 import { buildAuthUrl as buildGitHubUrl, exchangeCode as ghExchangeCode, getRepos, getPullRequests, getIssues, createIssue } from "../services/pm/github.service";
 import { generateStandupSummary, planSprint, getTrelloBoardSummary } from "../services/pm/pm-workflows.service";
 
 const router = Router();
+
+// ─── Public GitHub OAuth callback (NO authMiddleware) ──────────────────────────
+// GitHub redirects the browser here after consent — there is no JWT on this
+// request, so the user is resolved from the single-use `state` token. Must be
+// registered before router.use(authMiddleware) so it stays unauthenticated.
+router.get("/github/callback", oauthRateLimit, async (req: Request, res: Response) => {
+  try {
+    const error = req.query.error ? String(req.query.error) : undefined;
+    if (error) return res.redirect(302, appRedirect("github", "error", error));
+
+    const code = req.query.code ? String(req.query.code) : "";
+    const state = req.query.state ? String(req.query.state) : "";
+    if (!code || !state) return res.redirect(302, appRedirect("github", "error", "missing_code_or_state"));
+
+    const payload = await consumeOAuthState(state);
+    if (!payload) return res.redirect(302, appRedirect("github", "error", "invalid_state"));
+
+    await ghExchangeCode(payload.userId, code);
+    return res.redirect(302, appRedirect("github", "success"));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message.slice(0, 80) : "exchange_failed";
+    return res.redirect(302, appRedirect("github", "error", detail));
+  }
+});
+
 router.use(authMiddleware as never);
 
 // ─── Trello OAuth ─────────────────────────────────────────────────────────────
