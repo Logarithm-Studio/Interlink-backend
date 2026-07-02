@@ -10,6 +10,8 @@ import { listTickets } from "./support/support.service";
 import { listListings, listLeads, listShowings, listLeases } from "./realestate/realestate.service";
 import { listCandidates, listOpenings } from "./hr/hr.vertical";
 import { getRepos } from "../pm/github.service";
+import { getBoards } from "../pm/trello.service";
+import { searchIssues } from "../jira/jira.service";
 
 export interface DashboardStat { label: string; value: string; tone?: "default" | "success" | "danger" }
 export interface DashboardItem { id: string; title: string; subtitle?: string; badge?: string; tone?: "default" | "success" | "danger" | "warn" }
@@ -104,12 +106,50 @@ export async function buildDashboard(userId: string, persona: string): Promise<D
       { key: "openings", title: "Open roles", items: openings.map((o) => ({ id: o.id, title: o.title, subtitle: [o.department, o.location].filter(Boolean).join(" · "), badge: o.status })) },
     ];
   } else if (persona === "product_manager") {
-    const repos = await getRepos(userId).catch(() => []);
-    isEmpty = repos.length === 0;
-    headline = repos.length > 0 ? `${repos.length} connected repo(s).` : "Connect GitHub to see your repos.";
-    stats = [{ label: "Repos", value: String(repos.length) }, { label: "Open issues", value: String(repos.reduce((s, r) => s + r.openIssues, 0)) }];
+    // GitHub, Trello and Jira are independent connections — any combination may
+    // be linked. Each getter throws when not connected, so swallow to an empty
+    // list and surface a "connect" prompt rather than failing the whole page.
+    const [repos, boards, issues] = await Promise.all([
+      getRepos(userId).catch(() => []),
+      getBoards(userId).catch(() => []),
+      searchIssues(userId).catch(() => []),
+    ]);
+    const githubConnected = repos.length > 0;
+    const trelloConnected = boards.length > 0;
+    const jiraConnected = issues.length > 0;
+    isEmpty = repos.length === 0 && boards.length === 0 && issues.length === 0;
+
+    if (isEmpty) headline = "Connect GitHub, Trello or Jira to see your work.";
+    else headline = `${repos.length} repo(s) · ${boards.length} board(s) · ${issues.length} Jira issue(s).`;
+
+    stats = [
+      { label: "Repos", value: String(repos.length) },
+      { label: "Open issues", value: String(repos.reduce((s, r) => s + r.openIssues, 0)) },
+      { label: "Boards", value: String(boards.length) },
+      { label: "Jira", value: String(issues.length) },
+    ];
     sections = [
-      { key: "repos", title: "Repositories", items: repos.map((r) => ({ id: String(r.id), title: r.fullName, subtitle: r.language ?? undefined, badge: `${r.openIssues} issues` })) },
+      {
+        key: "repos",
+        title: "Repositories",
+        items: githubConnected
+          ? repos.map((r) => ({ id: String(r.id), title: r.fullName, subtitle: r.language ?? undefined, badge: `${r.openIssues} issues` }))
+          : [{ id: "github-connect", title: "Connect GitHub", subtitle: "Settings → Connected Accounts", tone: "warn" }],
+      },
+      {
+        key: "boards",
+        title: "Trello boards",
+        items: trelloConnected
+          ? boards.map((b) => ({ id: b.id, title: b.name, subtitle: b.isStarred ? "★ Starred" : undefined, badge: "board" }))
+          : [{ id: "trello-connect", title: "Connect Trello", subtitle: "Settings → Connected Accounts", tone: "warn" }],
+      },
+      {
+        key: "jira",
+        title: "Jira issues",
+        items: jiraConnected
+          ? issues.map((i) => ({ id: i.id, title: `${i.key} · ${i.summary}`, subtitle: i.assignee ?? undefined, badge: i.status, tone: stageTone(i.status.toLowerCase()) }))
+          : [{ id: "jira-connect", title: "Connect Jira", subtitle: "Settings → Connected Accounts", tone: "warn" }],
+      },
     ];
   }
 

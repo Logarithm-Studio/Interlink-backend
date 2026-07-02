@@ -17,6 +17,8 @@ import workflowActionsRoutes from "./routes/workflow.actions.routes";
 import googleRoutes from "./routes/google.routes";
 import remindersRoutes from "./routes/reminders.routes";
 import pushTokensRoutes from "./routes/pushTokens.routes";
+import jiraRoutes from "./routes/jira.routes";
+import slackRoutes from "./routes/slack.routes";
 import workersRoutes from "./routes/workers.routes";
 import accountantRoutes from "./routes/accountant.routes";
 // Personal mode integrations
@@ -79,6 +81,8 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/google", googleRoutes);
   app.use("/api/v1/reminders", remindersRoutes);
   app.use("/api/v1/push-tokens", pushTokensRoutes);
+  app.use("/api/v1/jira", jiraRoutes);
+  app.use("/api/v1/slack", slackRoutes);
   app.use("/api/v1/accountant", accountantRoutes);
   app.use("/api/v1/workers", workersRoutes);
   // Personal mode

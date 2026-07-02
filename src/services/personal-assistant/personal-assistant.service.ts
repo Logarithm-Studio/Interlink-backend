@@ -30,6 +30,7 @@ import { getDailySummary } from "../fitness/fitness.service";
 import { getTaskLists, getTasksInList, createTask as createGoogleTask } from "../tasks/tasks.service";
 import { createTask as createTodoistTask } from "../todoist/todoist.service";
 import { getUserEvents } from "../events.service";
+import { isConnected } from "../integrations/tokenStore";
 
 // ─── Profession-aware system prompts ─────────────────────────────────────────
 
@@ -344,8 +345,14 @@ export async function executeAction(
         });
         return { ok: true, message: `Added to Todoist: "${task.content}".`, data: task };
       }
-      case "create_notion_note":
+      case "create_notion_note": {
+        // Mirror the Spotify/Todoist "not connected" phrasing so every
+        // integration fails the same friendly way instead of a generic error.
+        if (!(await isConnected(userId, "notion"))) {
+          return { ok: false, message: "Notion is not connected. Connect it from Settings → Connected Accounts." };
+        }
         return { ok: false, message: "To save a Notion note, open Connected Accounts and pick a parent page first." };
+      }
       case "get_gmail_inbox":
         return { ok: true, message: "Opening your Gmail inbox.", data: { action: "open_inbox" } };
       default:

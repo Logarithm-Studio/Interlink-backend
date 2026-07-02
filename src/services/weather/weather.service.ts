@@ -3,11 +3,16 @@
  * OPENWEATHERMAP_API_KEY env var required.
  */
 
+import { AppError } from "../../utils/errors";
+
 const OWM_BASE = "https://api.openweathermap.org/data/2.5";
 
 function apiKey(): string {
   const k = process.env.OPENWEATHERMAP_API_KEY;
-  if (!k) throw new Error("OPENWEATHERMAP_API_KEY is not configured.");
+  // 503 (not a raw 500) so a missing server key surfaces as a clear, operational
+  // "service unavailable" message via the global error handler instead of an
+  // opaque "Internal server error".
+  if (!k) throw new AppError("Weather service is not configured on the server.", 503);
   return k;
 }
 

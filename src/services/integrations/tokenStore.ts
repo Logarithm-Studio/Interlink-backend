@@ -12,6 +12,8 @@ export type IntegrationProvider =
   | "notion"
   | "trello"
   | "github"
+  | "jira"
+  | "slack"
   | "hubspot"
   | "mailchimp";
 
@@ -162,6 +164,22 @@ export async function listIntegrationsForUser(userId: string): Promise<
     metadata: r.metadata ?? {},
     connectedAt: r.created_at,
   }));
+}
+
+/**
+ * Lightweight connection check — true only when the provider is linked and not
+ * revoked/expired. Cheaper than getIntegration (no token decryption) and used
+ * to give consistent "connect this first" fallbacks before attempting an action.
+ */
+export async function isConnected(
+  userId: string,
+  provider: IntegrationProvider,
+): Promise<boolean> {
+  const res = await query<{ status: IntegrationStatus }>(
+    `SELECT status FROM connected_integrations WHERE user_id = $1 AND provider = $2`,
+    [userId, provider],
+  );
+  return res.rows[0]?.status === "active";
 }
 
 export async function revokeIntegration(userId: string, provider: string): Promise<void> {
