@@ -23,7 +23,7 @@ import {
   createPage as createNotionPage,
 } from "../../notion/notion.service";
 import { getChannels, postMessage, getRecentMessages } from "../../slack/slack.service";
-import { getPullRequests, getIssues } from "../../pm/github.service";
+import { getPullRequests, getMergedPullRequests, getIssues } from "../../pm/github.service";
 
 const PERSONA = "product_manager";
 
@@ -224,13 +224,13 @@ export async function releaseNotes(
   const parts = splitRepo(str(args.repo));
   if (!parts) return { ok: false, message: "Tell me which repo (owner/name) to draft release notes for." };
 
-  const prs = await getPullRequests(user.id, parts.owner, parts.repo);
-  if (prs.length === 0) return { ok: false, message: "No recent pull requests found to summarize." };
+  const prs = await getMergedPullRequests(user.id, parts.owner, parts.repo);
+  if (prs.length === 0) return { ok: false, message: "No recently merged pull requests found to summarize." };
 
   const draft = await draftEmail({
     role: "release manager",
     purpose: "concise consumer-facing release notes grouped by theme (put the notes in the body field)",
-    context: `Repo ${args.repo}. Pull requests:\n` + prs.slice(0, 30).map((p) => `- ${p.title}`).join("\n"),
+    context: `Repo ${args.repo}. Merged pull requests:\n` + prs.slice(0, 30).map((p) => `- ${p.title}`).join("\n"),
   });
   const title = `Release Notes — ${args.repo} — ${new Date().toISOString().split("T")[0]}`;
 

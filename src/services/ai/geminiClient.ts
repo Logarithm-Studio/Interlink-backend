@@ -14,7 +14,17 @@
 
 export type GeminiPart =
   | { text: string }
-  | { inlineData: { mimeType: string; data: string } };
+  | { inlineData: { mimeType: string; data: string } }
+  // Prior model tool call / our tool result — used to drive multi-step agent loops.
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: Record<string, unknown> } };
+
+/** One conversation turn. `model` turns carry the assistant's text/functionCall;
+ *  `user` turns carry the user's message or a functionResponse from a tool we ran. */
+export interface GeminiContent {
+  role: "user" | "model";
+  parts: GeminiPart[];
+}
 
 export interface GeminiToolFunction {
   name: string;
@@ -34,16 +44,21 @@ export interface GeminiResult {
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-function geminiConfig(): { apiKey?: string; model: string; demo: boolean } {
+/**
+ * Two-tier model selection. Multi-step/agentic turns use the stronger REASONING
+ * model (the "brain"); trivial single reads use the cheaper/faster FAST model.
+ * Both are env-overridable.
+ */
+function geminiConfig(tier: "reasoning" | "fast" = "fast"): { apiKey?: string; model: string; demo: boolean } {
   const providerName = (process.env.PROFESSIONAL_AI_PROVIDER ?? "gemini")
     .toLowerCase()
     .trim();
   const apiKey = process.env.GEMINI_API_KEY;
-  return {
-    apiKey,
-    model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
-    demo: providerName === "demo" || !apiKey,
-  };
+  const model =
+    tier === "reasoning"
+      ? process.env.GEMINI_REASONING_MODEL ?? "gemini-2.5-pro"
+      : process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  return { apiKey, model, demo: providerName === "demo" || !apiKey };
 }
 
 /** True when a live Gemini call is possible (not demo, key present). */
@@ -54,22 +69,39 @@ export function isGeminiLive(): boolean {
 // ─── REST call ────────────────────────────────────────────────────────────────
 
 function toApiPart(p: GeminiPart): Record<string, unknown> {
-  return "text" in p
-    ? { text: p.text }
-    : { inline_data: { mime_type: p.inlineData.mimeType, data: p.inlineData.data } };
+  if ("text" in p) return { text: p.text };
+  if ("inlineData" in p) return { inline_data: { mime_type: p.inlineData.mimeType, data: p.inlineData.data } };
+  if ("functionCall" in p) return { functionCall: { name: p.functionCall.name, args: p.functionCall.args } };
+  return { functionResponse: { name: p.functionResponse.name, response: p.functionResponse.response } };
 }
 
 export async function geminiGenerateContent(args: {
   system: string;
-  parts: GeminiPart[];
+  /** Single user turn. Ignored when `contents` is provided. */
+  parts?: GeminiPart[];
+  /**
+   * Full multi-turn conversation (user/model turns incl. functionCall/functionResponse).
+   * When present it replaces `parts` — this is how the agent loop feeds tool results back.
+   */
+  contents?: GeminiContent[];
   /** Force JSON output (default true). Ignored when `tools` are present. */
   json?: boolean;
   responseSchema?: Record<string, unknown>;
   maxOutputTokens?: number;
+  /** Sampling temperature. Ignored for JSON output (always 0). Defaults to 0.4. */
+  temperature?: number;
+  /** "reasoning" → the stronger brain model (agentic/multi-step); "fast" → cheap reads. */
+  tier?: "reasoning" | "fast";
   tools?: GeminiToolFunction[];
+  /**
+   * Function-calling mode when `tools` are present. "AUTO" (default) lets the model
+   * choose between prose and a tool; "ANY" forces it to return a function call —
+   * used as a second-pass retry when an obvious action produced prose the first time.
+   */
+  toolMode?: "AUTO" | "ANY";
   timeoutMs?: number;
 }): Promise<GeminiResult> {
-  const { apiKey, model, demo } = geminiConfig();
+  const { apiKey, model, demo } = geminiConfig(args.tier);
   if (demo || !apiKey) {
     throw new Error("Gemini is not configured (PROFESSIONAL_AI_PROVIDER=demo or no GEMINI_API_KEY)");
   }
@@ -81,17 +113,24 @@ export async function geminiGenerateContent(args: {
 
   const useJson = (args.json ?? true) && !args.tools;
   const generationConfig: Record<string, unknown> = {
-    temperature: 0,
-    maxOutputTokens: args.maxOutputTokens ?? 2048,
+    // JSON generators stay deterministic; conversational/agentic turns get a little
+    // warmth so responses don't read robotic/childish.
+    temperature: useJson ? 0 : args.temperature ?? 0.4,
+    // Agentic (tool) turns get more room to reason without truncation.
+    maxOutputTokens: args.maxOutputTokens ?? (args.tools ? 4096 : 2048),
   };
   if (useJson) {
     generationConfig.responseMimeType = "application/json";
     if (args.responseSchema) generationConfig.responseSchema = args.responseSchema;
   }
 
+  const contents = args.contents
+    ? args.contents.map((c) => ({ role: c.role, parts: c.parts.map(toApiPart) }))
+    : [{ role: "user", parts: (args.parts ?? []).map(toApiPart) }];
+
   const body: Record<string, unknown> = {
     system_instruction: { parts: [{ text: args.system }] },
-    contents: [{ role: "user", parts: args.parts.map(toApiPart) }],
+    contents,
     generationConfig,
   };
   if (args.tools && args.tools.length > 0) {
@@ -104,6 +143,9 @@ export async function geminiGenerateContent(args: {
         })),
       },
     ];
+    body.tool_config = {
+      function_calling_config: { mode: args.toolMode ?? "AUTO" },
+    };
   }
 
   const controller = new AbortController();

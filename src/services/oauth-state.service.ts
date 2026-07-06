@@ -35,6 +35,11 @@ export interface OAuthStatePayload {
   provider: string;
   successRedirectUri?: string;
   errorRedirectUri?: string;
+  /**
+   * Intended mode binding for a Google connect: 'personal' | 'professional'.
+   * The callback assigns this role to the newly connected account.
+   */
+  role?: "personal" | "professional";
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -45,20 +50,22 @@ export async function createOAuthState(
   options?: {
     successRedirectUri?: string;
     errorRedirectUri?: string;
+    role?: "personal" | "professional";
   },
 ): Promise<string> {
   const token = randomBytes(16).toString("hex"); // 128 bits of entropy
 
   await query(
     `INSERT INTO oauth_states
-       (token, user_id, provider, success_redirect_uri, error_redirect_uri)
-     VALUES ($1, $2, $3, $4, $5)`,
+       (token, user_id, provider, success_redirect_uri, error_redirect_uri, role)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       token,
       userId,
       provider,
       options?.successRedirectUri ?? null,
       options?.errorRedirectUri ?? null,
+      options?.role ?? null,
     ],
   );
 
@@ -79,10 +86,11 @@ export async function consumeOAuthState(
     provider: string;
     success_redirect_uri: string | null;
     error_redirect_uri: string | null;
+    role: string | null;
   }>(
     `DELETE FROM oauth_states
      WHERE token = $1 AND expires_at > now()
-     RETURNING user_id, provider, success_redirect_uri, error_redirect_uri`,
+     RETURNING user_id, provider, success_redirect_uri, error_redirect_uri, role`,
     [token],
   );
 
@@ -99,5 +107,9 @@ export async function consumeOAuthState(
     provider: row.provider as OAuthStatePayload["provider"],
     successRedirectUri: row.success_redirect_uri ?? undefined,
     errorRedirectUri: row.error_redirect_uri ?? undefined,
+    role:
+      row.role === "personal" || row.role === "professional"
+        ? row.role
+        : undefined,
   };
 }

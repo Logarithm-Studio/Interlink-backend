@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
+import { resolveGoogleAccountForRequest } from "../middleware/googleAccount";
 import { AuthenticatedRequest } from "../types";
 import {
   listGoogleCalendarEvents,
@@ -8,7 +9,10 @@ import {
   getGmailMessageDetail,
   sendAutomatedGmailMessage,
 } from "../services/googleApi.service";
-import { ReauthRequiredError } from "../services/auth.service";
+import {
+  ReauthRequiredError,
+  getGoogleAccountSummaryById,
+} from "../services/auth.service";
 import { getDistanceFromOrigin } from "../services/googleMaps.service";
 import {
   BadRequestError,
@@ -87,6 +91,7 @@ const MapsDistanceSchema = z
   });
 
 router.use(authMiddleware as never);
+router.use(resolveGoogleAccountForRequest as never);
 
 function handleGoogleReauthError(err: unknown): UnauthorizedError | null {
   if (err instanceof ReauthRequiredError) {
@@ -111,11 +116,13 @@ async function handleGmailMessages(
       );
     }
 
-    const user = (req as AuthenticatedRequest).user;
+    const authedReq = req as AuthenticatedRequest;
+    const user = authedReq.user;
     const mailbox = mailboxOverride ?? parsed.data.mailbox ?? "inbox";
 
     const messages = await listGmailMailboxMessages({
       userId: user.id,
+      googleAccountId: authedReq.googleAccountId,
       mailbox,
       maxResults: parsed.data.maxResults,
       query: parsed.data.query,
@@ -148,10 +155,12 @@ router.get(
         );
       }
 
-      const user = (req as AuthenticatedRequest).user;
+      const authedReq = req as AuthenticatedRequest;
+      const user = authedReq.user;
 
       const events = await listGoogleCalendarEvents({
         userId: user.id,
+        googleAccountId: authedReq.googleAccountId,
         ...parsed.data,
       });
 
@@ -189,9 +198,11 @@ router.get(
         );
       }
 
-      const user = (req as AuthenticatedRequest).user;
+      const authedReq = req as AuthenticatedRequest;
+      const user = authedReq.user;
       const message = await getGmailMessageDetail({
         userId: user.id,
+        googleAccountId: authedReq.googleAccountId,
         messageId: parsed.data.messageId,
       });
 
@@ -236,11 +247,20 @@ router.post(
         );
       }
 
-      const user = (req as AuthenticatedRequest).user;
+      const authedReq = req as AuthenticatedRequest;
+      const user = authedReq.user;
+      const googleAccountId = authedReq.googleAccountId;
+
+      // Send from the resolved account's mailbox (fall back to the login email).
+      const account = googleAccountId
+        ? await getGoogleAccountSummaryById(googleAccountId)
+        : null;
+      const fromEmail = account?.email?.trim() || user.email;
 
       const sent = await sendAutomatedGmailMessage({
         userId: user.id,
-        fromEmail: user.email,
+        googleAccountId,
+        fromEmail,
         toEmail: parsed.data.toEmail,
         subject: parsed.data.subject,
         body: parsed.data.body,

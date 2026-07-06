@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { Router, Request, Response, NextFunction } from "express";
 import { authMiddleware } from "../middleware/auth";
+import { resolveGoogleAccountForRequest } from "../middleware/googleAccount";
 import { syncUserCalendar } from "../services/calendar/sync";
 import {
   createWatchChannel,
@@ -21,9 +22,11 @@ const router = Router();
 router.post(
   "/sync",
   authMiddleware as never,
+  resolveGoogleAccountForRequest as never,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const user = (req as AuthenticatedRequest).user;
+      const authedReq = req as AuthenticatedRequest;
+      const user = authedReq.user;
       const provider = (req.query.provider as string) || "google";
 
       if (provider !== "google") {
@@ -36,6 +39,7 @@ router.post(
         user.id,
         provider as "google",
         req.query.since as string | undefined,
+        authedReq.googleAccountId,
       );
 
       res.json({
@@ -71,12 +75,18 @@ router.post(
 router.post(
   "/watch/google",
   authMiddleware as never,
+  resolveGoogleAccountForRequest as never,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const user = (req as AuthenticatedRequest).user;
+      const authedReq = req as AuthenticatedRequest;
+      const user = authedReq.user;
       const calendarId = (req.body?.calendarId as string) || "primary";
 
-      const channel = await createWatchChannel(user.id, calendarId);
+      const channel = await createWatchChannel(
+        user.id,
+        calendarId,
+        authedReq.googleAccountId,
+      );
 
       res.status(201).json({
         message: "Watch channel created",

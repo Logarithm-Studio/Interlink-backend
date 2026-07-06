@@ -92,10 +92,25 @@ Google **watch channels** + the webhook endpoint, with watch renewal. Sync code 
 [src/services/calendar/](src/services/calendar/) (`sync.ts`, `google.ts`, `googleWatch.service.ts`,
 `googleSyncCursor.service.ts`, `normalizer.ts`).
 
+**Multi-account (Personal ⟷ Work):** a user can connect several Google accounts. `google_accounts`
+is keyed by `id` (not `user_id` — the old `UNIQUE(user_id)` is gone) and carries `email` + `role`
+(`personal|professional`) + `is_primary`. `events` and `google_watch_channels` carry
+`google_account_id`, so each account has its own calendar sync/watch channel and events are
+account-tagged. [auth.service.ts](src/services/auth.service.ts) owns the account resolution:
+`resolveGoogleAccount(userId, mode)` (role → primary → most-recent), account-scoped
+token helpers (`refreshGoogleTokenForAccount`, etc.), and `upsertGoogleAccountOnConnect` (captures
+the real email; adopts legacy NULL-email rows). The app advertises its mode via the
+`X-Interlink-Mode` header; `resolveGoogleAccountForRequest`
+([src/middleware/googleAccount.ts](src/middleware/googleAccount.ts)) turns it into
+`req.googleAccountId` on the google/calendar/events routes. **Legacy `userId`-only Google helpers
+still resolve the primary account**, so single-account features are unchanged.
+
 ### Email
 Two distinct paths: **Gmail API** for decline-email sends (the product feature —
-`src/services/email/declineEmail.service.ts`, `gmail.service.ts`, with explicit `email_send_logs`),
-and **SMTP/nodemailer** for transactional OTP email verification
+`src/services/email/declineEmail.service.ts`, `gmail.service.ts`, with explicit `email_send_logs`).
+The decline path sends from the **event's own** `google_account_id` mailbox (falls back to the
+user's primary account), so a Work-calendar event declines from the Work mailbox. And
+**SMTP/nodemailer** for transactional OTP email verification
 (`src/services/emailVerification.service.ts`). Templates have an immutable reserved
 `system-default` (id `system-default`, cannot be edited/deleted, can be set active);
 see `src/services/email/templates.service.ts`.

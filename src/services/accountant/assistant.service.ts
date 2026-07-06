@@ -25,6 +25,7 @@ import {
 import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
 import { emailFlashReport } from "./reporting.service";
+import { listContractors, needsW9, sendW9Request } from "./tax.service";
 import {
   setClientDunningPaused,
   updateAutomation,
@@ -279,14 +280,6 @@ async function runReadOnlyPersonalAction(
   }
 }
 
-function directConnectedAppReadOnlyAction(message: string): { name: string; args: Record<string, unknown> } | null {
-  const normalized = message.trim().toLowerCase().replace(/[.!?]+$/g, "");
-  if (["slack", "slack channels", "list slack", "list slack channels", "show slack channels"].includes(normalized)) {
-    return { name: "list_slack_channels", args: {} };
-  }
-  return null;
-}
-
 async function loadRecentHistory(
   convId: string,
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
@@ -306,17 +299,6 @@ export async function command(
   attachment?: { data: string; mimeType: string },
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
-  const directAction = directConnectedAppReadOnlyAction(message);
-  if (directAction) {
-    const exec = await runReadOnlyPersonalAction(userId, directAction.name, directAction.args);
-    await query(
-      `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
-       VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
-      [userId, message, exec.message, convId],
-    ).catch(() => {});
-    await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
-    return { answer: exec.message, action: null, isLive: true, conversationId: convId };
-  }
   const persona = await getProfessionalPersona(userId);
 
   // Non-finance roles are served by their persona vertical: agentic tools +
@@ -333,6 +315,8 @@ export async function command(
         system: `${vertical.systemPrompt}\nYou can also use the user's personal assistant tools, including Spotify playback, Google/Todoist tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
         attachment,
         history,
+        isReadOnly: isReadOnlyPersonalAction,
+        execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {
@@ -395,6 +379,8 @@ export async function command(
     system: `${AGENT_SYSTEM}\nYou can also use the user's personal assistant tools, including Spotify playback, tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
     attachment,
     history: financeHistory,
+    isReadOnly: isReadOnlyPersonalAction,
+    execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
   });
 
   let action: PendingAction | null = null;
@@ -511,6 +497,31 @@ export async function executeAction(
           status: "done",
         });
         return { ok: true, message: "Report emailed." };
+      }
+      case "gather_tax_docs": {
+        const targetName = String(args.contractorName ?? "").trim().toLowerCase();
+        const contractors = await listContractors(user.id);
+        const candidates = targetName
+          ? contractors.filter((c) => c.name.toLowerCase().includes(targetName) && c.email)
+          : contractors.filter((c) => needsW9(c) && c.email);
+        if (candidates.length === 0) {
+          return {
+            ok: false,
+            message: targetName
+              ? `No contractor named "${args.contractorName}" with an email needs a W-9 right now.`
+              : "No contractors over the reporting threshold currently need a W-9.",
+          };
+        }
+        let sent = 0;
+        for (const c of candidates) {
+          try {
+            await sendW9Request(user, c.id);
+            sent++;
+          } catch {
+            /* skip one failure, keep going */
+          }
+        }
+        return { ok: true, message: `Requested W-9 tax docs from ${sent} contractor${sent === 1 ? "" : "s"}.` };
       }
       case "pause_client": {
         const clientName = String(args.clientName ?? "");

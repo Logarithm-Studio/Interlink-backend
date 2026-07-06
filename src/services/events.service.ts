@@ -21,9 +21,9 @@ export async function upsertEvent(event: NormalizedEvent): Promise<string> {
        (user_id, external_event_id, provider, event_type, title, description,
         start_time, end_time, timezone, location, status, is_cancelled,
         organizer_email, attendees, is_recurring,
-        series_id, occurrence_id, metadata, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
-     ON CONFLICT (user_id, external_event_id, provider)
+        series_id, occurrence_id, metadata, google_account_id, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+     ON CONFLICT (user_id, external_event_id, provider, google_account_id)
      DO UPDATE SET
        event_type      = EXCLUDED.event_type,
        title           = EXCLUDED.title,
@@ -61,6 +61,7 @@ export async function upsertEvent(event: NormalizedEvent): Promise<string> {
       event.seriesId ?? null,
       event.occurrenceId ?? null,
       JSON.stringify(event.metadata),
+      event.googleAccountId ?? null,
     ],
   );
 
@@ -145,6 +146,7 @@ export async function getUserEvents(
   userId: string,
   from?: string,
   to?: string,
+  googleAccountId?: string | null,
 ): Promise<NormalizedEvent[]> {
   const effectiveFrom = from ?? new Date().toISOString();
 
@@ -161,6 +163,13 @@ export async function getUserEvents(
   if (to) {
     sql += ` AND start_time <= $${paramIdx}`;
     params.push(to);
+    paramIdx++;
+  }
+
+  // Scope to the active mode's Google account (full multi-account behaviour).
+  if (googleAccountId) {
+    sql += ` AND google_account_id = $${paramIdx}`;
+    params.push(googleAccountId);
     paramIdx++;
   }
 
@@ -271,16 +280,21 @@ export async function rescheduleEventAtProvider(
   const start = parseIso(payload.startTime, "startTime");
   const end = parseIso(payload.endTime, "endTime");
 
-  await patchGoogleEvent(user.id, event.externalEventId, {
-    startTime: start.toISOString(),
-    endTime: end.toISOString(),
-    title: payload.title ?? event.title,
-    description:
-      payload.description !== undefined
-        ? payload.description
-        : event.description,
-    calendarId: payload.calendarId,
-  });
+  await patchGoogleEvent(
+    user.id,
+    event.externalEventId,
+    {
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      title: payload.title ?? event.title,
+      description:
+        payload.description !== undefined
+          ? payload.description
+          : event.description,
+      calendarId: payload.calendarId,
+    },
+    event.googleAccountId,
+  );
 
   const updated: NormalizedEvent = {
     ...event,
@@ -321,6 +335,7 @@ export async function declineEventAtProvider(
     user.email,
     event.externalEventId,
     calendarId,
+    event.googleAccountId,
   );
 
   // Remove from local DB after declining at Google.
@@ -341,7 +356,12 @@ export async function deleteEventAtProvider(
   // still delete locally so the event is removed from our UI.
   if (event.provider === "google") {
     try {
-      await deleteGoogleEvent(user.id, event.externalEventId, calendarId);
+      await deleteGoogleEvent(
+        user.id,
+        event.externalEventId,
+        calendarId,
+        event.googleAccountId,
+      );
     } catch (err) {
       console.warn(
         `[events] google delete skipped (user may be attendee): ${String(err)}`,
@@ -363,14 +383,18 @@ export async function deleteEventByExternalId(
   userId: string,
   externalEventId: string,
   provider: string,
+  googleAccountId?: string | null,
 ): Promise<boolean> {
   const result = await query<{
     id: string;
     start_time: string;
     end_time: string;
   }>(
-    "DELETE FROM events WHERE user_id = $1 AND external_event_id = $2 AND provider = $3 RETURNING id, start_time, end_time",
-    [userId, externalEventId, provider],
+    `DELETE FROM events
+      WHERE user_id = $1 AND external_event_id = $2 AND provider = $3
+        AND ($4::uuid IS NULL OR google_account_id = $4)
+      RETURNING id, start_time, end_time`,
+    [userId, externalEventId, provider, googleAccountId ?? null],
   );
   const deleted = (result.rowCount ?? 0) > 0;
   if (deleted) {
@@ -410,6 +434,7 @@ function mapRowToEvent(row: Record<string, unknown>): NormalizedEvent {
   return {
     id: row.id as string,
     userId: row.user_id as string,
+    googleAccountId: (row.google_account_id as string | null) ?? null,
     externalEventId: row.external_event_id as string,
     provider: row.provider as "google" | "microsoft",
     eventType: row.event_type as string,

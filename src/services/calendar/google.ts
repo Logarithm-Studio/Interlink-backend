@@ -1,6 +1,23 @@
 import { google, calendar_v3 } from "googleapis";
-import { refreshGoogleTokenIfNeeded } from "../auth.service";
+import {
+  refreshGoogleTokenIfNeeded,
+  refreshGoogleTokenForAccount,
+} from "../auth.service";
 import { BadRequestError } from "../../utils/errors";
+
+/**
+ * Resolve a fresh Google access token for calendar calls. When a specific
+ * account id is given (multi-account sync) use it; otherwise fall back to the
+ * user's primary account (single-account / legacy callers).
+ */
+async function resolveAccessToken(
+  userId: string,
+  googleAccountId?: string | null,
+): Promise<string> {
+  return googleAccountId
+    ? refreshGoogleTokenForAccount(googleAccountId)
+    : refreshGoogleTokenIfNeeded(userId);
+}
 
 function getGoogleStatusCode(err: unknown): number | undefined {
   if (typeof err !== "object" || err === null) return undefined;
@@ -128,11 +145,12 @@ export async function fetchGoogleEvents(
   userId: string,
   since?: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<{
   events: calendar_v3.Schema$Event[];
   nextSyncToken: string | null;
 }> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
 
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
@@ -215,11 +233,12 @@ export async function fetchGoogleEventsIncremental(
   userId: string,
   syncToken: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<{
   events: calendar_v3.Schema$Event[];
   nextSyncToken: string | null;
 }> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
 
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
@@ -278,8 +297,9 @@ export async function patchGoogleEvent(
   userId: string,
   eventId: string,
   patch: GoogleEventPatch,
+  googleAccountId?: string | null,
 ): Promise<calendar_v3.Schema$Event> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   const cal = google.calendar({ version: "v3", auth: oauth2Client });
@@ -313,8 +333,9 @@ export async function deleteGoogleEvent(
   userId: string,
   eventId: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<void> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   const cal = google.calendar({ version: "v3", auth: oauth2Client });
@@ -339,8 +360,9 @@ export async function acceptGoogleEvent(
   userEmail: string,
   eventId: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<void> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   const cal = google.calendar({ version: "v3", auth: oauth2Client });
@@ -393,8 +415,9 @@ export async function declineGoogleEvent(
   userEmail: string,
   eventId: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<void> {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = await resolveAccessToken(userId, googleAccountId);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   const cal = google.calendar({ version: "v3", auth: oauth2Client });

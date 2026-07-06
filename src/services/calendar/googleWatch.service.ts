@@ -1,6 +1,10 @@
 import { randomBytes, randomUUID } from "crypto";
 import { google } from "googleapis";
-import { refreshGoogleTokenIfNeeded } from "../auth.service";
+import {
+  refreshGoogleTokenIfNeeded,
+  refreshGoogleTokenForAccount,
+  resolveGoogleAccountId,
+} from "../auth.service";
 import { query } from "../../config/db";
 import { enqueueJob } from "../jobQueue.service";
 import { JobType } from "../../jobs/schemas/envelope";
@@ -8,6 +12,7 @@ import { JobType } from "../../jobs/schemas/envelope";
 export interface WatchChannel {
   id: string;
   userId: string;
+  googleAccountId: string | null;
   channelId: string;
   resourceId: string;
   channelToken: string;
@@ -21,6 +26,7 @@ export interface WatchChannel {
 type ChannelRow = {
   id: string;
   user_id: string;
+  google_account_id: string | null;
   channel_id: string;
   resource_id: string;
   channel_token: string;
@@ -35,6 +41,7 @@ function rowToChannel(row: ChannelRow): WatchChannel {
   return {
     id: row.id,
     userId: row.user_id,
+    googleAccountId: row.google_account_id,
     channelId: row.channel_id,
     resourceId: row.resource_id,
     channelToken: row.channel_token,
@@ -57,12 +64,14 @@ const WATCH_RENEWAL_LEAD_MS = 12 * 60 * 60 * 1000; // 12 h before expiry
 async function getChannelsForUserCalendar(
   userId: string,
   calendarId: string,
+  googleAccountId?: string | null,
 ): Promise<WatchChannel[]> {
   const result = await query<ChannelRow>(
     `SELECT * FROM google_watch_channels
       WHERE user_id = $1 AND calendar_id = $2
+        AND ($3::uuid IS NULL OR google_account_id = $3)
       ORDER BY expiration DESC`,
-    [userId, calendarId],
+    [userId, calendarId, googleAccountId ?? null],
   );
   return result.rows.map(rowToChannel);
 }
@@ -102,17 +111,28 @@ export async function scheduleWatchRenewal(
 export async function createWatchChannel(
   userId: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<WatchChannel> {
   const webhookUrl = process.env.GOOGLE_WEBHOOK_URL;
   if (!webhookUrl) throw new Error("GOOGLE_WEBHOOK_URL is not set");
 
-  // Ensure a single active watch channel per (user, calendar) for MVP.
-  const existing = await getChannelsForUserCalendar(userId, calendarId);
+  // Resolve the owning account (default to the user's primary account).
+  const accountId =
+    googleAccountId ?? (await resolveGoogleAccountId(userId));
+
+  // Ensure a single active watch channel per (user, calendar, account).
+  const existing = await getChannelsForUserCalendar(
+    userId,
+    calendarId,
+    accountId,
+  );
   for (const channel of existing) {
     await stopWatchChannel(channel.channelId);
   }
 
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+  const accessToken = accountId
+    ? await refreshGoogleTokenForAccount(accountId)
+    : await refreshGoogleTokenIfNeeded(userId);
   const auth = buildOAuth2Client(accessToken);
   const cal = google.calendar({ version: "v3", auth });
 
@@ -141,11 +161,12 @@ export async function createWatchChannel(
 
   const result = await query<ChannelRow>(
     `INSERT INTO google_watch_channels
-       (user_id, channel_id, resource_id, channel_token, calendar_id, expiration)
-     VALUES ($1, $2, $3, $4, $5, to_timestamp($6::bigint / 1000.0))
+       (user_id, google_account_id, channel_id, resource_id, channel_token, calendar_id, expiration)
+     VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::bigint / 1000.0))
      RETURNING *`,
     [
       userId,
+      accountId,
       channelId,
       data.resourceId,
       channelToken,
@@ -200,7 +221,9 @@ export async function stopWatchChannel(channelId: string): Promise<void> {
   if (!channel) return;
 
   try {
-    const accessToken = await refreshGoogleTokenIfNeeded(channel.userId);
+    const accessToken = channel.googleAccountId
+      ? await refreshGoogleTokenForAccount(channel.googleAccountId)
+      : await refreshGoogleTokenIfNeeded(channel.userId);
     const auth = buildOAuth2Client(accessToken);
     const cal = google.calendar({ version: "v3", auth });
     await cal.channels.stop({
@@ -238,6 +261,27 @@ export async function stopAllWatchChannelsForUser(
 }
 
 /**
+ * Stop and remove every active watch channel for a single Google account.
+ * Called when one of a user's connected accounts is disconnected (the
+ * account's channel rows also cascade away via FK, but this unregisters them
+ * on Google's side first). Returns the number of channels targeted.
+ */
+export async function stopWatchChannelsForAccount(
+  googleAccountId: string,
+): Promise<number> {
+  const result = await query<Pick<ChannelRow, "channel_id">>(
+    "SELECT channel_id FROM google_watch_channels WHERE google_account_id = $1",
+    [googleAccountId],
+  );
+
+  for (const row of result.rows) {
+    await stopWatchChannel(row.channel_id);
+  }
+
+  return result.rows.length;
+}
+
+/**
  * Renew a watch channel: stop the old one and immediately create a new one
  * for the same user + calendar. The new channel has a fresh 6-day TTL.
  */
@@ -248,5 +292,5 @@ export async function renewWatchChannel(
   if (!old) return null;
 
   await stopWatchChannel(channelId);
-  return createWatchChannel(old.userId, old.calendarId);
+  return createWatchChannel(old.userId, old.calendarId, old.googleAccountId);
 }

@@ -23,7 +23,10 @@
 import { createHash } from "crypto";
 import { google } from "googleapis";
 import { query } from "../../config/db";
-import { refreshGoogleTokenIfNeeded } from "../auth.service";
+import {
+  refreshGoogleTokenIfNeeded,
+  refreshGoogleTokenForAccount,
+} from "../auth.service";
 import { recordAuditLog } from "../../security/idempotency";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -32,6 +35,10 @@ export interface GmailDraftCreateParams {
   executionId?: string | null;
   stepId: string;
   userId: string;
+  /** Which Google account (mailbox) to draft from. Defaults to the primary account. */
+  googleAccountId?: string | null;
+  /** Override the MIME `From:` address (e.g. the resolved account's mailbox). */
+  fromEmail?: string;
   /** One or more recipient addresses. The MIME `To:` header will list all of them. */
   recipients: string[];
   subject: string;
@@ -102,19 +109,38 @@ async function findExistingDraft(
  * (pre-migration), the UPDATE is silently swallowed so the flow still reaches
  * the `AuthError` throw below.
  */
-async function markGoogleReauthRequired(userId: string): Promise<void> {
+async function markGoogleReauthRequired(
+  userId: string,
+  googleAccountId?: string | null,
+): Promise<void> {
   try {
-    await query(
-      `UPDATE google_accounts
-          SET reauth_required = true,
-              access_token = NULL,
-              refresh_token = NULL,
-              enc_iv = NULL,
-              enc_tag = NULL,
-              enc_kid = NULL
-        WHERE user_id = $1`,
-      [userId],
-    );
+    // Scope to a single account when known so we never nuke a user's other
+    // (still-valid) connected mailbox.
+    if (googleAccountId) {
+      await query(
+        `UPDATE google_accounts
+            SET reauth_required = true,
+                access_token = NULL,
+                refresh_token = NULL,
+                enc_iv = NULL,
+                enc_tag = NULL,
+                enc_kid = NULL
+          WHERE id = $1`,
+        [googleAccountId],
+      );
+    } else {
+      await query(
+        `UPDATE google_accounts
+            SET reauth_required = true,
+                access_token = NULL,
+                refresh_token = NULL,
+                enc_iv = NULL,
+                enc_tag = NULL,
+                enc_kid = NULL
+          WHERE user_id = $1 AND is_primary = true`,
+        [userId],
+      );
+    }
 
     await query(
       `UPDATE connected_accounts
@@ -202,19 +228,24 @@ export async function createGmailDraft(
   // ── 2. Refresh / get access token ────────────────────────────────────────
   let accessToken: string;
   try {
-    accessToken = await refreshGoogleTokenIfNeeded(params.userId);
+    accessToken = params.googleAccountId
+      ? await refreshGoogleTokenForAccount(params.googleAccountId)
+      : await refreshGoogleTokenIfNeeded(params.userId);
   } catch (err) {
-    await markGoogleReauthRequired(params.userId);
+    await markGoogleReauthRequired(params.userId, params.googleAccountId);
     const msg = err instanceof Error ? err.message : String(err);
     throw new AuthError(`Gmail: token refresh failed — ${msg}`);
   }
 
   // ── 3. Look up sender email ───────────────────────────────────────────────
-  const userRes = await query<{ email: string }>(
-    "SELECT email FROM users WHERE id = $1 LIMIT 1",
-    [params.userId],
-  );
-  const fromEmail = userRes.rows[0]?.email ?? params.userId;
+  let fromEmail = params.fromEmail?.trim() || "";
+  if (!fromEmail) {
+    const userRes = await query<{ email: string }>(
+      "SELECT email FROM users WHERE id = $1 LIMIT 1",
+      [params.userId],
+    );
+    fromEmail = userRes.rows[0]?.email ?? params.userId;
+  }
 
   // ── 4. Call Gmail API ─────────────────────────────────────────────────────
   const oauth2Client = new google.auth.OAuth2();
@@ -244,7 +275,7 @@ export async function createGmailDraft(
       0;
 
     if (status === 401 || status === 403) {
-      await markGoogleReauthRequired(params.userId);
+      await markGoogleReauthRequired(params.userId, params.googleAccountId);
       throw new AuthError(
         `Gmail: provider returned ${status} — user must reconnect Google account`,
       );
@@ -317,6 +348,8 @@ export interface GmailSendParams {
   executionId: string;
   stepId: string;
   userId: string;
+  /** Which Google account (mailbox) to send from. Defaults to the primary account. */
+  googleAccountId?: string | null;
   /** The `provider_draft_id` returned by `createGmailDraft`. */
   providerDraftId: string;
   /** Idempotency key — callers should derive it deterministically. */
@@ -367,9 +400,11 @@ export async function sendGmailDraft(
   // ── Refresh access token ──────────────────────────────────────────────────
   let accessToken: string;
   try {
-    accessToken = await refreshGoogleTokenIfNeeded(params.userId);
+    accessToken = params.googleAccountId
+      ? await refreshGoogleTokenForAccount(params.googleAccountId)
+      : await refreshGoogleTokenIfNeeded(params.userId);
   } catch (err) {
-    await markGoogleReauthRequired(params.userId);
+    await markGoogleReauthRequired(params.userId, params.googleAccountId);
     const msg = err instanceof Error ? err.message : String(err);
     throw new AuthError(`Gmail send: token refresh failed — ${msg}`);
   }
@@ -396,7 +431,7 @@ export async function sendGmailDraft(
       0;
 
     if (status === 401 || status === 403) {
-      await markGoogleReauthRequired(params.userId);
+      await markGoogleReauthRequired(params.userId, params.googleAccountId);
       throw new AuthError(
         `Gmail send: provider returned ${status} — user must reconnect`,
       );

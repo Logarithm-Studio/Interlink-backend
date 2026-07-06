@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
+import { resolveGoogleAccountForRequest } from "../middleware/googleAccount";
 import {
   getUserEvents,
   getEventById,
@@ -59,6 +60,8 @@ function buildEventStateFlags(
 
 // All event routes require authentication
 router.use(authMiddleware as never);
+// Resolve the active mode's Google account (X-Interlink-Mode header).
+router.use(resolveGoogleAccountForRequest as never);
 
 // ─── GET /api/v1/events ─────────────────────────────────────────────
 // List upcoming events for the authenticated user.
@@ -66,11 +69,17 @@ router.use(authMiddleware as never);
 // Optional ?from= and ?to= ISO date query params may narrow the range.
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as AuthenticatedRequest).user;
+    const authedReq = req as AuthenticatedRequest;
+    const user = authedReq.user;
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
 
-    const events = await getUserEvents(user.id, from, to);
+    const events = await getUserEvents(
+      user.id,
+      from,
+      to,
+      authedReq.googleAccountId,
+    );
     const attendanceResponses = await listAttendanceResponsesForEvents(
       user.id,
       events.map((event) => event.id).filter(Boolean) as string[],
@@ -168,6 +177,7 @@ router.post(
               user.email,
               externalId,
               sourceCalendarId,
+              event.googleAccountId,
             );
           } else {
             await declineGoogleEvent(
@@ -175,6 +185,7 @@ router.post(
               user.email,
               externalId,
               sourceCalendarId,
+              event.googleAccountId,
             );
           }
         } catch (calErr) {

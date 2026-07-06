@@ -3,15 +3,28 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
-import { storeTokens, getTokens, deleteTokens, ReauthRequiredError } from "../services/auth.service";
+import {
+  getTokens,
+  deleteTokens,
+  ReauthRequiredError,
+  upsertGoogleAccountOnConnect,
+  listGoogleAccounts,
+  setGoogleAccountRole,
+  deleteGoogleAccount,
+} from "../services/auth.service";
 import {
   createWatchChannel,
   stopAllWatchChannelsForUser,
+  stopWatchChannelsForAccount,
 } from "../services/calendar/googleWatch.service";
 import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
-import { BadRequestError, UnauthorizedError } from "../utils/errors";
+import {
+  BadRequestError,
+  UnauthorizedError,
+  NotFoundError,
+} from "../utils/errors";
 import { oauthRateLimit, authRateLimit } from "../middleware/rateLimit";
 import {
   createOAuthState,
@@ -42,6 +55,12 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/tasks",
   "https://www.googleapis.com/auth/fitness.activity.read",
   "https://www.googleapis.com/auth/spreadsheets",
+  // Drive (browse/search + create app files). Meet needs no scope — it uses the
+  // calendar scope's conferenceData. Existing users must reconnect to grant Drive.
+  "https://www.googleapis.com/auth/drive",
+  // YouTube (+ YouTube Music search): read playlists/likes + create playlists and
+  // add videos. Reuses the same Google OAuth; existing users reconnect to grant it.
+  "https://www.googleapis.com/auth/youtube",
 ];
 
 const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =
@@ -160,16 +179,48 @@ function getCallbackErrorCode(err: unknown): string {
   return "oauth_callback_failed";
 }
 
-function buildGoogleAuthUrl(stateToken: string): string {
+function buildGoogleAuthUrl(
+  stateToken: string,
+  selectAccount = false,
+): string {
   const oauth2Client = getGoogleOAuth2Client();
 
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
-    prompt: "consent",
+    // When connecting an additional mailbox, force the Google account chooser so
+    // the user can pick a *different* account than the one already connected.
+    prompt: selectAccount ? "select_account consent" : "consent",
     include_granted_scopes: true,
     scope: GOOGLE_SCOPES,
     state: stateToken,
   });
+}
+
+/**
+ * Build the `connectedAccounts.google` payload for /me-style responses.
+ * Returns a multi-account `accounts` array plus a back-compat scalar summary
+ * (of the primary account) so older app builds keep working during rollout.
+ */
+async function buildGoogleConnectedAccountsPayload(
+  userId: string,
+  fallbackEmail: string,
+) {
+  const accounts = await listGoogleAccounts(userId);
+  const primary = accounts.find((a) => a.isPrimary) ?? accounts[0] ?? null;
+  return {
+    connected: accounts.length > 0,
+    email: primary ? (primary.email ?? fallbackEmail) : undefined,
+    expiresAt: primary?.expiresAt ?? null,
+    reauthRequired: primary?.reauthRequired ?? false,
+    accounts: accounts.map((a) => ({
+      id: a.id,
+      email: a.email ?? fallbackEmail,
+      role: a.role,
+      isPrimary: a.isPrimary,
+      reauthRequired: a.reauthRequired,
+      expiresAt: a.expiresAt,
+    })),
+  };
 }
 
 function normalizeEmail(email: string): string {
@@ -596,14 +647,25 @@ router.get(
         req.query.errorRedirectUri as string | undefined,
       );
 
+      // Optional mode binding for multi-account connect. When present we also
+      // force the Google account chooser so a *different* mailbox can be added.
+      const rawRole = req.query.role as string | undefined;
+      const role =
+        rawRole === "personal" || rawRole === "professional"
+          ? rawRole
+          : undefined;
+      const selectAccount =
+        req.query.selectAccount === "true" || role !== undefined;
+
       const stateToken = await createOAuthState(user.id, "google", {
         successRedirectUri,
         errorRedirectUri,
+        role,
       });
 
       res.status(200).json({
         provider: "google",
-        authUrl: buildGoogleAuthUrl(stateToken),
+        authUrl: buildGoogleAuthUrl(stateToken, selectAccount),
         redirectUri: getGoogleRedirectUri(),
         stateTtlSeconds: 600,
         successRedirectUri,
@@ -684,10 +746,31 @@ router.get(
         ? new Date(tokens.expiry_date)
         : new Date(Date.now() + 3600 * 1000);
 
-      await storeTokens(userId, "google", {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        expiresAt,
+      // Read the connected mailbox address so we can tell multiple Google
+      // accounts apart and label them (personal vs work).
+      let connectedEmail: string;
+      try {
+        oauth2Client.setCredentials(tokens);
+        const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
+        const info = await oauth2.userinfo.get();
+        connectedEmail = (info.data.email ?? "").trim().toLowerCase();
+      } catch {
+        connectedEmail = "";
+      }
+      if (!connectedEmail) {
+        throw new BadRequestError(
+          "Could not read the Google account email. Please try connecting again.",
+        );
+      }
+
+      const { accountId } = await upsertGoogleAccountOnConnect(userId, {
+        email: connectedEmail,
+        role: statePayload.role ?? null,
+        tokens: {
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          expiresAt,
+        },
       });
 
       let watchChannelCreated = false;
@@ -695,7 +778,7 @@ router.get(
       let watchCalendarId: string | undefined;
       if (process.env.GOOGLE_WEBHOOK_URL) {
         try {
-          const watch = await createWatchChannel(userId, "primary");
+          const watch = await createWatchChannel(userId, "primary", accountId);
           watchChannelCreated = true;
           watchChannelId = watch.channelId;
           watchCalendarId = watch.calendarId;
@@ -900,16 +983,10 @@ router.get(
         }
       }
 
-      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
-      let googleReauthRequired = false;
-      try {
-        googleAccount = await getTokens(user.id, "google");
-      } catch (err) {
-        if (err instanceof ReauthRequiredError) {
-          googleReauthRequired = true;
-        }
-        googleAccount = null;
-      }
+      const google = await buildGoogleConnectedAccountsPayload(
+        user.id,
+        user.email,
+      );
 
       res.json({
         user: {
@@ -920,28 +997,7 @@ router.get(
           companyName: profile.company_name ?? undefined,
           address: profile.address ?? undefined,
         },
-        connectedAccounts: {
-          google: googleAccount
-            ? {
-                connected: true,
-                email: user.email,
-                expiresAt: googleAccount.expiresAt,
-                reauthRequired: googleAccount.reauthRequired ?? false,
-              }
-            : googleReauthRequired
-            ? {
-                connected: true,
-                email: user.email,
-                expiresAt: null,
-                reauthRequired: true,
-              }
-            : {
-                connected: false,
-                email: undefined,
-                expiresAt: null,
-                reauthRequired: false,
-              },
-        },
+        connectedAccounts: { google },
       });
     } catch (err) {
       next(err);
@@ -1033,12 +1089,10 @@ router.put(
       );
       const updated = row.rows[0];
 
-      let googleAccount: Awaited<ReturnType<typeof getTokens>> = null;
-      try {
-        googleAccount = await getTokens(user.id, "google");
-      } catch {
-        googleAccount = null;
-      }
+      const google = await buildGoogleConnectedAccountsPayload(
+        user.id,
+        updated?.email ?? user.email,
+      );
 
       res.json({
         user: {
@@ -1049,22 +1103,94 @@ router.put(
           companyName: updated?.company_name ?? undefined,
           address: updated?.address ?? undefined,
         },
-        connectedAccounts: {
-          google: googleAccount
-            ? {
-                connected: true,
-                email: updated?.email ?? user.email,
-                expiresAt: googleAccount.expiresAt,
-                reauthRequired: googleAccount.reauthRequired ?? false,
-              }
-            : {
-                connected: false,
-                email: undefined,
-                expiresAt: null,
-                reauthRequired: false,
-              },
+        connectedAccounts: { google },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── Google account management (multi-account) ──────────────────────
+const GoogleRoleSchema = z.object({
+  role: z.union([z.enum(["personal", "professional"]), z.null()]),
+});
+
+// GET /api/v1/auth/google/accounts — list connected Google accounts.
+router.get(
+  "/google/accounts",
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const accounts = await listGoogleAccounts(user.id);
+      res.status(200).json({
+        accounts: accounts.map((a) => ({
+          id: a.id,
+          email: a.email ?? user.email,
+          role: a.role,
+          isPrimary: a.isPrimary,
+          reauthRequired: a.reauthRequired,
+          expiresAt: a.expiresAt,
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /api/v1/auth/google/accounts/:id — bind an account to a mode (role).
+router.patch(
+  "/google/accounts/:id",
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const parsed = GoogleRoleSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new BadRequestError(
+          parsed.error.issues.map((i) => i.message).join(", "),
+        );
+      }
+      const updated = await setGoogleAccountRole(
+        user.id,
+        req.params.id,
+        parsed.data.role,
+      );
+      if (!updated) {
+        throw new NotFoundError("Google account");
+      }
+      res.status(200).json({
+        account: {
+          id: updated.id,
+          email: updated.email ?? user.email,
+          role: updated.role,
+          isPrimary: updated.isPrimary,
+          reauthRequired: updated.reauthRequired,
+          expiresAt: updated.expiresAt,
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// DELETE /api/v1/auth/google/accounts/:id — disconnect one account.
+router.delete(
+  "/google/accounts/:id",
+  authMiddleware as never,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      // Stop this account's watch channels before removing tokens (best-effort).
+      await stopWatchChannelsForAccount(req.params.id).catch(() => {});
+      const removed = await deleteGoogleAccount(user.id, req.params.id);
+      if (!removed) {
+        throw new NotFoundError("Google account");
+      }
+      res.status(200).json({ disconnected: true, id: req.params.id });
     } catch (err) {
       next(err);
     }

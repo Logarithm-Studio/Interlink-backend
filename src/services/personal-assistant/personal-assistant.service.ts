@@ -15,6 +15,7 @@ import {
   type GeminiPart,
   type GeminiToolFunction,
 } from "../ai/geminiClient";
+import { runAgentTurn } from "../ai/agentLoop";
 
 // Integration services used by executeAction (function dispatch).
 import {
@@ -27,10 +28,31 @@ import {
 } from "../spotify/spotify.service";
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
+import { listDriveFiles, createDriveDoc } from "../google/drive.service";
+import { scheduleMeetMeeting } from "../google/meet.service";
+import {
+  searchYouTube,
+  listYouTubePlaylists,
+  createYouTubePlaylist,
+  addToYouTubePlaylist,
+  getLikedVideos,
+} from "../google/youtube.service";
+import {
+  listOutlookMessages,
+  sendOutlookMail,
+  listOutlookEvents,
+  createOutlookEvent,
+  listTeamsChats,
+  sendTeamsMessage,
+  listOneDriveFiles,
+  shareOneDriveFile,
+} from "../microsoft/microsoft.service";
+import { sendWhatsAppMessage } from "../whatsapp/twilio.service";
 import { getTaskLists, getTasksInList, createTask as createGoogleTask } from "../tasks/tasks.service";
 import { createTask as createTodoistTask, getTasks as getTodoistTasks } from "../todoist/todoist.service";
 import { getUserEvents } from "../events.service";
 import { isConnected, listIntegrationsForUser } from "../integrations/tokenStore";
+import { getTokens } from "../auth.service";
 import { listGmailMailboxMessages } from "../googleApi.service";
 import { searchPages as searchNotionPages, getPageContent, createPage as createNotionPage } from "../notion/notion.service";
 import { getChannels as getSlackChannels, postMessage as postSlackMessage } from "../slack/slack.service";
@@ -55,25 +77,46 @@ const PROFESSION_CONTEXT: Record<string, string> = {
 export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "Connected-app workflow rules:",
   "- Treat broad or vague requests as workflow requests. Infer the user's likely goal from the current prompt, conversation history, persona, and connected apps.",
-  "- Prefer useful discovery over asking a question. If an app-specific ID is missing, call the relevant list/search tool first, then use the result in the follow-up turn.",
+  "- You can chain tools to finish a workflow in one turn. When an ID is missing (channel, board, list, repo, project, page), CALL the relevant discovery tool FIRST — its result is fed back to you in the same turn — then call the action tool with the resolved ID. Never ask the user for an ID you can look up.",
+  "- Read/list/search tools run automatically as you chain. Only the final WRITE action (create/send/post/play) is shown to the user to confirm before it executes — so keep chaining until you reach that write, then emit it.",
   "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to Spotify, email questions to Gmail.",
-  "- For multi-app requests, choose the first concrete step that unlocks the workflow, such as listing Slack channels before posting or listing Trello lists before creating a card.",
-  "- Never invent IDs, repositories, channels, boards, pages, projects, or issue keys. Use discovery tools or ask only when discovery cannot resolve it.",
-  "- Call exactly one function per assistant turn. The app asks the user to confirm write actions before execution.",
+  "- Never invent IDs, repositories, channels, boards, pages, projects, or issue keys. Use discovery tools; only ask the user when discovery genuinely cannot resolve it.",
 ].join("\n");
 
 function buildSystemPrompt(persona: string): string {
   const professionCtx = PROFESSION_CONTEXT[persona] ?? PROFESSION_CONTEXT.general;
-  return `You are Interlink Personal Assistant — an AI that automates the user's personal life.
+  return `You are Interlink — the user's personal AI chief of staff. You are the reasoning brain; Interlink's tools are your hands. Your job is to understand what the user actually wants and GET IT DONE across their connected apps — not to describe what you would do.
 ${professionCtx}
 
-You have access to tools across the user's connected apps: Google Calendar/Gmail/Tasks,
-Spotify, Todoist, Notion, Slack, GitHub, Jira, and Trello.
+Apps you can act on (only when listed as connected in the "Connected apps" line each turn):
+Google Calendar, Gmail, Google Tasks, Google Drive, Google Meet, Google Fit, YouTube, YouTube Music,
+Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (send only), Spotify, Todoist, Notion, Slack,
+GitHub, Jira, Trello, and weather.
+For music requests, prefer YouTube Music (search_youtube_music) — note it returns a link to open, it does not start playback on a device. Spotify can control playback only when the user's Spotify is properly authorized.
+If the user asks about an app that isn't connected, say so briefly and offer to connect it — don't pretend.
+
+How to think each turn (reason step by step, silently, then act):
+1. Infer the real goal. Use the conversation history to resolve references like "it", "the other one", "that deal", "there".
+2. Choose the app(s) and tool(s) that achieve it. For multi-step goals, chain discovery → action within the same turn.
+3. Gather missing IDs with discovery tools BEFORE acting — never ask for an ID you can look up, and never invent one.
+4. Act. Read/list/search tools answer immediately; write actions (create/send/post/play) are confirmed by the app.
+
 ${CONNECTED_APP_ORCHESTRATION_PROMPT}
 
-When the user asks you to do something, determine whether you can answer directly or need to call a tool.
-If calling a tool, return ONLY a function call. If answering, return a concise helpful response.
-Always be direct and action-oriented.`;
+Signature "life agent" behaviors — handle these proactively and thoroughly:
+- "Prepare/plan my day" → read the calendar and tasks (plus weather/fitness if relevant), then give a prioritized, time-blocked plan and offer to reschedule conflicts.
+- "Who should I follow up with?" → scan recent Gmail and calendar for stale or unanswered threads and suggest follow-ups (offer to draft them).
+- Meeting / travel prep → check the next event and its timing, and flag if the user should leave soon.
+- Life admin → surface tasks due, reminders, and anything time-sensitive, and offer to act on them.
+
+Mapping examples (natural phrasing → tool):
+- "play see you again" / "…on spotify" → search_and_play_spotify(query="see you again")
+- "add milk to my todoist" → create_todoist_task(content="milk")
+- "post to the team that the build is green" → list_slack_channels → post_slack_message(channel=<resolved id>, text=…)
+- "what's on my calendar tomorrow" → get_calendar_events(days=1)
+- "create a card 'ship v2' on my roadmap board" → list_trello_boards → list_trello_lists → create_trello_card(…)
+
+Tone: warm, concise, and genuinely competent — like a sharp human assistant. Never robotic, never childish, never padded with disclaimers. Prefer doing over explaining.`;
 }
 
 // ─── Tool declarations ────────────────────────────────────────────────────────
@@ -104,7 +147,8 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "play_spotify",
-    description: "Play music on Spotify. Can play a playlist, album, or resume playback.",
+    description:
+      "Resume playback or play a Spotify URI you already know. Use this ONLY to resume/continue or when you have an exact Spotify context URI. To play a named song, artist, album, or playlist, use search_and_play_spotify instead.",
     parameters: {
       type: "object",
       properties: {
@@ -126,7 +170,8 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "search_and_play_spotify",
-    description: "Search Spotify and play the top result.",
+    description:
+      "Search Spotify for a named song, artist, album, or playlist and play the top result. Use this for any request like 'play <song>', 'play <song> on Spotify', 'play some <artist>', or 'put on <playlist>'.",
     parameters: {
       type: "object",
       properties: {
@@ -186,8 +231,146 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "get_fitness_summary",
-    description: "Get today's fitness summary (steps, calories, active minutes).",
+    description: "Get today's fitness summary (steps, calories, active minutes) from Google Fit.",
     parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "list_drive_files",
+    description: "List or search the user's Google Drive files. Pass a query to search by name; omit it to list recent files.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "Optional name search text." } },
+      required: [],
+    },
+  },
+  {
+    name: "create_drive_doc",
+    description: "Create a new Google Doc in the user's Drive and return its link.",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "Document title." } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "schedule_meet",
+    description: "Schedule a Google Calendar event with a Google Meet video link and optional email invites.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Meeting title." },
+        startTime: { type: "string", description: "Start time in RFC3339/ISO 8601 (e.g. 2026-07-07T15:00:00+06:00)." },
+        endTime: { type: "string", description: "End time in RFC3339/ISO 8601." },
+        attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses." },
+        description: { type: "string", description: "Optional agenda/notes." },
+      },
+      required: ["title", "startTime", "endTime"],
+    },
+  },
+  {
+    name: "search_youtube",
+    description: "Search YouTube for videos. Returns titles and links the user can open.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
+    name: "search_youtube_music",
+    description: "Search for a song/artist on YouTube Music and return YouTube Music links to play. NOTE: playback can't be started from the server — the user taps the link to play. Use this for 'play <song>' style music requests.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
+    name: "list_youtube_playlists",
+    description: "List the user's own YouTube playlists (id + title).",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "get_youtube_liked",
+    description: "List the user's liked YouTube videos.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "create_youtube_playlist",
+    description: "Create a new (private) YouTube playlist.",
+    parameters: {
+      type: "object",
+      properties: { title: { type: "string" }, description: { type: "string" } },
+      required: ["title"],
+    },
+  },
+  {
+    name: "add_to_youtube_playlist",
+    description: "Add a video to one of the user's playlists. Resolve the playlistId with list_youtube_playlists and the videoId with search_youtube/search_youtube_music first.",
+    parameters: {
+      type: "object",
+      properties: { playlistId: { type: "string" }, videoId: { type: "string" } },
+      required: ["playlistId", "videoId"],
+    },
+  },
+  {
+    name: "get_outlook_inbox",
+    description: "Get recent emails from the user's Outlook (Microsoft 365) inbox.",
+    parameters: { type: "object", properties: { limit: { type: "number", description: "How many to return (default 10)." } }, required: [] },
+  },
+  {
+    name: "send_outlook_mail",
+    description: "Send an email from the user's Outlook account.",
+    parameters: {
+      type: "object",
+      properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "list_outlook_events",
+    description: "List upcoming events from the user's Outlook calendar.",
+    parameters: { type: "object", properties: { limit: { type: "number" } }, required: [] },
+  },
+  {
+    name: "create_outlook_event",
+    description: "Create an event on the user's Outlook calendar with optional attendees.",
+    parameters: {
+      type: "object",
+      properties: {
+        subject: { type: "string" },
+        startTime: { type: "string", description: "ISO 8601 UTC start (e.g. 2026-07-07T09:00:00Z)." },
+        endTime: { type: "string", description: "ISO 8601 UTC end." },
+        attendees: { type: "array", items: { type: "string" } },
+        body: { type: "string", description: "Optional agenda." },
+      },
+      required: ["subject", "startTime", "endTime"],
+    },
+  },
+  {
+    name: "list_teams_chats",
+    description: "List the user's recent Microsoft Teams chats (to get a chat id to post to).",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "send_teams_message",
+    description: "Post a message to a Microsoft Teams chat by its id (use list_teams_chats first to resolve the id).",
+    parameters: {
+      type: "object",
+      properties: { chatId: { type: "string" }, text: { type: "string" } },
+      required: ["chatId", "text"],
+    },
+  },
+  {
+    name: "list_onedrive_files",
+    description: "List or search the user's OneDrive files. Pass a query to search by name.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: [] },
+  },
+  {
+    name: "share_onedrive_file",
+    description: "Create a shareable view link for a OneDrive file by its id (use list_onedrive_files first).",
+    parameters: { type: "object", properties: { fileId: { type: "string" } }, required: ["fileId"] },
+  },
+  {
+    name: "send_whatsapp_message",
+    description: "Send a WhatsApp message to a phone number (E.164 format, e.g. +8801XXXXXXXXX) via the user's Twilio WhatsApp sender.",
+    parameters: {
+      type: "object",
+      properties: { to: { type: "string", description: "Recipient phone number in E.164 format." }, body: { type: "string", description: "Message text." } },
+      required: ["to", "body"],
+    },
   },
   {
     name: "get_gmail_inbox",
@@ -391,15 +574,32 @@ async function getPersonalPersona(userId: string): Promise<string> {
 }
 
 export async function connectedAppsSummary(userId: string): Promise<string> {
+  const apps: string[] = [];
+
+  // Google-backed apps (Calendar, Gmail, Tasks, Fitness) are stored in a separate
+  // table and never appear in listIntegrationsForUser — add them explicitly when the
+  // user has a Google account so the model knows those tools are actually available.
+  // A ReauthRequiredError still means an account row exists, so we list it either way.
+  try {
+    const google = await getTokens(userId, "google");
+    if (google) apps.push("Google Calendar", "Gmail", "Google Tasks", "Google Drive", "Google Meet", "Google Fit", "YouTube", "YouTube Music");
+  } catch {
+    apps.push("Google Calendar", "Gmail", "Google Tasks", "Google Drive", "Google Meet", "Google Fit", "YouTube", "YouTube Music");
+  }
+
   try {
     const integrations = await listIntegrationsForUser(userId);
-    const active = integrations.filter((i) => i.status === "active").map((i) => i.provider).sort();
-    if (active.length === 0) return "Connected apps: none.";
-    return `Connected apps: ${active.join(", ")}.`;
+    for (const i of integrations.filter((x) => x.status === "active")) {
+      // One Microsoft connection unlocks several surfaces — name them so the model knows.
+      if (i.provider === "microsoft") apps.push("Outlook (mail + calendar)", "Microsoft Teams", "OneDrive");
+      else apps.push(i.provider);
+    }
   } catch (err) {
     logger.warn("[personal-assistant] connectedAppsSummary failed", { err: String(err) });
-    return "Connected apps: unavailable.";
   }
+
+  if (apps.length === 0) return "Connected apps: none.";
+  return `Connected apps: ${apps.join(", ")}.`;
 }
 
 async function persistMessage(userId: string, role: "user" | "assistant", content: string): Promise<void> {
@@ -540,6 +740,124 @@ export async function executeAction(
           message: `Today you've taken ${s.steps.toLocaleString()} steps, burned ${s.caloriesBurned} calories, and logged ${s.activeMinutes} active minutes.`,
           data: s,
         };
+      }
+      case "list_drive_files": {
+        const files = await listDriveFiles(userId, args.query ? String(args.query) : undefined);
+        const message = linesOrNone(files, (f) => `- ${f.name}${f.webViewLink ? ` (${f.webViewLink})` : ""}`, "No matching Google Drive files found.", 12);
+        return { ok: true, message, data: files };
+      }
+      case "create_drive_doc": {
+        const doc = await createDriveDoc(userId, String(args.name ?? "Untitled document"));
+        return { ok: true, message: `Created Google Doc "${doc.name}"${doc.webViewLink ? `: ${doc.webViewLink}` : "."}`, data: doc };
+      }
+      case "schedule_meet": {
+        const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : undefined;
+        const meeting = await scheduleMeetMeeting(userId, {
+          title: String(args.title ?? "Meeting"),
+          startTime: String(args.startTime ?? ""),
+          endTime: String(args.endTime ?? ""),
+          attendees,
+          description: args.description ? String(args.description) : undefined,
+        });
+        return {
+          ok: true,
+          message: `Scheduled "${meeting.summary}"${meeting.meetLink ? ` with Meet link ${meeting.meetLink}` : ""}${attendees?.length ? ` and invited ${attendees.length} attendee(s)` : ""}.`,
+          data: meeting,
+        };
+      }
+      case "search_youtube": {
+        const videos = await searchYouTube(userId, String(args.query ?? ""));
+        const message = linesOrNone(videos, (v) => `- ${v.title}${v.channel ? ` — ${v.channel}` : ""} (${v.url})`, "No YouTube results found.", 10);
+        return { ok: true, message, data: videos };
+      }
+      case "search_youtube_music": {
+        const videos = await searchYouTube(userId, String(args.query ?? ""), { musicOnly: true });
+        if (videos.length === 0) return { ok: true, message: "No YouTube Music results found.", data: [] };
+        const top = videos[0];
+        const rest = linesOrNone(videos.slice(1), (v) => `- ${v.title} (${v.url})`, "", 6);
+        return {
+          ok: true,
+          message: `Top result: ${top.title}${top.channel ? ` — ${top.channel}` : ""}\nOpen to play: ${top.url}${rest ? `\n\nMore:\n${rest}` : ""}`,
+          data: videos,
+        };
+      }
+      case "list_youtube_playlists": {
+        const playlists = await listYouTubePlaylists(userId);
+        const message = linesOrNone(playlists, (p) => `- ${p.title} (${p.itemCount} videos) [${p.id}]`, "No YouTube playlists found.", 15);
+        return { ok: true, message, data: playlists };
+      }
+      case "get_youtube_liked": {
+        const videos = await getLikedVideos(userId);
+        const message = linesOrNone(videos, (v) => `- ${v.title} (${v.url})`, "No liked videos found.", 12);
+        return { ok: true, message, data: videos };
+      }
+      case "create_youtube_playlist": {
+        const pl = await createYouTubePlaylist(userId, String(args.title ?? "New playlist"), args.description ? String(args.description) : undefined);
+        return { ok: true, message: `Created YouTube playlist "${pl.title}": ${pl.url}`, data: pl };
+      }
+      case "add_to_youtube_playlist": {
+        const playlistId = String(args.playlistId ?? "").trim();
+        const videoId = String(args.videoId ?? "").trim();
+        if (!playlistId || !videoId) return { ok: false, message: "playlistId and videoId are required." };
+        await addToYouTubePlaylist(userId, playlistId, videoId);
+        return { ok: true, message: "Added the video to your playlist." };
+      }
+      case "get_outlook_inbox": {
+        const messages = await listOutlookMessages(userId, args.limit ? Number(args.limit) : 10);
+        const message = linesOrNone(messages, (m) => `- ${m.subject} — ${m.from}`, "No Outlook messages found.", 10);
+        return { ok: true, message, data: messages };
+      }
+      case "send_outlook_mail": {
+        const to = String(args.to ?? "").trim();
+        if (!to) return { ok: false, message: "Recipient email is required." };
+        await sendOutlookMail(userId, { to, subject: String(args.subject ?? ""), body: String(args.body ?? "") });
+        return { ok: true, message: `Sent an Outlook email to ${to}.` };
+      }
+      case "list_outlook_events": {
+        const events = await listOutlookEvents(userId, args.limit ? Number(args.limit) : 10);
+        const message = linesOrNone(events, (e) => `- ${e.subject}${e.start ? ` — ${e.start}` : ""}`, "No Outlook events found.", 10);
+        return { ok: true, message, data: events };
+      }
+      case "create_outlook_event": {
+        const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : undefined;
+        const ev = await createOutlookEvent(userId, {
+          subject: String(args.subject ?? "Meeting"),
+          startTime: String(args.startTime ?? ""),
+          endTime: String(args.endTime ?? ""),
+          attendees,
+          body: args.body ? String(args.body) : undefined,
+        });
+        return { ok: true, message: `Created Outlook event "${ev.subject}"${attendees?.length ? ` and invited ${attendees.length} attendee(s)` : ""}.`, data: ev };
+      }
+      case "list_teams_chats": {
+        const chats = await listTeamsChats(userId);
+        const message = linesOrNone(chats, (c) => `- ${c.topic} (${c.id})`, "No Teams chats found.", 15);
+        return { ok: true, message, data: chats };
+      }
+      case "send_teams_message": {
+        const chatId = String(args.chatId ?? "").trim();
+        const text = String(args.text ?? "").trim();
+        if (!chatId || !text) return { ok: false, message: "Teams chatId and text are required." };
+        await sendTeamsMessage(userId, chatId, text);
+        return { ok: true, message: "Posted the message to Teams." };
+      }
+      case "list_onedrive_files": {
+        const files = await listOneDriveFiles(userId, args.query ? String(args.query) : undefined);
+        const message = linesOrNone(files, (f) => `- ${f.name}${f.webUrl ? ` (${f.webUrl})` : ""}`, "No OneDrive files found.", 12);
+        return { ok: true, message, data: files };
+      }
+      case "share_onedrive_file": {
+        const fileId = String(args.fileId ?? "").trim();
+        if (!fileId) return { ok: false, message: "OneDrive fileId is required." };
+        const link = await shareOneDriveFile(userId, fileId);
+        return { ok: true, message: link ? `Share link: ${link}` : "Created a share link.", data: { link } };
+      }
+      case "send_whatsapp_message": {
+        const to = String(args.to ?? "").trim();
+        const body = String(args.body ?? "").trim();
+        if (!to || !body) return { ok: false, message: "A recipient number and message text are required." };
+        await sendWhatsAppMessage(to, body);
+        return { ok: true, message: `Sent a WhatsApp message to ${to}.` };
       }
       case "get_calendar_events": {
         const days = args.days ? Number(args.days) : 7;
@@ -771,6 +1089,24 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "create_trello_card": return `Create Trello card "${args.name ?? ""}"`;
     case "get_weather": return `Get weather for ${args.location}`;
     case "get_fitness_summary": return "Check today's fitness stats";
+    case "list_drive_files": return `Search Google Drive${args.query ? ` for "${args.query}"` : ""}`;
+    case "create_drive_doc": return `Create Google Doc "${args.name ?? ""}"`;
+    case "schedule_meet": return `Schedule a Google Meet "${args.title ?? ""}"`;
+    case "search_youtube": return `Search YouTube for "${args.query ?? ""}"`;
+    case "search_youtube_music": return `Search YouTube Music for "${args.query ?? ""}"`;
+    case "list_youtube_playlists": return "List YouTube playlists";
+    case "get_youtube_liked": return "List liked YouTube videos";
+    case "create_youtube_playlist": return `Create YouTube playlist "${args.title ?? ""}"`;
+    case "add_to_youtube_playlist": return "Add a video to a YouTube playlist";
+    case "get_outlook_inbox": return "Check Outlook inbox";
+    case "send_outlook_mail": return `Send an Outlook email to ${args.to ?? "a recipient"}`;
+    case "list_outlook_events": return "List Outlook calendar events";
+    case "create_outlook_event": return `Create Outlook event "${args.subject ?? ""}"`;
+    case "list_teams_chats": return "List Teams chats";
+    case "send_teams_message": return "Post a message to Teams";
+    case "list_onedrive_files": return `Search OneDrive${args.query ? ` for "${args.query}"` : ""}`;
+    case "share_onedrive_file": return "Create a OneDrive share link";
+    case "send_whatsapp_message": return `Send a WhatsApp message to ${args.to ?? "a number"}`;
     case "search_gmail_messages": return `Search Gmail for "${args.query ?? ""}"`;
     case "get_gmail_inbox": return "Check Gmail inbox";
     default: return `Run ${name}`;
@@ -780,6 +1116,15 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
 export const READ_ONLY_ACTIONS = new Set([
   "get_weather",
   "get_fitness_summary",
+  "list_drive_files",
+  "search_youtube",
+  "search_youtube_music",
+  "list_youtube_playlists",
+  "get_youtube_liked",
+  "get_outlook_inbox",
+  "list_outlook_events",
+  "list_teams_chats",
+  "list_onedrive_files",
   "get_gmail_inbox",
   "search_gmail_messages",
   "get_calendar_events",
@@ -809,14 +1154,27 @@ export interface CommandOptions {
   lon?: number;
 }
 
+// Verbs and app names that signal the user wants an action, not a chat answer.
+// Used to decide whether a prose-only Gemini reply deserves a forced-tool retry.
+const ACTION_INTENT_PATTERN =
+  /\b(play|pause|skip|resume|next|previous|create|add|make|new|list|show|get|find|search|read|post|send|open|schedule|remind|check|draft|write|log|update|assign|move)\b|\b(spotify|todoist|notion|slack|github|jira|trello|gmail|calendar|weather|fitness|task|song|track|playlist|issue|pull request|pr|card|board|channel|note|page|email)\b/i;
+
+function looksLikeActionRequest(message: string): boolean {
+  return ACTION_INTENT_PATTERN.test(message);
+}
+
 export async function command(
   userId: string,
   message: string,
   opts: CommandOptions = {},
 ): Promise<PersonalCommandResult> {
   // Fail fast with a clear, actionable message when the AI isn't configured —
-  // instead of a silent generic "trouble connecting".
+  // instead of a silent generic "trouble connecting". Log loudly: a mis-set key or
+  // PROFESSIONAL_AI_PROVIDER=demo makes the assistant look "dumb" when it's just off.
   if (!isGeminiLive()) {
+    logger.warn(
+      "[personal-assistant] Gemini NOT live — returning fallback. Check GEMINI_API_KEY is set and PROFESSIONAL_AI_PROVIDER is not 'demo'.",
+    );
     const answer = "The AI assistant isn't configured yet. Add a GEMINI_API_KEY on the server to enable it.";
     await persistMessage(userId, "user", message);
     await persistMessage(userId, "assistant", answer);
@@ -833,49 +1191,36 @@ export async function command(
     ? [{ text: appsSummary }, { text: message }, { inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } }]
     : [{ text: appsSummary }, { text: message }];
 
+  // Load prior turns BEFORE persisting the current message so the model gets
+  // conversation memory (pronouns, "the other one", "add that") without duplicating
+  // the current turn, which we pass separately as userParts.
+  const history = (await getChatHistory(userId)).slice(-8);
   await persistMessage(userId, "user", message);
 
   try {
-    const result = await geminiGenerateContent({
+    const outcome = await runAgentTurn({
       system: systemPrompt,
-      parts,
-      json: false,
       tools: PERSONAL_TOOLS,
+      userParts: parts,
+      history,
+      isReadOnly: (name) => READ_ONLY_ACTIONS.has(name),
+      execReadOnly: (name, args) => executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon }),
+      looksLikeAction: looksLikeActionRequest(message),
     });
 
-    if (result.functionCall) {
-      const { name, args } = result.functionCall;
-
-      // Read-only actions run immediately and answer conversationally — no
-      // confirmation round-trip — so the assistant feels like a real chat.
-      if (READ_ONLY_ACTIONS.has(name)) {
-        try {
-          const exec = await executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon });
-          await persistMessage(userId, "assistant", exec.message);
-          return { answer: exec.message, action: null, isLive: true };
-        } catch (err) {
-          const answer =
-            err instanceof Error && err.message.trim()
-              ? err.message.trim()
-              : "I could not load that connected-app information right now.";
-          await persistMessage(userId, "assistant", answer);
-          return { answer, action: null, isLive: true };
-        }
-      }
-
-      // Write actions are returned for user confirmation before executing.
-      const summary = summarizeAction(name, args);
+    if (outcome.kind === "action") {
+      // Write action — return it for user confirmation before executing.
+      const summary = summarizeAction(outcome.name, outcome.args);
       await persistMessage(userId, "assistant", summary);
       return {
-        answer: result.raw?.trim() || null,
-        action: { id: randomUUID(), name, args, summary, needsConfirm: true },
+        answer: null,
+        action: { id: randomUUID(), name: outcome.name, args: outcome.args, summary, needsConfirm: true },
         isLive: true,
       };
     }
 
-    const answer = result.raw?.trim() || "I'm not sure how to help with that.";
-    await persistMessage(userId, "assistant", answer);
-    return { answer, action: null, isLive: true };
+    await persistMessage(userId, "assistant", outcome.text);
+    return { answer: outcome.text, action: null, isLive: true };
   } catch (err) {
     logger.error("[personal-assistant] command failed", { err: String(err) });
     const answer = "I ran into a problem reaching the AI service. Please try again in a moment.";

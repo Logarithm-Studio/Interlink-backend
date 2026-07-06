@@ -29,6 +29,7 @@ import { listInvoices, type Invoice } from "./invoices.service";
 import { sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
 import { emailFlashReport } from "./reporting.service";
+import { listContractors, needsW9, sendW9Request } from "./tax.service";
 
 const DAY_MS = 86_400_000;
 const TONES = ["friendly", "firm", "final"] as const;
@@ -166,6 +167,43 @@ async function runReport(user: AppUser, automation: Automation): Promise<void> {
   }
 }
 
+async function runTaxDocs(user: AppUser, automation: Automation): Promise<void> {
+  // Contractors over the reporting threshold still missing/awaiting a W-9.
+  const candidates = (await listContractors(user.id)).filter((c) => needsW9(c) && c.email);
+  if (candidates.length === 0) return;
+
+  if (automation.autonomy === "auto") {
+    let sent = 0;
+    for (const c of candidates) {
+      try {
+        await sendW9Request(user, c.id);
+        sent++;
+      } catch {
+        /* skip one failure, keep going */
+      }
+    }
+    if (sent > 0) {
+      await recordActivity({
+        userId: user.id,
+        kind: "tax_request_sent",
+        title: `Requested W-9 tax docs from ${sent} contractor${sent === 1 ? "" : "s"}`,
+        status: "done",
+      });
+    }
+  } else {
+    // Suggest a single batch approval (dedupe on a stable entity id).
+    if (await hasPendingSuggestion(user.id, "tax_docs_batch")) return;
+    await recordActivity({
+      userId: user.id,
+      kind: "tax_suggested",
+      title: `Request W-9 tax docs from ${candidates.length} contractor${candidates.length === 1 ? "" : "s"} over the threshold?`,
+      status: "suggested",
+      entityId: "tax_docs_batch",
+      payload: { action: "gather_tax_docs" },
+    });
+  }
+}
+
 // ─── Public ──────────────────────────────────────────────────────────────────
 
 export interface RunSummary {
@@ -194,8 +232,11 @@ export async function runAutomationsForUser(user: AppUser): Promise<RunSummary> 
       await runReport(user, a);
       ran.push(a.type);
       await touchLastRun(user.id, a.type);
+    } else if (a.type === "tax_docs" && isDue(a, (a.config.everyDays as number) ?? 30)) {
+      await runTaxDocs(user, a);
+      ran.push(a.type);
+      await touchLastRun(user.id, a.type);
     }
-    // tax_docs handled in its own flow (Phase 5); skipped here.
   }
 
   return { ran, suggested: 0, acted: 0 };
@@ -248,6 +289,15 @@ export async function approveSuggestedActivity(
       await runExpenseAudit(user.id);
     } else if (activity.kind === "report_suggested") {
       await emailFlashReport(user);
+    } else if (activity.kind === "tax_suggested") {
+      const candidates = (await listContractors(user.id)).filter((c) => needsW9(c) && c.email);
+      for (const c of candidates) {
+        try {
+          await sendW9Request(user, c.id);
+        } catch {
+          /* skip one failure, keep going */
+        }
+      }
     } else {
       return { ok: false, detail: "unsupported" };
     }

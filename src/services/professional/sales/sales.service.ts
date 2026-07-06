@@ -449,9 +449,16 @@ async function buildSnapshot(userId: string): Promise<string> {
 // ─── Agent tools ────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = [
   "You are the user's AI sales & business-development assistant inside the Interlink app.",
-  "Answer questions about the pipeline/contacts using ONLY the DATA SNAPSHOT, or perform ONE action by calling a function when the user clearly asks.",
-  "If a message includes a call transcript (as text or an attached file), extract the client's pain points and call meeting_followup for the relevant deal.",
-  "Never invent contacts, companies, or numbers not in the snapshot. You never send anything yourself — the app asks the user to confirm before executing.",
+  "Answer questions about the pipeline/contacts using ONLY the DATA SNAPSHOT, or perform an action by calling a function when the user asks.",
+  "Core workflows you can run:",
+  "- Lead enrichment: when the user pastes/attaches an email, call enrich_lead to extract and add/update the contact.",
+  "- Post-meeting follow-up: given a call transcript (text or attached file), extract the client's pain points and call meeting_followup for the relevant deal — it emails a follow-up and advances the stage.",
+  "- Contract generation: generate_contract drafts a proposal from a deal and emails it for signature; mark_contract_signed closes the deal won.",
+  "- Inbound routing: route_lead assigns a lead to a rep by territory and schedules an intro meeting.",
+  "- Pipeline hygiene: reengage_deal revives a stalled deal, advance_stage moves a deal, and post_pipeline_to_slack / sync_pipeline_to_trello share the pipeline.",
+  "- Campaigns: draft_campaign writes AND sends a marketing email to your matching contacts.",
+  "Resolve deals and contacts by their name from the snapshot; never invent contacts, companies, or numbers.",
+  "You never send anything without confirmation — the app asks the user to confirm each write action before it executes.",
 ].join("\n");
 
 const STAGES = ["lead", "qualified", "proposal", "negotiation", "won", "lost", "nurture"];
@@ -460,7 +467,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "create_deal", description: "Create a new deal/opportunity.", parameters: { type: "object", properties: { title: { type: "string" }, contactName: { type: "string" }, company: { type: "string" }, amountCents: { type: "number" }, stage: { type: "string", enum: STAGES } }, required: ["title"] } },
   { name: "advance_stage", description: "Move a deal to a new pipeline stage.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, stage: { type: "string", enum: STAGES } }, required: ["dealTitle", "stage"] } },
   { name: "draft_followup", description: "Draft and send a follow-up email to a contact.", parameters: { type: "object", properties: { contactName: { type: "string" }, note: { type: "string" } }, required: ["contactName"] } },
-  { name: "draft_campaign", description: "Draft a marketing campaign email (returns copy, does not send).", parameters: { type: "object", properties: { topic: { type: "string" }, audience: { type: "string" } }, required: ["topic"] } },
+  { name: "draft_campaign", description: "Draft AND send a marketing campaign email to your contacts. Optionally filter recipients with 'audience' (matched against company/title/territory).", parameters: { type: "object", properties: { topic: { type: "string" }, audience: { type: "string", description: "Optional filter, e.g. a company, title, or territory. Omit to send to all contacts with an email." } }, required: ["topic"] } },
   { name: "enrich_lead", description: "Extract & enrich a lead from a pasted or attached email; creates/updates a contact.", parameters: { type: "object", properties: { emailText: { type: "string", description: "The email text to parse (if pasted)." } } } },
   { name: "meeting_followup", description: "After a call: send a follow-up that addresses pain points and advance the deal.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, painPoints: { type: "array", items: { type: "string" } }, summary: { type: "string" } }, required: ["dealTitle"] } },
   { name: "generate_contract", description: "Generate a proposal/contract from a deal and email it for signature.", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
@@ -479,7 +486,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "create_deal": return `Create deal "${args.title ?? ""}"${args.company ? ` for ${args.company}` : ""}.`;
     case "advance_stage": return `Move "${args.dealTitle ?? "deal"}" to ${args.stage}.`;
     case "draft_followup": return `Draft & send a follow-up to ${args.contactName ?? "the contact"}.`;
-    case "draft_campaign": return `Draft a campaign email about ${args.topic ?? "your product"}.`;
+    case "draft_campaign": return `Draft & send a campaign about ${args.topic ?? "your product"}${args.audience ? ` to ${args.audience}` : " to your contacts"}.`;
     case "enrich_lead": return `Enrich a lead from the email.`;
     case "meeting_followup": return `Send a post-meeting follow-up for "${args.dealTitle ?? "the deal"}".`;
     case "generate_contract": return `Generate & send a contract for "${args.dealTitle ?? "the deal"}".`;
@@ -526,8 +533,27 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       }
       case "draft_campaign": {
         const draft = await draftEmail({ role: "marketing manager", purpose: "a short marketing campaign email", context: `Topic: ${args.topic ?? ""}. Audience: ${args.audience ?? "prospects"}.` });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "campaign_drafted", title: `Drafted campaign: ${draft.subject}` });
-        return { ok: true, message: `Draft ready — Subject: ${draft.subject}\n\n${draft.body}` };
+        // Send to contacts with an email, optionally filtered by the audience string
+        // (matched against company / title / territory) — the merged-in marketing workflow.
+        const audience = String(args.audience ?? "").trim().toLowerCase();
+        const withEmail = (await listContacts(user.id)).filter((c) => c.email);
+        const recipients = audience
+          ? withEmail.filter((c) => [c.company, c.title, c.territory].some((f) => (f ?? "").toLowerCase().includes(audience)))
+          : withEmail;
+        let sent = 0;
+        for (const c of recipients) {
+          try {
+            await sendProfessionalEmail({ user, to: c.email!, subject: draft.subject, body: draft.body, tag: "sales_campaign" });
+            sent++;
+          } catch {
+            /* skip a single failed recipient, keep going */
+          }
+        }
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "campaign_sent", title: `Campaign sent: ${draft.subject}`, detail: `${sent} recipient(s)` });
+        const note = sent > 0
+          ? `Sent to ${sent} contact(s).`
+          : "No contacts with an email matched — the copy is ready; add recipients and try again.";
+        return { ok: true, message: `${note}\n\nSubject: ${draft.subject}\n\n${draft.body}` };
       }
       case "enrich_lead": {
         const text = String(args.emailText ?? "").trim();

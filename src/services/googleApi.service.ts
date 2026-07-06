@@ -1,9 +1,17 @@
 import { google, gmail_v1 } from "googleapis";
-import { refreshGoogleTokenIfNeeded } from "./auth.service";
+import {
+  refreshGoogleTokenIfNeeded,
+  refreshGoogleTokenForAccount,
+} from "./auth.service";
 import { BadRequestError } from "../utils/errors";
 
-async function getGoogleOAuthClient(userId: string) {
-  const accessToken = await refreshGoogleTokenIfNeeded(userId);
+async function getGoogleOAuthClient(
+  userId: string,
+  googleAccountId?: string | null,
+) {
+  const accessToken = googleAccountId
+    ? await refreshGoogleTokenForAccount(googleAccountId)
+    : await refreshGoogleTokenIfNeeded(userId);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   return oauth2Client;
@@ -11,6 +19,7 @@ async function getGoogleOAuthClient(userId: string) {
 
 export async function listGoogleCalendarEvents(params: {
   userId: string;
+  googleAccountId?: string | null;
   calendarId?: string;
   maxResults?: number;
   timeMin?: string;
@@ -24,7 +33,10 @@ export async function listGoogleCalendarEvents(params: {
     htmlLink: string | null | undefined;
   }>
 > {
-  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const oauth2Client = await getGoogleOAuthClient(
+    params.userId,
+    params.googleAccountId,
+  );
   const calendar = google.calendar({ version: "v3", auth: oauth2Client });
 
   const response = await calendar.events.list({
@@ -198,6 +210,7 @@ function buildMimeMessage(params: {
 
 export async function listGmailMailboxMessages(params: {
   userId: string;
+  googleAccountId?: string | null;
   mailbox?: GmailMailbox;
   maxResults?: number;
   query?: string;
@@ -205,7 +218,10 @@ export async function listGmailMailboxMessages(params: {
   const mailbox = params.mailbox ?? "inbox";
   const labelIds = mailboxToLabelIds(mailbox);
 
-  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const oauth2Client = await getGoogleOAuthClient(
+    params.userId,
+    params.googleAccountId,
+  );
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   const listResponse = await gmail.users.messages.list({
@@ -250,9 +266,13 @@ export async function listGmailMailboxMessages(params: {
 
 export async function getGmailMessageDetail(params: {
   userId: string;
+  googleAccountId?: string | null;
   messageId: string;
 }): Promise<GmailMessageDetail> {
-  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const oauth2Client = await getGoogleOAuthClient(
+    params.userId,
+    params.googleAccountId,
+  );
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   const detail = await gmail.users.messages.get({
@@ -305,6 +325,7 @@ export async function getGmailMessageDetail(params: {
 
 export async function sendAutomatedGmailMessage(params: {
   userId: string;
+  googleAccountId?: string | null;
   fromEmail: string;
   toEmail: string;
   subject: string;
@@ -324,7 +345,10 @@ export async function sendAutomatedGmailMessage(params: {
     throw new BadRequestError("Subject and body are required");
   }
 
-  const oauth2Client = await getGoogleOAuthClient(params.userId);
+  const oauth2Client = await getGoogleOAuthClient(
+    params.userId,
+    params.googleAccountId,
+  );
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   const mime = buildMimeMessage({
@@ -356,11 +380,13 @@ export async function sendAutomatedGmailMessage(params: {
 
 export async function listGmailInboxMessages(params: {
   userId: string;
+  googleAccountId?: string | null;
   maxResults?: number;
   query?: string;
 }): Promise<GmailMessageSummary[]> {
   return listGmailMailboxMessages({
     userId: params.userId,
+    googleAccountId: params.googleAccountId,
     mailbox: "inbox",
     maxResults: params.maxResults,
     query: params.query,

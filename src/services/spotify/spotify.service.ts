@@ -262,8 +262,19 @@ async function ensureSpotifyOk(res: Response, action: string): Promise<void> {
   if (res.status === 404 || lower.includes("no active device")) {
     throw new BadRequestError("No active Spotify device found. Open Spotify on your phone or desktop, then try again.");
   }
-  if (res.status === 403 || lower.includes("premium")) {
-    throw new BadRequestError("Spotify playback control requires Spotify Premium and an active Spotify app/device.");
+  // Reserve the "needs Premium" wording for responses Spotify actually flags as a
+  // premium restriction (reason PREMIUM_REQUIRED). Other 403s — a Dev-Mode app the
+  // account isn't allow-listed on, a restricted device, or a missing scope — are
+  // NOT about Premium, so we surface their real reason instead of a misleading upsell.
+  if (lower.includes("premium")) {
+    throw new BadRequestError("Spotify playback control requires Spotify Premium.");
+  }
+  if (res.status === 403) {
+    throw new BadRequestError(
+      detail
+        ? `Spotify refused this action: ${detail}. If you're on Premium, confirm your account is authorized for this app (Spotify Developer Dashboard) and an active Spotify device is open.`
+        : "Spotify refused this playback action. Confirm your account is authorized for this app and an active Spotify device is open.",
+    );
   }
   if (res.status === 429) {
     throw new BadRequestError("Spotify is rate limiting requests. Wait a moment and try again.");
@@ -272,12 +283,33 @@ async function ensureSpotifyOk(res: Response, action: string): Promise<void> {
   throw new BadRequestError(`${action} failed on Spotify${detail ? `: ${detail}` : "."}`);
 }
 
-export async function resumePlayback(userId: string): Promise<void> {
+/**
+ * Issue a play command against the resolved device, retrying once if Spotify
+ * reports the device isn't ready. `resolveDeviceId` may have just transferred
+ * playback to wake an idle device, and that transfer is asynchronous — the first
+ * play can 403/404 with a device restriction before the device finishes waking.
+ * A single short-delayed retry closes that race for a genuine Premium user.
+ */
+async function playOnResolvedDevice(userId: string, body: unknown, action: string): Promise<void> {
   const deviceId = await resolveDeviceId(userId);
-  await ensureSpotifyOk(
-    await spotifyFetch(userId, `/me/player/play?device_id=${encodeURIComponent(deviceId)}`, { method: "PUT" }),
-    "Resume playback",
-  );
+  const send = () =>
+    spotifyFetch(userId, `/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      ...(body !== undefined
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+        : {}),
+    });
+
+  let res = await send();
+  if (!res.ok && res.status !== 204 && (res.status === 403 || res.status === 404)) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    res = await send();
+  }
+  await ensureSpotifyOk(res, action);
+}
+
+export async function resumePlayback(userId: string): Promise<void> {
+  await playOnResolvedDevice(userId, undefined, "Resume playback");
 }
 
 export async function pausePlayback(userId: string): Promise<void> {
@@ -293,27 +325,11 @@ export async function skipToPrevious(userId: string): Promise<void> {
 }
 
 export async function playContext(userId: string, contextUri: string): Promise<void> {
-  const deviceId = await resolveDeviceId(userId);
-  await ensureSpotifyOk(
-    await spotifyFetch(userId, `/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context_uri: contextUri }),
-    }),
-    "Play context",
-  );
+  await playOnResolvedDevice(userId, { context_uri: contextUri }, "Play context");
 }
 
 export async function playTrack(userId: string, trackUri: string): Promise<void> {
-  const deviceId = await resolveDeviceId(userId);
-  await ensureSpotifyOk(
-    await spotifyFetch(userId, `/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uris: [trackUri] }),
-    }),
-    "Play track",
-  );
+  await playOnResolvedDevice(userId, { uris: [trackUri] }, "Play track");
 }
 
 // ─── Library ─────────────────────────────────────────────────────────────────

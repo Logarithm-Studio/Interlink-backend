@@ -39,6 +39,7 @@ async function upsertAll(
   provider: "google",
   rules: EventTypeRule[],
   calendarId: string,
+  googleAccountId?: string | null,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
   let synced = 0;
   let skipped = 0;
@@ -54,6 +55,7 @@ async function upsertAll(
           userId,
           raw.id,
           provider,
+          googleAccountId,
         );
         if (wasDeleted) deleted++;
       }
@@ -62,7 +64,7 @@ async function upsertAll(
 
     const normalized: NormalizedEvent | null =
       provider === "google"
-        ? normalizeGoogleEvent(raw, userId, rules, calendarId)
+        ? normalizeGoogleEvent(raw, userId, rules, calendarId, googleAccountId)
         : null;
 
     if (!normalized) {
@@ -91,6 +93,7 @@ export async function fullSync(
   provider: "google",
   since?: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<{
   synced: number;
   skipped: number;
@@ -108,6 +111,7 @@ export async function fullSync(
     userId,
     since,
     calendarId,
+    googleAccountId,
   );
 
   const { synced, skipped, deleted } = await upsertAll(
@@ -116,6 +120,7 @@ export async function fullSync(
     provider,
     rules,
     calendarId,
+    googleAccountId,
   );
 
   console.log(
@@ -143,7 +148,20 @@ export async function incrementalSync(
   userId: string,
   channelId: string,
   calendarId = "primary",
+  googleAccountId?: string | null,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
+  // When the caller didn't pin an account, use the channel's own account so
+  // events sync against the right mailbox in a multi-account setup.
+  let accountId = googleAccountId ?? null;
+  if (!accountId) {
+    const { query } = await import("../../config/db");
+    const res = await query<{ google_account_id: string | null }>(
+      `SELECT google_account_id FROM google_watch_channels WHERE channel_id = $1`,
+      [channelId],
+    ).catch(() => ({ rows: [] as { google_account_id: string | null }[] }));
+    accountId = res.rows[0]?.google_account_id ?? null;
+  }
+
   const storedToken = await getSyncToken(channelId);
 
   // ── Path 1: no cursor yet → full sync + seed cursor ──────────────────────
@@ -157,6 +175,7 @@ export async function incrementalSync(
       "google",
       undefined,
       calendarId,
+      accountId,
     );
 
     if (nextSyncToken) {
@@ -180,7 +199,12 @@ export async function incrementalSync(
 
   try {
     const { events: rawEvents, nextSyncToken } =
-      await fetchGoogleEventsIncremental(userId, storedToken, calendarId);
+      await fetchGoogleEventsIncremental(
+        userId,
+        storedToken,
+        calendarId,
+        accountId,
+      );
 
     // Load classification rules once for this incremental batch.
     const rules = await loadActiveRules(userId, "google");
@@ -193,6 +217,7 @@ export async function incrementalSync(
       "google",
       rules,
       calendarId,
+      accountId,
     );
 
     // Advance cursor only after all upserts in this batch succeed.
@@ -239,12 +264,14 @@ export async function syncUserCalendar(
   userId: string,
   provider: "google",
   since?: string,
+  googleAccountId?: string | null,
 ): Promise<{ synced: number; skipped: number; deleted: number }> {
   if (provider !== "google") {
     throw new Error(`Unsupported provider: ${provider}`);
   }
 
-  // Prefer the most recently updated channel for this user.
+  // Prefer the most recently updated channel for this user (scoped to the
+  // requested account when one is given — full multi-account behaviour).
   // We intentionally do NOT require expiration > now() for manual sync because
   // syncToken validity is independent of watch-channel webhook expiry.
   const { query } = await import("../../config/db");
@@ -252,19 +279,30 @@ export async function syncUserCalendar(
     channel_id: string;
     calendar_id: string;
     sync_token: string | null;
+    google_account_id: string | null;
   }>(
-    `SELECT channel_id, calendar_id, sync_token
+    `SELECT channel_id, calendar_id, sync_token, google_account_id
        FROM google_watch_channels
       WHERE user_id = $1
+        AND ($2::uuid IS NULL OR google_account_id = $2)
       ORDER BY (sync_token IS NOT NULL) DESC, updated_at DESC
       LIMIT 1`,
-    [userId],
+    [userId, googleAccountId ?? null],
   ).catch(
     () =>
-      ({ rows: [] as { channel_id: string; calendar_id: string; sync_token: string | null }[] }),
+      ({
+        rows: [] as {
+          channel_id: string;
+          calendar_id: string;
+          sync_token: string | null;
+          google_account_id: string | null;
+        }[],
+      }),
   );
 
   const preferredChannel = row.rows[0];
+  // Use the channel's own account when we didn't pin one explicitly.
+  const accountId = googleAccountId ?? preferredChannel?.google_account_id ?? null;
 
   if (preferredChannel?.sync_token) {
     const { channel_id: channelId, calendar_id: calendarId } = preferredChannel;
@@ -272,7 +310,7 @@ export async function syncUserCalendar(
       `[syncUserCalendar] Incremental path via channel=${channelId} for user=${userId}`,
     );
     try {
-      return await incrementalSync(userId, channelId, calendarId);
+      return await incrementalSync(userId, channelId, calendarId, accountId);
     } catch (err) {
       if (!(err instanceof FullResyncRequiredError)) {
         throw err;
@@ -287,6 +325,7 @@ export async function syncUserCalendar(
         provider,
         since,
         calendarId,
+        accountId,
       );
       if (nextSyncToken) {
         await setSyncToken(channelId, nextSyncToken);
@@ -306,6 +345,7 @@ export async function syncUserCalendar(
       provider,
       since,
       calendarId,
+      accountId,
     );
     if (nextSyncToken) {
       await setSyncToken(channelId, nextSyncToken);
@@ -316,6 +356,12 @@ export async function syncUserCalendar(
   console.log(
     `[syncUserCalendar] No channel found — full sync for user=${userId}`,
   );
-  const { synced, skipped, deleted } = await fullSync(userId, provider, since);
+  const { synced, skipped, deleted } = await fullSync(
+    userId,
+    provider,
+    since,
+    "primary",
+    accountId,
+  );
   return { synced, skipped, deleted };
 }

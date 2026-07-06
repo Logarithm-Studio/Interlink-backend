@@ -15,7 +15,8 @@ export type IntegrationProvider =
   | "jira"
   | "slack"
   | "hubspot"
-  | "mailchimp";
+  | "mailchimp"
+  | "microsoft";
 
 export type IntegrationStatus = "active" | "expired" | "revoked" | "reauth_required";
 

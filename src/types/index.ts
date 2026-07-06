@@ -9,7 +9,15 @@ export interface AppUser {
 
 export interface AuthenticatedRequest extends Request {
   user: AppUser;
+  /**
+   * The Google account resolved for this request's mode (via the
+   * X-Interlink-Mode header). Populated by `resolveGoogleAccountForRequest`.
+   */
+  googleAccountId?: string;
 }
+
+/** Which app mode a connected Google account is bound to. */
+export type GoogleAccountRole = "personal" | "professional";
 
 // ─── Connected Accounts ─────────────────────────────────────────────
 export interface ConnectedAccount {
@@ -22,12 +30,20 @@ export interface ConnectedAccount {
   createdAt: Date;
   /** True when the stored tokens are invalid and the user must reconnect. */
   reauthRequired?: boolean;
+  /** Real connected mailbox address (Google only; null until back-filled). */
+  email?: string | null;
+  /** Which mode uses this account: 'personal' | 'professional' | null. */
+  role?: GoogleAccountRole | null;
+  /** Fallback account when no mode/role resolves to a specific one. */
+  isPrimary?: boolean;
 }
 
 // ─── Normalized Event ───────────────────────────────────────────────
 export interface NormalizedEvent {
   id?: string;
   userId: string;
+  /** The Google account this event was synced from (null for legacy rows). */
+  googleAccountId?: string | null;
   externalEventId: string;
   provider: "google" | "microsoft";
   eventType: string;

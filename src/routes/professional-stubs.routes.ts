@@ -10,15 +10,14 @@ import { authMiddleware } from "../middleware/auth";
 const router = Router();
 router.use(authMiddleware as never);
 
+// Only genuinely-unbuilt personas belong here. Finance, Sales, Customer Support,
+// Real Estate, HR, and Product Manager are all live (see services/professional/registry
+// + the bespoke finance/sales/pm paths) and must NOT be reported as "coming_soon".
+// Marketing folds into Sales and Recruiter folds into HR, so they aren't separate personas.
 const PERSONA_DESCRIPTIONS: Record<string, string> = {
-  sales: "CRM sync, deal pipeline tracking, follow-up automation, and prospect research via HubSpot.",
-  marketing: "Campaign performance, email draft generation, and content calendar via Mailchimp.",
   legal: "Contract drafting, deadline tracking, and document organization via Google Drive.",
-  real_estate: "Listing management, showing scheduling, and client follow-ups with Maps integration.",
   healthcare: "Patient scheduling, appointment reminders, and care gap analysis.",
   operations: "Supply chain tracking, vendor management, and SLA monitoring.",
-  recruiter: "Job posting automation, candidate pipeline, and interview scheduling.",
-  customer_support: "Email ticket categorization, auto-response drafts, and resolution tracking.",
 };
 
 router.get("/:persona/status", (req: Request, res: Response, next: NextFunction) => {

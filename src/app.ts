@@ -27,6 +27,8 @@ import spotifyRoutes from "./routes/spotify.routes";
 import weatherRoutes from "./routes/weather.routes";
 import tasksRoutes from "./routes/tasks.routes";
 import todoistRoutes from "./routes/todoist.routes";
+import microsoftRoutes from "./routes/microsoft.routes";
+import settingsRoutes from "./routes/settings.routes";
 import notionRoutes from "./routes/notion.routes";
 import fitnessRoutes from "./routes/fitness.routes";
 import personalAssistantRoutes from "./routes/personal-assistant.routes";
@@ -90,6 +92,8 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/weather", weatherRoutes);
   app.use("/api/v1/tasks", tasksRoutes);
   app.use("/api/v1/todoist", todoistRoutes);
+  app.use("/api/v1/microsoft", microsoftRoutes);
+  app.use("/api/v1/settings", settingsRoutes);
   app.use("/api/v1/notion", notionRoutes);
   app.use("/api/v1/fitness", fitnessRoutes);
   app.use("/api/v1/personal-assistant", personalAssistantRoutes);

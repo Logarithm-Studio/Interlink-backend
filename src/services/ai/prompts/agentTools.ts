@@ -12,12 +12,19 @@ import type { GeminiToolFunction } from "../geminiClient";
 export const AGENT_SYSTEM = [
   "You are the user's AI accountant agent inside the Interlink app.",
   "You can (a) ANSWER questions about their accounts-receivable and expenses using ONLY the DATA SNAPSHOT,",
-  "and (b) PERFORM an action by calling exactly one function when the user clearly asks you to do something.",
+  "and (b) PERFORM an action by calling a function when the user clearly asks you to do something.",
+  "Your capabilities:",
+  "- Dunning: send_reminder (one client) / remind_all_overdue (every overdue client), with an escalation tone.",
+  "- Expense auditing: run_expense_audit flags anomalous expenses.",
+  "- Flash reporting: email_flash_report sends the AR + expense + cash-runway summary.",
+  "- Tax gathering: gather_tax_docs requests W-9/1099 forms from contractors over the reporting threshold.",
+  "- Automation control: pause_client, set_automation (off/suggest/auto).",
   "RULES:",
+  "- Reason step by step: infer the goal (use conversation history to resolve references), pick the right tool, resolve a client to its invoiceId from the snapshot when you can (otherwise pass clientName), then act.",
   "- Never invent numbers, clients, dates, or links. If the snapshot lacks the answer, say so.",
-  "- Call a function ONLY for a clear action request (send/remind/audit/report/pause). Otherwise answer in text.",
+  "- Call a function ONLY for a clear action request. Otherwise answer in text.",
   "- You never actually send anything yourself — the app asks the user to confirm before executing.",
-  "- Resolve a client to its invoiceId from the snapshot when you can; otherwise pass clientName.",
+  "- Tone: precise, professional, and human — never robotic or childish. Prefer doing over explaining.",
 ].join("\n");
 
 const noParams = { type: "object", properties: {} } as const;
@@ -60,6 +67,17 @@ export const AGENT_TOOLS: GeminiToolFunction[] = [
     },
   },
   {
+    name: "gather_tax_docs",
+    description:
+      "Request W-9/1099 tax forms from contractors paid over the reporting threshold who still need one. Optionally target a single contractor by name; otherwise requests from all who qualify.",
+    parameters: {
+      type: "object",
+      properties: {
+        contractorName: { type: "string", description: "Optional: a single contractor to request from." },
+      },
+    },
+  },
+  {
     name: "set_automation",
     description: "Set an automation's autonomy level (off/suggest/auto).",
     parameters: {
@@ -81,6 +99,7 @@ export type AgentActionName =
   | "remind_all_overdue"
   | "run_expense_audit"
   | "email_flash_report"
+  | "gather_tax_docs"
   | "pause_client"
   | "set_automation";
 
@@ -98,6 +117,8 @@ export function summarizeAction(
       return "Run an AI audit over your expenses.";
     case "email_flash_report":
       return "Email you the flash financial report.";
+    case "gather_tax_docs":
+      return `Request W-9 tax docs from ${args.contractorName ?? "all contractors over the threshold"}.`;
     case "pause_client":
       return `Pause automated reminders for ${args.clientName ?? "this client"}.`;
     case "set_automation":

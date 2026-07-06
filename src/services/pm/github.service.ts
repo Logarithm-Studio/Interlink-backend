@@ -142,6 +142,36 @@ export async function getPullRequests(userId: string, owner: string, repo: strin
   }));
 }
 
+/**
+ * Recently MERGED pull requests (for release notes). The list endpoint has no
+ * "merged" state, so we fetch closed PRs newest-first and keep only those with a
+ * `merged_at` timestamp (closed-unmerged PRs are dropped).
+ */
+export async function getMergedPullRequests(userId: string, owner: string, repo: string): Promise<GitHubPR[]> {
+  const res = await ghFetch(userId, `/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=30`);
+  if (!res.ok) return [];
+  const items = (await res.json()) as {
+    id?: number; number?: number; title?: string; state?: string;
+    user?: { login?: string }; created_at?: string; updated_at?: string;
+    html_url?: string; draft?: boolean; merged_at?: string | null;
+    requested_reviewers?: { login?: string }[];
+  }[];
+  return items
+    .filter((pr) => pr.merged_at)
+    .map((pr) => ({
+      id: pr.id!,
+      number: pr.number!,
+      title: pr.title ?? "",
+      state: "merged",
+      author: pr.user?.login ?? "",
+      createdAt: pr.created_at ?? "",
+      updatedAt: pr.updated_at ?? "",
+      htmlUrl: pr.html_url ?? "",
+      draft: pr.draft ?? false,
+      reviewsRequested: (pr.requested_reviewers ?? []).map((r) => r.login ?? ""),
+    }));
+}
+
 // ─── Issues ───────────────────────────────────────────────────────────────────
 
 export interface GitHubIssue {

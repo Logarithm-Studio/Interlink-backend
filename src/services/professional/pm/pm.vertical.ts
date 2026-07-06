@@ -12,6 +12,9 @@
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
 import { getRepos, getPullRequests, getIssues, createIssue } from "../../pm/github.service";
+import { getProjects as getJiraProjects } from "../../jira/jira.service";
+import { searchPages as searchNotionPages } from "../../notion/notion.service";
+import { getChannels as getSlackChannels } from "../../slack/slack.service";
 import {
   pmConnections,
   connectionsLine,
@@ -33,18 +36,41 @@ function splitRepo(full: string): { owner: string; repo: string } | null {
 
 async function buildSnapshot(userId: string): Promise<string> {
   const conns = await pmConnections(userId);
-  const repos = conns.github ? await getRepos(userId).catch(() => []) : [];
   const lines = [connectionsLine(conns)];
-  if (repos.length > 0) {
-    lines.push(
-      `GitHub repos: ${repos.length}.`,
-      "Repos (name | open issues | language):",
-      ...repos.slice(0, 20).map((r) => `- ${r.fullName} | ${r.openIssues} open | ${r.language ?? "—"}`),
-    );
-  } else if (conns.github) {
-    lines.push("GitHub is connected but no repos were returned.");
+
+  // Ground the agent in ALL connected apps it orchestrates (not just GitHub), so it
+  // can resolve repos/projects/pages/channels itself instead of asking for IDs.
+  if (conns.github) {
+    const repos = await getRepos(userId).catch(() => []);
+    if (repos.length > 0) {
+      lines.push(
+        `GitHub repos: ${repos.length}.`,
+        "Repos (name | open issues | language):",
+        ...repos.slice(0, 15).map((r) => `- ${r.fullName} | ${r.openIssues} open | ${r.language ?? "—"}`),
+      );
+    } else {
+      lines.push("GitHub is connected but no repos were returned.");
+    }
   }
-  if (!conns.github && !conns.jira && !conns.notion) {
+  if (conns.jira) {
+    const projects = await getJiraProjects(userId).catch(() => []);
+    if (projects.length > 0) {
+      lines.push(`Jira projects: ${projects.slice(0, 12).map((p) => `${p.key} (${p.name})`).join(", ")}.`);
+    }
+  }
+  if (conns.notion) {
+    const pages = await searchNotionPages(userId, "").catch(() => []);
+    if (pages.length > 0) {
+      lines.push(`Notion pages: ${pages.slice(0, 12).map((p) => p.title).join(", ")}.`);
+    }
+  }
+  if (conns.slack) {
+    const channels = await getSlackChannels(userId).catch(() => []);
+    if (channels.length > 0) {
+      lines.push(`Slack channels: ${channels.slice(0, 15).map((c) => `#${c.name} (${c.id})`).join(", ")}.`);
+    }
+  }
+  if (!conns.github && !conns.jira && !conns.notion && !conns.slack) {
     lines.push("Connect GitHub, Jira, Notion, and Slack in Settings → Manage Integrations to unlock the PM workflows.");
   }
   return lines.join("\n");

@@ -8,6 +8,10 @@ import { createEmailSendLog } from "./sendLogs.service";
 import { upsertAttendanceResponse } from "../attendanceResponses.service";
 import { getEventById } from "../events.service";
 import { declineGoogleEvent } from "../calendar/google";
+import {
+  resolveGoogleAccountId,
+  getGoogleAccountSummaryById,
+} from "../auth.service";
 import { AppUser } from "../../types";
 import { BadRequestError, NotFoundError } from "../../utils/errors";
 
@@ -190,8 +194,18 @@ export async function sendDeclineEmailForEvent(
       ? metadata.calendarId.trim()
       : "primary";
 
+  // Resolve which connected Google account (mailbox) this event belongs to, so
+  // the decline is performed on — and sent from — the right account. Falls back
+  // to the user's primary account for legacy (untagged) events.
+  const googleAccountId =
+    event.googleAccountId ?? (await resolveGoogleAccountId(user.id));
+  const account = googleAccountId
+    ? await getGoogleAccountSummaryById(googleAccountId)
+    : null;
+  const fromEmail = account?.email?.trim() || user.email;
+
   const recipients = resolveRecipients({
-    userEmail: user.email,
+    userEmail: fromEmail,
     organizerEmail: event.organizerEmail,
     attendees: event.attendees,
     sendToOrganizer,
@@ -258,15 +272,18 @@ export async function sendDeclineEmailForEvent(
   try {
     await declineGoogleEvent(
       user.id,
-      user.email,
+      fromEmail,
       event.externalEventId,
       sourceCalendarId,
+      googleAccountId,
     );
 
     const draft = await createGmailDraft({
       executionId: null,
       stepId: `decline_email:${eventId}`,
       userId: user.id,
+      googleAccountId,
+      fromEmail,
       recipients,
       subject: renderedSubject,
       body: renderedBody,
@@ -277,6 +294,7 @@ export async function sendDeclineEmailForEvent(
       executionId: `decline:${eventId}`,
       stepId: `decline_email:${eventId}`,
       userId: user.id,
+      googleAccountId,
       providerDraftId: draft.providerDraftId,
       idempotencyKey: `decline:send:${user.id}:${eventId}:${randomUUID()}`,
     });

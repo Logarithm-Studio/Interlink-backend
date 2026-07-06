@@ -8,7 +8,8 @@
  * All gate on `isGeminiLive()` with deterministic fallbacks for the offline/demo case.
  */
 
-import { geminiGenerateContent, isGeminiLive, type GeminiToolFunction } from "./geminiClient";
+import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
+import { runAgentTurn } from "./agentLoop";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
 import {
   buildFallbackReceiptExtract,
@@ -144,6 +145,15 @@ export async function planPersonaReply(params: {
   }
 }
 
+// Verbs/nouns that signal an actionable command across the professional verticals
+// (finance, sales, PM, HR, support, real-estate) + the shared personal tools.
+const AGENT_ACTION_INTENT =
+  /\b(create|add|make|new|send|draft|write|generate|update|assign|move|close|remind|schedule|log|post|file|enrich|route|clean|sync|release|record|mark|pay|invoice|refund)\b|\b(ticket|issue|invoice|reminder|deal|contact|lead|contract|report|expense|receipt|task|card|pr|pull request|release notes|sprint|campaign|note|page|channel|meeting)\b/i;
+
+function looksLikeAgentActionRequest(message: string): boolean {
+  return AGENT_ACTION_INTENT.test(message);
+}
+
 export async function planAgentActions(params: {
   message: string;
   snapshot: string;
@@ -155,6 +165,14 @@ export async function planAgentActions(params: {
   attachment?: { data: string; mimeType: string };
   /** Prior conversation turns (oldest-first) so the agent has memory. */
   history?: { role: "user" | "assistant"; content: string }[];
+  /**
+   * When provided together, the planner CHAINS: read-only tools are executed
+   * server-side and their results fed back so the model can take the next step
+   * (discover → act) in one turn. Without them it stays single-shot (any function
+   * call is returned for confirmation).
+   */
+  isReadOnly?: (name: string) => boolean;
+  execReadOnly?: (name: string, args: Record<string, unknown>) => Promise<{ message: string; data?: unknown }>;
 }): Promise<AgentPlan> {
   if (!isGeminiLive()) {
     return {
@@ -163,33 +181,28 @@ export async function planAgentActions(params: {
       isLive: false,
     };
   }
-  const historyText = (params.history ?? [])
-    .slice(-8)
-    .map((t) => `${t.role === "user" ? "USER" : "ASSISTANT"}: ${t.content}`)
-    .join("\n");
+
+  const userParts: GeminiPart[] = [
+    { text: `DATA SNAPSHOT:\n${params.snapshot}` },
+    ...(params.attachment
+      ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as GeminiPart]
+      : []),
+    { text: `USER: ${params.message}` },
+  ];
+
   try {
-    const result = await geminiGenerateContent({
+    const outcome = await runAgentTurn({
       system: params.system ?? AGENT_SYSTEM,
-      parts: [
-        { text: `DATA SNAPSHOT:\n${params.snapshot}` },
-        ...(historyText
-          ? [{ text: `CONVERSATION SO FAR (resolve references like "him"/"that ticket" from this):\n${historyText}` } as const]
-          : []),
-        ...(params.attachment
-          ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as const]
-          : []),
-        { text: `USER: ${params.message}` },
-      ],
       tools: params.tools ?? AGENT_TOOLS,
-      maxOutputTokens: 1024,
+      userParts,
+      history: params.history,
+      isReadOnly: params.isReadOnly ?? (() => false),
+      execReadOnly: params.execReadOnly ?? (async () => ({ message: "" })),
+      looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
-    if (result.functionCall) {
-      return {
-        action: { name: result.functionCall.name, args: result.functionCall.args },
-        isLive: true,
-      };
-    }
-    return { answer: result.raw.trim() || "Done.", isLive: true };
+    return outcome.kind === "action"
+      ? { action: { name: outcome.name, args: outcome.args }, isLive: true }
+      : { answer: outcome.text || "Done.", isLive: true };
   } catch (err) {
     console.error("[multimodal] agent planning failed:", err);
     return { answer: "Sorry, I couldn't process that just now.", isLive: true };
