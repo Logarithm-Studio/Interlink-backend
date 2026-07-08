@@ -28,7 +28,14 @@ import {
 } from "../spotify/spotify.service";
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
-import { listDriveFiles, createDriveDoc } from "../google/drive.service";
+import {
+  listDriveFiles,
+  createDriveDoc,
+  deleteDriveFile,
+  shareDriveFile,
+  findDriveFile,
+  uploadDriveFile,
+} from "../google/drive.service";
 import { scheduleMeetMeeting } from "../google/meet.service";
 import {
   searchYouTube,
@@ -48,7 +55,13 @@ import {
   shareOneDriveFile,
 } from "../microsoft/microsoft.service";
 import { sendWhatsAppMessage } from "../whatsapp/twilio.service";
-import { getTaskLists, getTasksInList, createTask as createGoogleTask } from "../tasks/tasks.service";
+import {
+  getTaskLists,
+  getTasksInList,
+  createTask as createGoogleTask,
+  completeTask as completeGoogleTask,
+  deleteTask as deleteGoogleTask,
+} from "../tasks/tasks.service";
 import { createTask as createTodoistTask, getTasks as getTodoistTasks } from "../todoist/todoist.service";
 import { getUserEvents } from "../events.service";
 import { isConnected, listIntegrationsForUser } from "../integrations/tokenStore";
@@ -82,6 +95,21 @@ export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to Spotify, email questions to Gmail.",
   "- Never invent IDs, repositories, channels, boards, pages, projects, or issue keys. Use discovery tools; only ask the user when discovery genuinely cannot resolve it.",
 ].join("\n");
+
+/**
+ * A "you are here in time" line fed every turn. Without it the model hallucinates the
+ * date (it was scheduling meetings in 2024 / in the past). We prefer the client's clock
+ * + timezone; fall back to the server's UTC clock so the *year* is at least correct.
+ */
+function buildNowContext(clientNow?: string, tz?: string): string {
+  const iso = clientNow && !Number.isNaN(Date.parse(clientNow)) ? clientNow : new Date().toISOString();
+  return [
+    `CONTEXT — the current date and time is ${iso}${tz ? ` (timezone ${tz})` : ""}.`,
+    `Resolve every relative date ("today", "tonight", "tomorrow", "next Monday", "in 2 hours") against this exact moment.`,
+    `If the user gives no year, use the current year. NEVER schedule, create, or set anything in the past —`,
+    `if a requested time has already passed, use the next future occurrence and say so. Emit event times in RFC3339 with a timezone offset.`,
+  ].join(" ");
+}
 
 function buildSystemPrompt(persona: string): string {
   const professionCtx = PROFESSION_CONTEXT[persona] ?? PROFESSION_CONTEXT.general;
@@ -135,14 +163,15 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "get_weather",
-    description: "Get current weather or forecast for a location.",
+    description:
+      "Get the current weather for the user's location. The user's GPS coordinates are supplied automatically — just call this with no arguments for 'what's the weather'. Only pass location for a different named place.",
     parameters: {
       type: "object",
       properties: {
-        location: { type: "string", description: "City name or coordinates" },
+        location: { type: "string", description: "Optional city name for a place other than the user's current location." },
         days: { type: "number", description: "Forecast days (1-7)" },
       },
-      required: ["location"],
+      required: [],
     },
   },
   {
@@ -200,6 +229,25 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "complete_google_task",
+    description:
+      "Mark a Google Task as done. Pass the task's title (or a distinctive part of it) — the matching open task is resolved automatically.",
+    parameters: {
+      type: "object",
+      properties: { title: { type: "string", description: "Title (or part) of the task to complete." } },
+      required: ["title"],
+    },
+  },
+  {
+    name: "delete_google_task",
+    description: "Delete a Google Task by its title (or a distinctive part of it).",
+    parameters: {
+      type: "object",
+      properties: { title: { type: "string", description: "Title (or part) of the task to delete." } },
+      required: ["title"],
+    },
+  },
+  {
     name: "create_todoist_task",
     description: "Create a task in Todoist.",
     parameters: {
@@ -250,6 +298,42 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
       type: "object",
       properties: { name: { type: "string", description: "Document title." } },
       required: ["name"],
+    },
+  },
+  {
+    name: "delete_drive_file",
+    description:
+      "Move a Google Drive file to the trash. Pass the file's name — the matching file is resolved automatically (or pass fileId if you already have it from list_drive_files).",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "File name (or part) to delete." },
+        fileId: { type: "string", description: "Drive file id, if already known." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "share_drive_file",
+    description:
+      "Create a shareable 'anyone with the link' view link for a Google Drive file. Pass the file name (resolved automatically) or a known fileId.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "File name (or part) to share." },
+        fileId: { type: "string", description: "Drive file id, if already known." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "upload_to_drive",
+    description:
+      "Upload the file the user attached in this message to their Google Drive. Only call this when a file is attached. Optionally rename it.",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "Optional name to save the file as (defaults to its original name)." } },
+      required: [],
     },
   },
   {
@@ -541,6 +625,26 @@ export interface PersonalChatTurn {
   content: string;
 }
 
+/**
+ * A place the app should be able to jump to after (or instead of) reading a reply —
+ * e.g. the Google Meet room just created, or the top YouTube result. `app` is a hint
+ * the client uses to open the native app rather than a browser tab.
+ */
+export interface OpenLink {
+  label: string;
+  url: string;
+  app:
+    | "google-meet"
+    | "google-calendar"
+    | "google-drive"
+    | "youtube"
+    | "youtube-music"
+    | "spotify"
+    | "outlook"
+    | "onedrive"
+    | "web";
+}
+
 export interface PersonalCommandResult {
   answer: string | null;
   action: {
@@ -550,6 +654,10 @@ export interface PersonalCommandResult {
     summary: string;
     needsConfirm: boolean;
   } | null;
+  /** Deep-link targets surfaced from any tool that ran this turn. */
+  links?: OpenLink[];
+  /** The conversation this turn was written to (new when the client sent none). */
+  conversationId?: string;
   isLive: boolean;
 }
 
@@ -602,15 +710,109 @@ export async function connectedAppsSummary(userId: string): Promise<string> {
   return `Connected apps: ${apps.join(", ")}.`;
 }
 
-async function persistMessage(userId: string, role: "user" | "assistant", content: string): Promise<void> {
+async function persistMessage(
+  userId: string,
+  role: "user" | "assistant",
+  content: string,
+  conversationId?: string,
+): Promise<void> {
   if (!content) return;
   try {
     await query(
-      `INSERT INTO personal_chat_messages (user_id, role, content) VALUES ($1, $2, $3)`,
-      [userId, role, content],
+      `INSERT INTO personal_chat_messages (user_id, role, content, conversation_id) VALUES ($1, $2, $3, $4)`,
+      [userId, role, content, conversationId ?? null],
     );
+    if (conversationId) {
+      await query(`UPDATE personal_conversations SET updated_at = now() WHERE id = $1`, [conversationId]).catch(
+        () => {},
+      );
+    }
   } catch (err) {
     logger.warn("[personal-assistant] failed to persist chat message", { err: String(err) });
+  }
+}
+
+// ─── Conversations (chat-history sessions) ─────────────────────────────────────
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: Date;
+}
+
+function titleFromMessage(message: string): string {
+  const clean = message.trim().replace(/\s+/g, " ");
+  return clean.length > 48 ? `${clean.slice(0, 47)}…` : clean || "New chat";
+}
+
+/**
+ * Resolve the conversation to write into. A missing/foreign id starts a fresh
+ * conversation titled from the opening message, so the history list stays per-thread.
+ */
+async function ensureConversation(
+  userId: string,
+  conversationId: string | undefined,
+  firstMessage: string,
+): Promise<string> {
+  if (conversationId) {
+    const owned = await query<{ id: string }>(
+      `SELECT id FROM personal_conversations WHERE id = $1 AND user_id = $2 LIMIT 1`,
+      [conversationId, userId],
+    );
+    if (owned.rows[0]) return owned.rows[0].id;
+  }
+  const created = await query<{ id: string }>(
+    `INSERT INTO personal_conversations (user_id, title) VALUES ($1, $2) RETURNING id`,
+    [userId, titleFromMessage(firstMessage)],
+  );
+  return created.rows[0].id;
+}
+
+export async function listConversations(userId: string): Promise<ConversationSummary[]> {
+  try {
+    const res = await query<{ id: string; title: string; updated_at: Date }>(
+      `SELECT id, title, updated_at FROM personal_conversations
+        WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 50`,
+      [userId],
+    );
+    return res.rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }));
+  } catch (err) {
+    logger.warn("[personal-assistant] listConversations failed", { err: String(err) });
+    return [];
+  }
+}
+
+export async function getConversationMessages(
+  userId: string,
+  conversationId: string,
+): Promise<PersonalChatTurn[]> {
+  try {
+    const res = await query<{ role: "user" | "assistant"; content: string }>(
+      `SELECT m.role, m.content
+         FROM personal_chat_messages m
+         JOIN personal_conversations c ON c.id = m.conversation_id
+        WHERE m.conversation_id = $1 AND c.user_id = $2
+        ORDER BY m.created_at ASC`,
+      [conversationId, userId],
+    );
+    return res.rows.map((r) => ({ role: r.role, content: r.content }));
+  } catch (err) {
+    logger.warn("[personal-assistant] getConversationMessages failed", { err: String(err) });
+    return [];
+  }
+}
+
+async function getConversationTurns(userId: string, conversationId: string, limit = 8): Promise<PersonalChatTurn[]> {
+  try {
+    const res = await query<{ role: "user" | "assistant"; content: string }>(
+      `SELECT role, content FROM personal_chat_messages
+        WHERE user_id = $1 AND conversation_id = $2
+        ORDER BY created_at DESC LIMIT $3`,
+      [userId, conversationId, limit],
+    );
+    return res.rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  } catch {
+    return [];
   }
 }
 
@@ -620,12 +822,87 @@ export interface ExecuteContext {
   /** Caller's current coordinates, used by location-aware actions (weather). */
   lat?: number;
   lon?: number;
+  /** A file the user attached this turn — used by upload_to_drive (base64, no data: prefix). */
+  attachment?: { base64: string; mimeType: string; name: string };
 }
 
 export interface ExecuteResult {
   ok: boolean;
   message: string;
   data?: unknown;
+  /** Deep-link targets the app can open after this action ran. */
+  links?: OpenLink[];
+}
+
+/**
+ * Turn a tool's result into openable deep-links so the app can redirect the user to
+ * the right place (the Meet room, the YouTube video, the created doc) instead of
+ * leaving a dead URL in the chat. Never throws; unknown tools return [].
+ */
+export function deriveOpenLinks(
+  name: string,
+  _args: Record<string, unknown>,
+  data: unknown,
+): OpenLink[] {
+  const d = (data ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+  const ytList = (app: "youtube" | "youtube-music"): OpenLink[] => {
+    if (!Array.isArray(data)) return [];
+    return data
+      .slice(0, 3)
+      .map((v) => {
+        const item = (v ?? {}) as Record<string, unknown>;
+        return { label: str(item.title) || "Open video", url: str(item.url), app };
+      })
+      .filter((l) => l.url);
+  };
+
+  switch (name) {
+    case "schedule_meet": {
+      const links: OpenLink[] = [];
+      if (str(d.meetLink)) links.push({ label: "Join Google Meet", url: str(d.meetLink), app: "google-meet" });
+      if (str(d.htmlLink)) links.push({ label: "Open in Calendar", url: str(d.htmlLink), app: "google-calendar" });
+      return links;
+    }
+    case "create_drive_doc":
+    case "share_drive_file":
+    case "upload_to_drive":
+      return str(d.webViewLink) ? [{ label: "Open in Drive", url: str(d.webViewLink), app: "google-drive" }] : [];
+    case "list_drive_files": {
+      if (!Array.isArray(data)) return [];
+      return data
+        .slice(0, 3)
+        .map((v) => {
+          const item = (v ?? {}) as Record<string, unknown>;
+          return { label: str(item.name) || "Open file", url: str(item.webViewLink), app: "google-drive" as const };
+        })
+        .filter((l) => l.url);
+    }
+    case "create_youtube_playlist":
+      return str(d.url) ? [{ label: "Open playlist", url: str(d.url), app: "youtube" }] : [];
+    case "share_onedrive_file": {
+      const link = str((d as { link?: unknown }).link);
+      return link ? [{ label: "Open shared file", url: link, app: "onedrive" }] : [];
+    }
+    case "search_youtube":
+      return ytList("youtube");
+    case "search_youtube_music":
+      return ytList("youtube-music");
+    case "search_and_play_spotify":
+    case "play_spotify": {
+      const uri = str(d.uri);
+      const m = uri.match(/^spotify:(\w+):(.+)$/);
+      const url = m ? `https://open.spotify.com/${m[1]}/${m[2]}` : "";
+      return url ? [{ label: `Open in Spotify`, url, app: "spotify" }] : [];
+    }
+    case "create_github_issue": {
+      const url = str((d as { htmlUrl?: unknown; url?: unknown }).htmlUrl) || str((d as { url?: unknown }).url);
+      return url ? [{ label: "Open issue", url, app: "web" }] : [];
+    }
+    default:
+      return [];
+  }
 }
 
 const DEFAULT_SPOTIFY_SEARCH_TYPES = "track,album,playlist";
@@ -671,7 +948,7 @@ async function searchAndPlaySpotify(userId: string, queryText: string, rawType?:
   if (match.uri.includes(":playlist:") || match.uri.includes(":album:")) await playContext(userId, match.uri);
   else await playTrack(userId, match.uri);
 
-  return { ok: true, message: `Playing "${match.name || q}" on Spotify.` };
+  return { ok: true, message: `Playing "${match.name || q}" on Spotify.`, data: { uri: match.uri, name: match.name } };
 }
 
 function splitRepo(full: unknown): { owner: string; repo: string } | null {
@@ -682,6 +959,35 @@ function splitRepo(full: unknown): { owner: string; repo: string } | null {
 function linesOrNone<T>(items: T[], mapper: (item: T) => string, none: string, limit = 8): string {
   if (items.length === 0) return none;
   return items.slice(0, limit).map(mapper).join("\n");
+}
+
+/** Find the primary task list + an open task whose title contains the given text. */
+async function resolveGoogleTask(
+  userId: string,
+  title: string,
+): Promise<{ listId: string; taskId: string; title: string } | null> {
+  const q = title.trim().toLowerCase();
+  if (!q) return null;
+  const lists = await getTaskLists(userId);
+  for (const list of lists) {
+    const tasks = await getTasksInList(userId, list.id);
+    const match = tasks.find((t) => t.title.toLowerCase().includes(q));
+    if (match) return { listId: list.id, taskId: match.id, title: match.title };
+  }
+  return null;
+}
+
+/** Resolve a Drive file id from an explicit id or a (partial) file name. */
+async function resolveDriveFileId(
+  userId: string,
+  args: Record<string, unknown>,
+): Promise<{ id: string; name: string } | null> {
+  const fileId = String(args.fileId ?? "").trim();
+  if (fileId) return { id: fileId, name: String(args.name ?? "file") };
+  const name = String(args.name ?? "").trim();
+  if (!name) return null;
+  const file = await findDriveFile(userId, name);
+  return file ? { id: file.id, name: file.name } : null;
 }
 
 async function resolveNotionParent(userId: string, args: Record<string, unknown>): Promise<string | null> {
@@ -743,12 +1049,44 @@ export async function executeAction(
       }
       case "list_drive_files": {
         const files = await listDriveFiles(userId, args.query ? String(args.query) : undefined);
-        const message = linesOrNone(files, (f) => `- ${f.name}${f.webViewLink ? ` (${f.webViewLink})` : ""}`, "No matching Google Drive files found.", 12);
+        const message = linesOrNone(files, (f) => `- ${f.name}${f.webViewLink ? ` (${f.webViewLink})` : ""} [${f.id}]`, "No matching Google Drive files found.", 12);
         return { ok: true, message, data: files };
       }
       case "create_drive_doc": {
         const doc = await createDriveDoc(userId, String(args.name ?? "Untitled document"));
         return { ok: true, message: `Created Google Doc "${doc.name}"${doc.webViewLink ? `: ${doc.webViewLink}` : "."}`, data: doc };
+      }
+      case "delete_drive_file": {
+        const target = await resolveDriveFileId(userId, args);
+        if (!target) return { ok: false, message: "Tell me which Drive file to delete (by name), or find it first." };
+        await deleteDriveFile(userId, target.id);
+        return { ok: true, message: `Moved "${target.name}" to the Drive trash.` };
+      }
+      case "share_drive_file": {
+        const target = await resolveDriveFileId(userId, args);
+        if (!target) return { ok: false, message: "Tell me which Drive file to share (by name), or find it first." };
+        const link = await shareDriveFile(userId, target.id);
+        return {
+          ok: true,
+          message: link ? `Anyone with this link can now view "${target.name}": ${link}` : `Shared "${target.name}".`,
+          data: { webViewLink: link, name: target.name },
+        };
+      }
+      case "upload_to_drive": {
+        if (!ctx.attachment?.base64) {
+          return { ok: false, message: "Attach a file first, then ask me to upload it to Drive." };
+        }
+        const name = String(args.name ?? "").trim() || ctx.attachment.name || "Upload";
+        const uploaded = await uploadDriveFile(userId, {
+          name,
+          mimeType: ctx.attachment.mimeType,
+          base64: ctx.attachment.base64,
+        });
+        return {
+          ok: true,
+          message: `Uploaded "${uploaded.name}" to Google Drive${uploaded.webViewLink ? `: ${uploaded.webViewLink}` : "."}`,
+          data: uploaded,
+        };
       }
       case "schedule_meet": {
         const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : undefined;
@@ -897,6 +1235,18 @@ export async function executeAction(
         const lines = tasks.slice(0, 8).map((t) => `• ${t.title}`);
         return { ok: true, message: `You have ${tasks.length} pending task${tasks.length === 1 ? "" : "s"}:\n${lines.join("\n")}`, data: tasks };
       }
+      case "complete_google_task": {
+        const found = await resolveGoogleTask(userId, String(args.title ?? ""));
+        if (!found) return { ok: false, message: `I couldn't find an open task matching "${args.title ?? ""}".` };
+        await completeGoogleTask(userId, found.listId, found.taskId);
+        return { ok: true, message: `Marked "${found.title}" as done. ✅` };
+      }
+      case "delete_google_task": {
+        const found = await resolveGoogleTask(userId, String(args.title ?? ""));
+        if (!found) return { ok: false, message: `I couldn't find a task matching "${args.title ?? ""}".` };
+        await deleteGoogleTask(userId, found.listId, found.taskId);
+        return { ok: true, message: `Deleted the task "${found.title}".` };
+      }
       case "list_todoist_tasks": {
         const tasks = await getTodoistTasks(userId);
         const message = linesOrNone(
@@ -1037,12 +1387,13 @@ export async function executeAction(
       }
       case "get_gmail_inbox":
       case "search_gmail_messages": {
-        const messages = await listGmailMailboxMessages({
+        const result = await listGmailMailboxMessages({
           userId,
           mailbox: "inbox",
           maxResults: args.limit ? Number(args.limit) : 10,
           query: args.query ? String(args.query) : undefined,
         });
+        const messages = result.messages;
         const message = linesOrNone(
           messages,
           (m) => `- ${m.subject ?? "(no subject)"} - ${m.from ?? "unknown sender"}`,
@@ -1069,6 +1420,8 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "skip_spotify": return "Skip to next track";
     case "search_and_play_spotify": return `Search and play "${args.query}" on Spotify`;
     case "create_google_task": return `Create task: "${args.title}"`;
+    case "complete_google_task": return `Mark task "${args.title ?? ""}" as done`;
+    case "delete_google_task": return `Delete task "${args.title ?? ""}"`;
     case "list_todoist_tasks": return "List Todoist tasks";
     case "create_todoist_task": return `Add to Todoist: "${args.content}"`;
     case "search_notion_pages": return `Search Notion for "${args.query ?? ""}"`;
@@ -1091,6 +1444,9 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "get_fitness_summary": return "Check today's fitness stats";
     case "list_drive_files": return `Search Google Drive${args.query ? ` for "${args.query}"` : ""}`;
     case "create_drive_doc": return `Create Google Doc "${args.name ?? ""}"`;
+    case "delete_drive_file": return `Delete Drive file ${args.name ? `"${args.name}"` : ""}`.trim();
+    case "share_drive_file": return `Share Drive file ${args.name ? `"${args.name}"` : ""}`.trim();
+    case "upload_to_drive": return `Upload ${args.name ? `"${args.name}"` : "the attached file"} to Google Drive`;
     case "schedule_meet": return `Schedule a Google Meet "${args.title ?? ""}"`;
     case "search_youtube": return `Search YouTube for "${args.query ?? ""}"`;
     case "search_youtube_music": return `Search YouTube Music for "${args.query ?? ""}"`;
@@ -1149,9 +1505,16 @@ export function isReadOnlyAction(name: string): boolean {
 
 export interface CommandOptions {
   image?: { mimeType: string; data: string };
+  /** A non-image file the user attached (held for upload_to_drive; name told to the model). */
+  attachment?: { base64: string; mimeType: string; name: string };
   /** Caller's coordinates for location-aware tools (weather). */
   lat?: number;
   lon?: number;
+  /** Client's current ISO timestamp + IANA timezone, so relative dates resolve correctly. */
+  clientNow?: string;
+  tz?: string;
+  /** Existing conversation to append to; omitted starts a new one. */
+  conversationId?: string;
 }
 
 // Verbs and app names that signal the user wants an action, not a chat answer.
@@ -1171,31 +1534,39 @@ export async function command(
   // Fail fast with a clear, actionable message when the AI isn't configured —
   // instead of a silent generic "trouble connecting". Log loudly: a mis-set key or
   // PROFESSIONAL_AI_PROVIDER=demo makes the assistant look "dumb" when it's just off.
+  const convId = await ensureConversation(userId, opts.conversationId, message);
+
   if (!isGeminiLive()) {
     logger.warn(
       "[personal-assistant] Gemini NOT live — returning fallback. Check GEMINI_API_KEY is set and PROFESSIONAL_AI_PROVIDER is not 'demo'.",
     );
     const answer = "The AI assistant isn't configured yet. Add a GEMINI_API_KEY on the server to enable it.";
-    await persistMessage(userId, "user", message);
-    await persistMessage(userId, "assistant", answer);
-    return { answer, action: null, isLive: false };
+    await persistMessage(userId, "user", message, convId);
+    await persistMessage(userId, "assistant", answer, convId);
+    return { answer, action: null, isLive: false, conversationId: convId };
   }
 
   const persona = await getPersonalPersona(userId);
   const systemPrompt = buildSystemPrompt(persona);
   const appsSummary = await connectedAppsSummary(userId);
 
-  // Multimodal: when an image is attached, pass it alongside the text prompt as
-  // an inline_data part so Gemini can reason about it (receipts, screenshots, …).
-  const parts: GeminiPart[] = opts.image
-    ? [{ text: appsSummary }, { text: message }, { inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } }]
-    : [{ text: appsSummary }, { text: message }];
+  // Multimodal: an attached image is inlined so Gemini can reason about it (receipts,
+  // screenshots…). A non-image attachment is not inlined (could be large / binary) —
+  // we just tell the model its name so it can offer to upload it to Drive.
+  const nowContext = buildNowContext(opts.clientNow, opts.tz);
+  const parts: GeminiPart[] = [{ text: nowContext }, { text: appsSummary }];
+  if (opts.attachment) {
+    parts.push({ text: `The user attached a file named "${opts.attachment.name}" (${opts.attachment.mimeType}). If they want it saved, use upload_to_drive.` });
+  }
+  parts.push({ text: message });
+  if (opts.image) {
+    parts.push({ inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } });
+  }
 
-  // Load prior turns BEFORE persisting the current message so the model gets
-  // conversation memory (pronouns, "the other one", "add that") without duplicating
-  // the current turn, which we pass separately as userParts.
-  const history = (await getChatHistory(userId)).slice(-8);
-  await persistMessage(userId, "user", message);
+  // Load prior turns of THIS conversation BEFORE persisting the current message so the
+  // model gets memory without duplicating the turn we pass separately as userParts.
+  const history = await getConversationTurns(userId, convId, 8);
+  await persistMessage(userId, "user", message, convId);
 
   try {
     const outcome = await runAgentTurn({
@@ -1204,28 +1575,37 @@ export async function command(
       userParts: parts,
       history,
       isReadOnly: (name) => READ_ONLY_ACTIONS.has(name),
-      execReadOnly: (name, args) => executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon }),
+      execReadOnly: (name, args) =>
+        executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon, attachment: opts.attachment }),
       looksLikeAction: looksLikeActionRequest(message),
     });
 
     if (outcome.kind === "action") {
       // Write action — return it for user confirmation before executing.
       const summary = summarizeAction(outcome.name, outcome.args);
-      await persistMessage(userId, "assistant", summary);
+      await persistMessage(userId, "assistant", summary, convId);
       return {
         answer: null,
         action: { id: randomUUID(), name: outcome.name, args: outcome.args, summary, needsConfirm: true },
         isLive: true,
+        conversationId: convId,
       };
     }
 
-    await persistMessage(userId, "assistant", outcome.text);
-    return { answer: outcome.text, action: null, isLive: true };
+    await persistMessage(userId, "assistant", outcome.text, convId);
+    const links = outcome.via ? deriveOpenLinks(outcome.via.name, outcome.via.args, outcome.via.data) : [];
+    return {
+      answer: outcome.text,
+      action: null,
+      isLive: true,
+      links: links.length ? links : undefined,
+      conversationId: convId,
+    };
   } catch (err) {
     logger.error("[personal-assistant] command failed", { err: String(err) });
     const answer = "I ran into a problem reaching the AI service. Please try again in a moment.";
-    await persistMessage(userId, "assistant", answer);
-    return { answer, action: null, isLive: false };
+    await persistMessage(userId, "assistant", answer, convId);
+    return { answer, action: null, isLive: false, conversationId: convId };
   }
 }
 
@@ -1271,6 +1651,133 @@ export async function chat(
     const answer = "I ran into a problem reaching the AI service. Please try again in a moment.";
     await persistMessage(userId, "assistant", answer);
     return { answer, isFallback: true };
+  }
+}
+
+// ─── Life hub summary ──────────────────────────────────────────────────────────
+
+export interface LifeSummaryEvent {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  location: string | null;
+}
+
+export interface LifeSummaryTask {
+  title: string;
+  due: string | null;
+}
+
+export interface LifeSummary {
+  generatedAt: string;
+  counts: { happeningNow: number; laterToday: number; upcoming: number; pendingTasks: number };
+  happeningNow: LifeSummaryEvent[];
+  laterToday: LifeSummaryEvent[];
+  upcoming: LifeSummaryEvent[];
+  recentlyEnded: LifeSummaryEvent[];
+  tasksDue: LifeSummaryTask[];
+}
+
+/** YYYY-MM-DD for an instant in a given IANA timezone (falls back to the server zone). */
+function localDateKey(iso: string, tz?: string): string {
+  const d = new Date(iso);
+  try {
+    return d.toLocaleDateString("en-CA", tz ? { timeZone: tz } : undefined);
+  } catch {
+    return d.toLocaleDateString("en-CA");
+  }
+}
+
+/**
+ * A calendar/task snapshot for the "life hub" — what just happened, what's happening
+ * now, and what's coming up. Mode-scoped via `googleAccountId` (Personal vs Work).
+ * Pure aggregation of real calendar + task data; never invents anything.
+ */
+export async function getLifeSummary(
+  userId: string,
+  opts: { now?: string; tz?: string; googleAccountId?: string | null } = {},
+): Promise<LifeSummary> {
+  const nowIso = opts.now && !Number.isNaN(Date.parse(opts.now)) ? opts.now : new Date().toISOString();
+  const now = new Date(nowIso);
+  const from = new Date(now.getTime() - 24 * 3_600_000).toISOString();
+  const to = new Date(now.getTime() + 7 * 86_400_000).toISOString();
+
+  const toSummaryEvent = (e: {
+    id?: string;
+    title: string;
+    startTime: Date;
+    endTime: Date;
+    location: string | null;
+  }): LifeSummaryEvent => ({
+    id: e.id ?? "",
+    title: e.title,
+    start: e.startTime.toISOString(),
+    end: e.endTime.toISOString(),
+    location: e.location,
+  });
+
+  let events: LifeSummaryEvent[] = [];
+  try {
+    const rows = await getUserEvents(userId, from, to, opts.googleAccountId);
+    events = rows.map(toSummaryEvent).sort((a, b) => a.start.localeCompare(b.start));
+  } catch (err) {
+    logger.warn("[personal-assistant] getLifeSummary events failed", { err: String(err) });
+  }
+
+  const todayKey = localDateKey(nowIso, opts.tz);
+  const happeningNow: LifeSummaryEvent[] = [];
+  const laterToday: LifeSummaryEvent[] = [];
+  const upcoming: LifeSummaryEvent[] = [];
+  const recentlyEnded: LifeSummaryEvent[] = [];
+
+  for (const e of events) {
+    const start = new Date(e.start).getTime();
+    const end = new Date(e.end).getTime();
+    const t = now.getTime();
+    if (start <= t && end >= t) happeningNow.push(e);
+    else if (end < t) recentlyEnded.push(e);
+    else if (localDateKey(e.start, opts.tz) === todayKey) laterToday.push(e);
+    else upcoming.push(e);
+  }
+
+  let tasksDue: LifeSummaryTask[] = [];
+  try {
+    const lists = await getTaskLists(userId);
+    const listId = lists[0]?.id;
+    if (listId) {
+      const tasks = await getTasksInList(userId, listId);
+      tasksDue = tasks
+        .filter((t) => t.status !== "completed")
+        .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
+        .slice(0, 6)
+        .map((t) => ({ title: t.title, due: t.due }));
+    }
+  } catch (err) {
+    logger.warn("[personal-assistant] getLifeSummary tasks failed", { err: String(err) });
+  }
+
+  return {
+    generatedAt: nowIso,
+    counts: {
+      happeningNow: happeningNow.length,
+      laterToday: laterToday.length,
+      upcoming: upcoming.length,
+      pendingTasks: tasksDue.length,
+    },
+    happeningNow,
+    laterToday,
+    upcoming: upcoming.slice(0, 6),
+    recentlyEnded: recentlyEnded.slice(-4).reverse(),
+    tasksDue,
+  };
+}
+
+export async function clearChatHistory(userId: string): Promise<void> {
+  try {
+    await query(`DELETE FROM personal_chat_messages WHERE user_id = $1`, [userId]);
+  } catch (err) {
+    logger.warn("[personal-assistant] clearChatHistory failed", { err: String(err) });
   }
 }
 

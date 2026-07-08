@@ -183,6 +183,11 @@ export async function planAgentActions(params: {
   }
 
   const userParts: GeminiPart[] = [
+    {
+      text:
+        `CONTEXT — the current date and time is ${new Date().toISOString()} (UTC). ` +
+        `Resolve relative dates against this and never schedule or create anything in the past.`,
+    },
     { text: `DATA SNAPSHOT:\n${params.snapshot}` },
     ...(params.attachment
       ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as GeminiPart]

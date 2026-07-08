@@ -90,6 +90,13 @@ export async function geminiGenerateContent(args: {
   maxOutputTokens?: number;
   /** Sampling temperature. Ignored for JSON output (always 0). Defaults to 0.4. */
   temperature?: number;
+  /**
+   * Max thinking tokens for 2.5 "thinking" models. Thinking tokens are drawn from
+   * the SAME budget as `maxOutputTokens`, so leaving it dynamic can let the model
+   * think itself out of room and return an empty candidate (no text, no tool call).
+   * Capping it on agentic turns keeps enough budget for the actual function call.
+   */
+  thinkingBudget?: number;
   /** "reasoning" → the stronger brain model (agentic/multi-step); "fast" → cheap reads. */
   tier?: "reasoning" | "fast";
   tools?: GeminiToolFunction[];
@@ -116,12 +123,20 @@ export async function geminiGenerateContent(args: {
     // JSON generators stay deterministic; conversational/agentic turns get a little
     // warmth so responses don't read robotic/childish.
     temperature: useJson ? 0 : args.temperature ?? 0.4,
-    // Agentic (tool) turns get more room to reason without truncation.
-    maxOutputTokens: args.maxOutputTokens ?? (args.tools ? 4096 : 2048),
+    // Agentic (tool) turns get plenty of room: on 2.5 models the hidden "thinking"
+    // tokens are drawn from this same budget, so a small cap here truncates the real
+    // answer/tool-call and the model appears to "fail" for no reason.
+    maxOutputTokens: args.maxOutputTokens ?? (args.tools ? 8192 : 2048),
   };
   if (useJson) {
     generationConfig.responseMimeType = "application/json";
     if (args.responseSchema) generationConfig.responseSchema = args.responseSchema;
+  }
+  // Cap thinking on tool turns by default so the model can't spend the whole budget
+  // reasoning and leave nothing for the function call. Callers can override.
+  const thinkingBudget = args.thinkingBudget ?? (args.tools ? 2048 : undefined);
+  if (thinkingBudget != null) {
+    generationConfig.thinkingConfig = { thinkingBudget };
   }
 
   const contents = args.contents

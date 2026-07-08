@@ -73,12 +73,13 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const user = authedReq.user;
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
+    const scope = req.query.scope === "all" ? "all" : "mode";
 
     const events = await getUserEvents(
       user.id,
       from,
       to,
-      authedReq.googleAccountId,
+      scope === "all" ? null : authedReq.googleAccountId,
     );
     const attendanceResponses = await listAttendanceResponsesForEvents(
       user.id,
@@ -99,6 +100,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
         from: from ?? new Date().toISOString(),
         to: to ?? null,
         upcomingOnly: true,
+        scope,
       },
     });
   } catch (err) {

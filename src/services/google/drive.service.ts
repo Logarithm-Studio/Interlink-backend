@@ -4,6 +4,7 @@
  * connected Google before the scope was added must reconnect to grant it.
  */
 
+import { Readable } from "stream";
 import { google } from "googleapis";
 import { refreshGoogleTokenIfNeeded } from "../auth.service";
 
@@ -49,6 +50,48 @@ export async function listDriveFiles(userId: string, query?: string): Promise<Dr
     fields: "files(id,name,mimeType,webViewLink,modifiedTime)",
   });
   return mapFiles(res.data.files ?? []);
+}
+
+/** Find a single file by (partial) name — used to resolve an id from a spoken name. */
+export async function findDriveFile(userId: string, name: string): Promise<DriveFile | null> {
+  const files = await listDriveFiles(userId, name);
+  return files[0] ?? null;
+}
+
+/** Upload raw file bytes (from a base64 payload) to the user's Drive. */
+export async function uploadDriveFile(
+  userId: string,
+  file: { name: string; mimeType: string; base64: string },
+): Promise<DriveFile> {
+  const drive = await getDriveClient(userId);
+  const buffer = Buffer.from(file.base64, "base64");
+  const res = await drive.files.create({
+    requestBody: { name: file.name || "Upload" },
+    media: { mimeType: file.mimeType || "application/octet-stream", body: Readable.from(buffer) },
+    fields: "id,name,mimeType,webViewLink,modifiedTime",
+  });
+  const f = res.data;
+  return {
+    id: f.id ?? "",
+    name: f.name ?? file.name,
+    mimeType: f.mimeType ?? file.mimeType,
+    webViewLink: f.webViewLink ?? "",
+    modifiedTime: f.modifiedTime ?? new Date().toISOString(),
+  };
+}
+
+/** Move a file to trash. */
+export async function deleteDriveFile(userId: string, fileId: string): Promise<void> {
+  const drive = await getDriveClient(userId);
+  await drive.files.update({ fileId, requestBody: { trashed: true } });
+}
+
+/** Make a file link-shareable (anyone with the link can view) and return its link. */
+export async function shareDriveFile(userId: string, fileId: string): Promise<string> {
+  const drive = await getDriveClient(userId);
+  await drive.permissions.create({ fileId, requestBody: { role: "reader", type: "anyone" } });
+  const res = await drive.files.get({ fileId, fields: "webViewLink" });
+  return res.data.webViewLink ?? "";
 }
 
 /** Create a new Google Doc and return its link. */

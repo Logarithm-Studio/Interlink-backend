@@ -33,6 +33,7 @@ const GmailQuerySchema = z.object({
   mailbox: z.enum(["inbox", "sent", "all"]).optional(),
   maxResults: z.coerce.number().int().min(1).max(25).optional(),
   query: z.string().min(1).optional(),
+  pageToken: z.string().min(1).optional(),
 });
 
 const GmailDetailParamsSchema = z.object({
@@ -120,19 +121,22 @@ async function handleGmailMessages(
     const user = authedReq.user;
     const mailbox = mailboxOverride ?? parsed.data.mailbox ?? "inbox";
 
-    const messages = await listGmailMailboxMessages({
+    const result = await listGmailMailboxMessages({
       userId: user.id,
       googleAccountId: authedReq.googleAccountId,
       mailbox,
       maxResults: parsed.data.maxResults,
       query: parsed.data.query,
+      pageToken: parsed.data.pageToken,
     });
 
     res.status(200).json({
       provider: "google",
       mailbox,
-      count: messages.length,
-      messages,
+      count: result.messages.length,
+      messages: result.messages,
+      nextPageToken: result.nextPageToken,
+      resultSizeEstimate: result.resultSizeEstimate,
     });
   } catch (err) {
     const reauth = handleGoogleReauthError(err);

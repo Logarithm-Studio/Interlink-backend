@@ -70,6 +70,7 @@ export interface GmailMessageSummary {
   snippet: string | null;
   internalDate: string | null;
   labelIds: string[];
+  attachments: GmailAttachmentSummary[];
 }
 
 export interface GmailMessageDetail extends GmailMessageSummary {
@@ -80,6 +81,19 @@ export interface GmailMessageDetail extends GmailMessageSummary {
   allLinks: string[];
   calendarLinks: string[];
   webLink: string;
+}
+
+export interface GmailAttachmentSummary {
+  attachmentId: string | null;
+  filename: string;
+  mimeType: string | null;
+  size: number | null;
+}
+
+export interface GmailMailboxMessagesResult {
+  messages: GmailMessageSummary[];
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
 }
 
 function mailboxToLabelIds(mailbox: GmailMailbox): string[] | undefined {
@@ -142,6 +156,30 @@ function extractMimeBodies(
   for (const child of part.parts ?? []) {
     extractMimeBodies(child, buckets);
   }
+}
+
+function extractAttachments(
+  part: gmail_v1.Schema$MessagePart | null | undefined,
+  attachments: GmailAttachmentSummary[] = [],
+): GmailAttachmentSummary[] {
+  if (!part) return attachments;
+
+  const filename = part.filename?.trim();
+  const attachmentId = part.body?.attachmentId ?? null;
+  if (filename || attachmentId) {
+    attachments.push({
+      attachmentId,
+      filename: filename || "Attachment",
+      mimeType: part.mimeType ?? null,
+      size: typeof part.body?.size === "number" ? part.body.size : null,
+    });
+  }
+
+  for (const child of part.parts ?? []) {
+    extractAttachments(child, attachments);
+  }
+
+  return attachments;
 }
 
 function normalizeUrl(url: string): string {
@@ -214,7 +252,8 @@ export async function listGmailMailboxMessages(params: {
   mailbox?: GmailMailbox;
   maxResults?: number;
   query?: string;
-}): Promise<GmailMessageSummary[]> {
+  pageToken?: string;
+}): Promise<GmailMailboxMessagesResult> {
   const mailbox = params.mailbox ?? "inbox";
   const labelIds = mailboxToLabelIds(mailbox);
 
@@ -229,6 +268,7 @@ export async function listGmailMailboxMessages(params: {
     labelIds,
     maxResults: Math.min(Math.max(params.maxResults ?? 20, 1), 50),
     q: params.query,
+    pageToken: params.pageToken,
   });
 
   const messageRefs = listResponse.data.messages ?? [];
@@ -257,11 +297,16 @@ export async function listGmailMailboxMessages(params: {
           snippet: detail.data.snippet ?? null,
           internalDate: detail.data.internalDate ?? null,
           labelIds: detail.data.labelIds ?? [],
+          attachments: extractAttachments(detail.data.payload),
         };
       }),
   );
 
-  return hydrated;
+  return {
+    messages: hydrated,
+    nextPageToken: listResponse.data.nextPageToken ?? undefined,
+    resultSizeEstimate: listResponse.data.resultSizeEstimate ?? undefined,
+  };
 }
 
 export async function getGmailMessageDetail(params: {
@@ -315,6 +360,7 @@ export async function getGmailMessageDetail(params: {
     snippet: detail.data.snippet ?? null,
     internalDate: detail.data.internalDate ?? null,
     labelIds,
+    attachments: extractAttachments(detail.data.payload),
     bodyText,
     bodyHtml,
     allLinks,
@@ -384,11 +430,12 @@ export async function listGmailInboxMessages(params: {
   maxResults?: number;
   query?: string;
 }): Promise<GmailMessageSummary[]> {
-  return listGmailMailboxMessages({
+  const result = await listGmailMailboxMessages({
     userId: params.userId,
     googleAccountId: params.googleAccountId,
     mailbox: "inbox",
     maxResults: params.maxResults,
     query: params.query,
   });
+  return result.messages;
 }

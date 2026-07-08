@@ -65,10 +65,10 @@ export async function listActiveMailbox(
     const msgs = await listOutlookMessages(userId, limit);
     return { provider, messages: msgs.map((m) => ({ id: m.id, subject: m.subject, from: m.from, preview: m.preview })) };
   }
-  const msgs = await listGmailMailboxMessages({ userId, mailbox: "inbox", maxResults: limit });
+  const result = await listGmailMailboxMessages({ userId, mailbox: "inbox", maxResults: limit });
   return {
     provider,
-    messages: msgs.map((m) => ({
+    messages: result.messages.map((m) => ({
       id: m.id,
       subject: m.subject ?? "(no subject)",
       from: m.from ?? "unknown sender",

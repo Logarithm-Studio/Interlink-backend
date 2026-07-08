@@ -44,6 +44,9 @@ export interface NormalizedEvent {
   userId: string;
   /** The Google account this event was synced from (null for legacy rows). */
   googleAccountId?: string | null;
+  googleAccountEmail?: string | null;
+  googleAccountRole?: "personal" | "professional" | null;
+  googleAccountIsPrimary?: boolean | null;
   externalEventId: string;
   provider: "google" | "microsoft";
   eventType: string;

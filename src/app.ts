@@ -58,6 +58,10 @@ function configureMiddleware(app: Express) {
   // can verify the Upstash-Signature header against the original payload bytes.
   app.use(
     express.json({
+      // Voice clips and image attachments are sent as base64 in the JSON body; the
+      // 100kb default rejected them with 413 "request entity too large" (broke voice
+      // transcription and image analysis in the assistant). 25mb covers both.
+      limit: "25mb",
       verify: (req, _res, buf) => {
         (req as Request & { rawBody?: string }).rawBody = buf.toString("utf8");
       },

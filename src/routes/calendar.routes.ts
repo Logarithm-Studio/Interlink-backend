@@ -7,7 +7,7 @@ import {
   createWatchChannel,
   getChannelByChannelId,
 } from "../services/calendar/googleWatch.service";
-import { ReauthRequiredError } from "../services/auth.service";
+import { ReauthRequiredError, listGoogleAccounts } from "../services/auth.service";
 import { enqueueJob } from "../services/jobQueue.service";
 import { JobType } from "../jobs/schemas/envelope";
 import { AuthenticatedRequest } from "../types";
@@ -28,6 +28,7 @@ router.post(
       const authedReq = req as AuthenticatedRequest;
       const user = authedReq.user;
       const provider = (req.query.provider as string) || "google";
+      const scope = req.query.scope === "all" ? "all" : "mode";
 
       if (provider !== "google") {
         throw new BadRequestError(
@@ -35,15 +36,39 @@ router.post(
         );
       }
 
-      const result = await syncUserCalendar(
-        user.id,
-        provider as "google",
-        req.query.since as string | undefined,
-        authedReq.googleAccountId,
-      );
+      const result =
+        scope === "all"
+          ? await (async () => {
+              const accounts = await listGoogleAccounts(user.id);
+              const activeAccounts = accounts.filter((account) => !account.reauthRequired);
+              const results = await Promise.all(
+                activeAccounts.map((account) =>
+                  syncUserCalendar(
+                    user.id,
+                    provider as "google",
+                    req.query.since as string | undefined,
+                    account.id,
+                  ),
+                ),
+              );
+              return results.reduce(
+                (acc, item) => ({
+                  synced: acc.synced + item.synced,
+                  skipped: acc.skipped + item.skipped,
+                  deleted: acc.deleted + item.deleted,
+                }),
+                { synced: 0, skipped: 0, deleted: 0 },
+              );
+            })()
+          : await syncUserCalendar(
+              user.id,
+              provider as "google",
+              req.query.since as string | undefined,
+              authedReq.googleAccountId,
+            );
 
       res.json({
-        message: `Calendar sync complete for ${provider}`,
+        message: `Calendar sync complete for ${provider}${scope === "all" ? " accounts" : ""}`,
         ...result,
       });
     } catch (err) {

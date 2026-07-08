@@ -151,29 +151,32 @@ export async function getUserEvents(
   const effectiveFrom = from ?? new Date().toISOString();
 
   let sql = `
-    SELECT * FROM events
-    WHERE user_id = $1
-      AND is_cancelled = FALSE
+    SELECT e.*, ga.email AS google_account_email, ga.role AS google_account_role,
+           ga.is_primary AS google_account_is_primary
+    FROM events e
+    LEFT JOIN google_accounts ga ON ga.id = e.google_account_id
+    WHERE e.user_id = $1
+      AND e.is_cancelled = FALSE
   `;
   const params: unknown[] = [userId, effectiveFrom];
   let paramIdx = 3;
 
-  sql += ` AND end_time >= $2`;
+  sql += ` AND e.end_time >= $2`;
 
   if (to) {
-    sql += ` AND start_time <= $${paramIdx}`;
+    sql += ` AND e.start_time <= $${paramIdx}`;
     params.push(to);
     paramIdx++;
   }
 
   // Scope to the active mode's Google account (full multi-account behaviour).
   if (googleAccountId) {
-    sql += ` AND google_account_id = $${paramIdx}`;
+    sql += ` AND e.google_account_id = $${paramIdx}`;
     params.push(googleAccountId);
     paramIdx++;
   }
 
-  sql += " ORDER BY start_time ASC";
+  sql += " ORDER BY e.start_time ASC";
 
   const result = await query(sql, params);
 
@@ -188,7 +191,11 @@ export async function getEventById(
   eventId: string,
 ): Promise<NormalizedEvent | null> {
   const result = await query(
-    "SELECT * FROM events WHERE id = $1 AND user_id = $2",
+    `SELECT e.*, ga.email AS google_account_email, ga.role AS google_account_role,
+            ga.is_primary AS google_account_is_primary
+       FROM events e
+       LEFT JOIN google_accounts ga ON ga.id = e.google_account_id
+      WHERE e.id = $1 AND e.user_id = $2`,
     [eventId, userId],
   );
 
@@ -435,6 +442,9 @@ function mapRowToEvent(row: Record<string, unknown>): NormalizedEvent {
     id: row.id as string,
     userId: row.user_id as string,
     googleAccountId: (row.google_account_id as string | null) ?? null,
+    googleAccountEmail: (row.google_account_email as string | null) ?? null,
+    googleAccountRole: (row.google_account_role as "personal" | "professional" | null) ?? null,
+    googleAccountIsPrimary: (row.google_account_is_primary as boolean | null) ?? null,
     externalEventId: row.external_event_id as string,
     provider: row.provider as "google" | "microsoft",
     eventType: row.event_type as string,
@@ -460,6 +470,7 @@ function mapRowToEvent(row: Record<string, unknown>): NormalizedEvent {
 export interface FlutterEventListItem {
   id: string;
   googleEventId: string;
+  provider: "google" | "microsoft";
   title: string;
   description: string | null;
   startTime: Date;
@@ -471,6 +482,10 @@ export interface FlutterEventListItem {
   organizerEmail: string | null;
   attendeeCount: number;
   isRecurring: boolean;
+  googleAccountId: string | null;
+  calendarAccountEmail: string | null;
+  calendarAccountRole: "personal" | "professional" | null;
+  calendarAccountIsPrimary: boolean | null;
 }
 
 export interface FlutterEventDetail {
@@ -489,6 +504,10 @@ export interface FlutterEventDetail {
   attendeeEmails: string[];
   attendees: NormalizedEvent["attendees"];
   isRecurring: boolean;
+  googleAccountId: string | null;
+  calendarAccountEmail: string | null;
+  calendarAccountRole: "personal" | "professional" | null;
+  calendarAccountIsPrimary: boolean | null;
 }
 
 export function toFlutterEventListItem(
@@ -497,6 +516,7 @@ export function toFlutterEventListItem(
   return {
     id: event.id ?? "",
     googleEventId: event.externalEventId,
+    provider: event.provider,
     title: event.title,
     description: event.description,
     startTime: event.startTime,
@@ -508,6 +528,10 @@ export function toFlutterEventListItem(
     organizerEmail: event.organizerEmail,
     attendeeCount: event.attendees.length,
     isRecurring: event.isRecurring,
+    googleAccountId: event.googleAccountId ?? null,
+    calendarAccountEmail: event.googleAccountEmail ?? null,
+    calendarAccountRole: event.googleAccountRole ?? null,
+    calendarAccountIsPrimary: event.googleAccountIsPrimary ?? null,
   };
 }
 
@@ -532,5 +556,9 @@ export function toFlutterEventDetail(
       .filter((email) => typeof email === "string" && email.length > 0),
     attendees: event.attendees,
     isRecurring: event.isRecurring,
+    googleAccountId: event.googleAccountId ?? null,
+    calendarAccountEmail: event.googleAccountEmail ?? null,
+    calendarAccountRole: event.googleAccountRole ?? null,
+    calendarAccountIsPrimary: event.googleAccountIsPrimary ?? null,
   };
 }

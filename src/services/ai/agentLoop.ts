@@ -21,7 +21,9 @@ import {
 
 export type AgentTurnOutcome =
   | { kind: "action"; name: string; args: Record<string, unknown> }
-  | { kind: "text"; text: string };
+  // `via` carries the last discovery tool that produced `data`, so callers can turn
+  // it into openable deep-links (e.g. the YouTube result the answer describes).
+  | { kind: "text"; text: string; via?: { name: string; args: Record<string, unknown>; data?: unknown } };
 
 export interface RunAgentTurnOptions {
   system: string;
@@ -34,6 +36,8 @@ export interface RunAgentTurnOptions {
   isReadOnly: (name: string) => boolean;
   /** Executes a read-only tool and returns a concise result to feed back to the model. */
   execReadOnly: (name: string, args: Record<string, unknown>) => Promise<{ message: string; data?: unknown }>;
+  /** When true, log agent step transitions for debugging "why did it do nothing" cases. */
+  debug?: boolean;
   /** When the first reply is prose but the message clearly asked for an action, force a tool. */
   looksLikeAction?: boolean;
   /** Max chained steps (read-only tool calls) before we stop. Default 4. */
@@ -51,6 +55,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
   contents.push({ role: "user", parts: opts.userParts });
 
   let lastReadMessage: string | null = null;
+  let lastRead: { name: string; args: Record<string, unknown>; data?: unknown } | undefined;
 
   for (let step = 0; step < maxSteps; step++) {
     let result = await geminiGenerateContent({
@@ -73,12 +78,29 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       });
     }
 
+    // Empty candidate: no text AND no tool call. Almost always the reasoning model
+    // spent its token budget "thinking" and truncated. Retry once on the faster model
+    // (less thinking) with a hard thinking cap before giving up — this is the single
+    // biggest cause of the assistant looking "dumb"/unresponsive.
+    if (!result.functionCall && !result.raw?.trim()) {
+      result = await geminiGenerateContent({
+        system: opts.system,
+        contents,
+        json: false,
+        tools: opts.tools,
+        toolMode: opts.looksLikeAction ? "ANY" : "AUTO",
+        tier: "fast",
+        thinkingBudget: 512,
+        maxOutputTokens: 8192,
+      });
+    }
+
     if (!result.functionCall) {
       const text = result.raw?.trim();
-      if (text) return { kind: "text", text };
+      if (text) return { kind: "text", text, via: lastRead };
       // Model executed discovery but produced no closing prose — relay the last result.
-      if (lastReadMessage) return { kind: "text", text: lastReadMessage };
-      return { kind: "text", text: "I'm not sure how to help with that." };
+      if (lastReadMessage) return { kind: "text", text: lastReadMessage, via: lastRead };
+      return { kind: "text", text: "I'm not sure how to help with that yet — try rephrasing, or tell me which app to use." };
     }
 
     const { name, args } = result.functionCall;
@@ -92,6 +114,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
     // A read/discovery step: execute it and feed the result back so the model can chain.
     const exec = await opts.execReadOnly(name, args);
     lastReadMessage = exec.message;
+    lastRead = { name, args, data: exec.data };
     contents.push({ role: "model", parts: [{ functionCall: { name, args } }] });
     contents.push({
       role: "user",
@@ -103,5 +126,6 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
   return {
     kind: "text",
     text: lastReadMessage ?? "I ran several steps but couldn't finish — tell me the next step to take.",
+    via: lastRead,
   };
 }
