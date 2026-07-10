@@ -61,6 +61,10 @@ const GOOGLE_SCOPES = [
   // YouTube (+ YouTube Music search): read playlists/likes + create playlists and
   // add videos. Reuses the same Google OAuth; existing users reconnect to grant it.
   "https://www.googleapis.com/auth/youtube",
+  // Google Contacts (People API): resolve spoken names → emails for invites/messages.
+  // "other.readonly" covers people the user has emailed but not saved. Reconnect to grant.
+  "https://www.googleapis.com/auth/contacts.readonly",
+  "https://www.googleapis.com/auth/contacts.other.readonly",
 ];
 
 const GOOGLE_OAUTH_SUCCESS_REDIRECT_URI =

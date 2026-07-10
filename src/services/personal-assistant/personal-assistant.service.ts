@@ -66,9 +66,15 @@ import { createTask as createTodoistTask, getTasks as getTodoistTasks } from "..
 import { getUserEvents } from "../events.service";
 import { isConnected, listIntegrationsForUser } from "../integrations/tokenStore";
 import { getTokens } from "../auth.service";
-import { listGmailMailboxMessages } from "../googleApi.service";
+import { listGmailMailboxMessages, sendAutomatedGmailMessage } from "../googleApi.service";
+import { searchContacts, listContacts } from "../google/contacts.service";
 import { searchPages as searchNotionPages, getPageContent, createPage as createNotionPage } from "../notion/notion.service";
-import { getChannels as getSlackChannels, postMessage as postSlackMessage } from "../slack/slack.service";
+import {
+  getChannels as getSlackChannels,
+  postMessage as postSlackMessage,
+  getUsers as getSlackUsers,
+  sendDirectMessage as sendSlackDirectMessage,
+} from "../slack/slack.service";
 import { getRepos as getGitHubRepos, getIssues as getGitHubIssues, getPullRequests as getGitHubPullRequests, createIssue as createGitHubIssue } from "../pm/github.service";
 import { getProjects as getJiraProjects, searchIssues as searchJiraIssues, createIssue as createJiraIssue } from "../jira/jira.service";
 import { getBoards as getTrelloBoards, getListsForBoard, getCardsForBoard, createCard as createTrelloCard } from "../pm/trello.service";
@@ -93,7 +99,10 @@ export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "- You can chain tools to finish a workflow in one turn. When an ID is missing (channel, board, list, repo, project, page), CALL the relevant discovery tool FIRST — its result is fed back to you in the same turn — then call the action tool with the resolved ID. Never ask the user for an ID you can look up.",
   "- Read/list/search tools run automatically as you chain. Only the final WRITE action (create/send/post/play) is shown to the user to confirm before it executes — so keep chaining until you reach that write, then emit it.",
   "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to Spotify, email questions to Gmail.",
-  "- Never invent IDs, repositories, channels, boards, pages, projects, or issue keys. Use discovery tools; only ask the user when discovery genuinely cannot resolve it.",
+  "- People by name: when a request names a person (invite, email, DM) but not their address, call search_contacts FIRST to resolve their email/handle, then act. Do this for EACH person named.",
+  "- Act on MULTIPLES in one turn: an invite/email can go to several recipients at once (pass them all as a list), and Drive delete/share can take several files (via `names` or a `query`). Never make the user repeat themselves per person or per file.",
+  "- To reach a person's Slack inbox use send_slack_dm (resolves them by name); use post_slack_message only for channels.",
+  "- Never invent IDs, repositories, channels, boards, pages, projects, issue keys, or email addresses. Use discovery tools; only ask the user when discovery genuinely cannot resolve it.",
 ].join("\n");
 
 /**
@@ -303,11 +312,13 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   {
     name: "delete_drive_file",
     description:
-      "Move a Google Drive file to the trash. Pass the file's name — the matching file is resolved automatically (or pass fileId if you already have it from list_drive_files).",
+      "Move one or more Google Drive files to the trash. To delete several at once, pass `names` (a list) or a `query` that matches them all (e.g. 'invoice'); each match is resolved automatically.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "File name (or part) to delete." },
+        name: { type: "string", description: "A single file name (or part) to delete." },
+        names: { type: "array", items: { type: "string" }, description: "Several file names to delete in one go." },
+        query: { type: "string", description: "Delete every non-trashed file whose name contains this text." },
         fileId: { type: "string", description: "Drive file id, if already known." },
       },
       required: [],
@@ -316,11 +327,13 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   {
     name: "share_drive_file",
     description:
-      "Create a shareable 'anyone with the link' view link for a Google Drive file. Pass the file name (resolved automatically) or a known fileId.",
+      "Create shareable 'anyone with the link' view links for one or more Google Drive files. Pass a single `name`/`fileId`, or `names` (a list), or a `query` to share every match.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "File name (or part) to share." },
+        name: { type: "string", description: "A single file name (or part) to share." },
+        names: { type: "array", items: { type: "string" }, description: "Several file names to share." },
+        query: { type: "string", description: "Share every non-trashed file whose name contains this text." },
         fileId: { type: "string", description: "Drive file id, if already known." },
       },
       required: [],
@@ -388,6 +401,35 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
       properties: { playlistId: { type: "string" }, videoId: { type: "string" } },
       required: ["playlistId", "videoId"],
     },
+  },
+  {
+    name: "send_gmail",
+    description:
+      "Send an email from the user's Gmail to one OR MORE recipients. Pass `to` as a list of email addresses (or names to resolve via search_contacts first). Use this for any 'email X' request; supports multiple people.",
+    parameters: {
+      type: "object",
+      properties: {
+        to: { type: "array", items: { type: "string" }, description: "Recipient email addresses (one or many)." },
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "search_contacts",
+    description:
+      "Look up people in the user's Google Contacts by name (or email) to resolve their email address. Use this BEFORE inviting or emailing someone referred to only by name — including multiple people for one meeting.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "A person's name or partial email." } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_contacts",
+    description: "List the user's saved Google Contacts (name + email).",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     name: "get_outlook_inbox",
@@ -514,6 +556,24 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
     name: "list_slack_channels",
     description: "List Slack channels available to the connected Slack app.",
     parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "list_slack_users",
+    description: "List people in the user's Slack workspace (to DM someone by name).",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "send_slack_dm",
+    description:
+      "Send a DIRECT message to a person in Slack (their inbox), not a channel. Pass the person's name — the matching workspace member is resolved automatically. Use this for 'DM/message <person>' requests.",
+    parameters: {
+      type: "object",
+      properties: {
+        user: { type: "string", description: "The person's name (or Slack username) to DM." },
+        text: { type: "string", description: "Message to send." },
+      },
+      required: ["user", "text"],
+    },
   },
   {
     name: "list_github_repos",
@@ -866,9 +926,21 @@ export function deriveOpenLinks(
       return links;
     }
     case "create_drive_doc":
-    case "share_drive_file":
     case "upload_to_drive":
       return str(d.webViewLink) ? [{ label: "Open in Drive", url: str(d.webViewLink), app: "google-drive" }] : [];
+    case "share_drive_file": {
+      // data is now an array of { name, webViewLink } (one or many shared files).
+      if (Array.isArray(data)) {
+        return data
+          .slice(0, 4)
+          .map((v) => {
+            const item = (v ?? {}) as Record<string, unknown>;
+            return { label: `Open ${str(item.name) || "file"}`, url: str(item.webViewLink), app: "google-drive" as const };
+          })
+          .filter((l) => l.url);
+      }
+      return str(d.webViewLink) ? [{ label: "Open in Drive", url: str(d.webViewLink), app: "google-drive" }] : [];
+    }
     case "list_drive_files": {
       if (!Array.isArray(data)) return [];
       return data
@@ -990,6 +1062,65 @@ async function resolveDriveFileId(
   return file ? { id: file.id, name: file.name } : null;
 }
 
+/**
+ * Resolve one OR MANY Drive files from `fileId`/`name` (single), `names` (list), or
+ * `query` (all matches). Dedupes by id — this is what lets "delete every invoice" or
+ * "share these three files" act on more than one file in a single request.
+ */
+async function resolveDriveTargets(
+  userId: string,
+  args: Record<string, unknown>,
+): Promise<{ id: string; name: string }[]> {
+  const out: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  const add = (t: { id: string; name: string } | null) => {
+    if (t && t.id && !seen.has(t.id)) {
+      seen.add(t.id);
+      out.push(t);
+    }
+  };
+
+  const single = await resolveDriveFileId(userId, args);
+  if (single) add(single);
+
+  const names = Array.isArray(args.names) ? args.names.map(String) : [];
+  for (const n of names) {
+    const f = await findDriveFile(userId, n);
+    add(f ? { id: f.id, name: f.name } : null);
+  }
+
+  const q = String(args.query ?? "").trim();
+  if (q) {
+    const files = await listDriveFiles(userId, q);
+    for (const f of files) add({ id: f.id, name: f.name });
+  }
+
+  return out;
+}
+
+/** Accept a recipient list as an array, comma/semicolon string, or single value. */
+function toEmailList(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value.map(String) : [String(value ?? "")];
+  return raw
+    .flatMap((v) => v.split(/[,;]+/))
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** The user's primary connected Gmail address (the From: for sends). */
+async function getPrimaryGoogleEmail(userId: string): Promise<string> {
+  try {
+    const res = await query<{ email: string }>(
+      `SELECT email FROM google_accounts WHERE user_id = $1 AND email IS NOT NULL
+        ORDER BY is_primary DESC, created_at ASC LIMIT 1`,
+      [userId],
+    );
+    return res.rows[0]?.email ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function resolveNotionParent(userId: string, args: Record<string, unknown>): Promise<string | null> {
   const parentId = String(args.parentId ?? "").trim();
   if (parentId) return parentId;
@@ -1057,19 +1188,34 @@ export async function executeAction(
         return { ok: true, message: `Created Google Doc "${doc.name}"${doc.webViewLink ? `: ${doc.webViewLink}` : "."}`, data: doc };
       }
       case "delete_drive_file": {
-        const target = await resolveDriveFileId(userId, args);
-        if (!target) return { ok: false, message: "Tell me which Drive file to delete (by name), or find it first." };
-        await deleteDriveFile(userId, target.id);
-        return { ok: true, message: `Moved "${target.name}" to the Drive trash.` };
-      }
-      case "share_drive_file": {
-        const target = await resolveDriveFileId(userId, args);
-        if (!target) return { ok: false, message: "Tell me which Drive file to share (by name), or find it first." };
-        const link = await shareDriveFile(userId, target.id);
+        const targets = await resolveDriveTargets(userId, args);
+        if (targets.length === 0) return { ok: false, message: "Tell me which Drive file(s) to delete (by name), or find them first." };
+        for (const t of targets) await deleteDriveFile(userId, t.id);
+        const names = targets.map((t) => `"${t.name}"`).join(", ");
         return {
           ok: true,
-          message: link ? `Anyone with this link can now view "${target.name}": ${link}` : `Shared "${target.name}".`,
-          data: { webViewLink: link, name: target.name },
+          message:
+            targets.length === 1
+              ? `Moved ${names} to the Drive trash.`
+              : `Moved ${targets.length} files to the Drive trash: ${names}.`,
+        };
+      }
+      case "share_drive_file": {
+        const targets = await resolveDriveTargets(userId, args);
+        if (targets.length === 0) return { ok: false, message: "Tell me which Drive file(s) to share (by name), or find them first." };
+        const shared: { name: string; webViewLink: string }[] = [];
+        for (const t of targets) {
+          const link = await shareDriveFile(userId, t.id);
+          shared.push({ name: t.name, webViewLink: link });
+        }
+        const lines = shared.map((s) => `- ${s.name}: ${s.webViewLink}`).join("\n");
+        return {
+          ok: true,
+          message:
+            shared.length === 1
+              ? `Anyone with this link can now view "${shared[0].name}": ${shared[0].webViewLink}`
+              : `Shared ${shared.length} files (anyone with the link can view):\n${lines}`,
+          data: shared,
         };
       }
       case "upload_to_drive": {
@@ -1089,7 +1235,7 @@ export async function executeAction(
         };
       }
       case "schedule_meet": {
-        const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : undefined;
+        const attendees = toEmailList(args.attendees);
         const meeting = await scheduleMeetMeeting(userId, {
           title: String(args.title ?? "Meeting"),
           startTime: String(args.startTime ?? ""),
@@ -1146,10 +1292,31 @@ export async function executeAction(
         return { ok: true, message, data: messages };
       }
       case "send_outlook_mail": {
-        const to = String(args.to ?? "").trim();
-        if (!to) return { ok: false, message: "Recipient email is required." };
-        await sendOutlookMail(userId, { to, subject: String(args.subject ?? ""), body: String(args.body ?? "") });
-        return { ok: true, message: `Sent an Outlook email to ${to}.` };
+        const recipients = toEmailList(args.to);
+        if (recipients.length === 0) return { ok: false, message: "Recipient email is required." };
+        await sendOutlookMail(userId, { to: recipients.join(", "), subject: String(args.subject ?? ""), body: String(args.body ?? "") });
+        return { ok: true, message: `Sent an Outlook email to ${recipients.join(", ")}.` };
+      }
+      case "send_gmail": {
+        const recipients = toEmailList(args.to);
+        if (recipients.length === 0) return { ok: false, message: "Who should I send this to? Give me an email or a name to look up." };
+        const subject = String(args.subject ?? "").trim();
+        const body = String(args.body ?? "").trim();
+        if (!subject || !body) return { ok: false, message: "I need a subject and a message body to send the email." };
+        const fromEmail = await getPrimaryGoogleEmail(userId);
+        if (!fromEmail) return { ok: false, message: "I couldn't resolve your Gmail address. Reconnect Google in Connected Accounts." };
+        await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: recipients.join(", "), subject, body });
+        return { ok: true, message: `Sent your email to ${recipients.join(", ")}.` };
+      }
+      case "search_contacts": {
+        const contacts = await searchContacts(userId, String(args.query ?? ""));
+        const message = linesOrNone(contacts, (c) => `- ${c.name} <${c.email}>`, "No matching contacts found.", 10);
+        return { ok: true, message, data: contacts };
+      }
+      case "list_contacts": {
+        const contacts = await listContacts(userId);
+        const message = linesOrNone(contacts, (c) => `- ${c.name} <${c.email}>`, "No saved contacts found.", 15);
+        return { ok: true, message, data: contacts };
       }
       case "list_outlook_events": {
         const events = await listOutlookEvents(userId, args.limit ? Number(args.limit) : 10);
@@ -1157,7 +1324,7 @@ export async function executeAction(
         return { ok: true, message, data: events };
       }
       case "create_outlook_event": {
-        const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : undefined;
+        const attendees = toEmailList(args.attendees);
         const ev = await createOutlookEvent(userId, {
           subject: String(args.subject ?? "Meeting"),
           startTime: String(args.startTime ?? ""),
@@ -1308,6 +1475,19 @@ export async function executeAction(
         await postSlackMessage(userId, channel, text);
         return { ok: true, message: "Posted the message to Slack." };
       }
+      case "list_slack_users": {
+        const users = await getSlackUsers(userId);
+        const people = users.filter((u) => !u.isBot);
+        const message = linesOrNone(people, (u) => `- ${u.realName || u.name} (@${u.name})`, "No Slack members found.", 15);
+        return { ok: true, message, data: people };
+      }
+      case "send_slack_dm": {
+        const person = String(args.user ?? "").trim();
+        const text = String(args.text ?? "").trim();
+        if (!person || !text) return { ok: false, message: "Tell me who to DM and what to say." };
+        const sent = await sendSlackDirectMessage(userId, person, text);
+        return { ok: true, message: `Sent a direct message to ${sent.to} on Slack.` };
+      }
       case "list_github_repos": {
         const repos = await getGitHubRepos(userId);
         const message = linesOrNone(repos, (r) => `- ${r.fullName} - ${r.openIssues} open issues`, "No GitHub repositories found.", 12);
@@ -1455,7 +1635,12 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "create_youtube_playlist": return `Create YouTube playlist "${args.title ?? ""}"`;
     case "add_to_youtube_playlist": return "Add a video to a YouTube playlist";
     case "get_outlook_inbox": return "Check Outlook inbox";
-    case "send_outlook_mail": return `Send an Outlook email to ${args.to ?? "a recipient"}`;
+    case "send_outlook_mail": return `Send an Outlook email to ${toEmailList(args.to).join(", ") || "a recipient"}`;
+    case "send_gmail": return `Email ${toEmailList(args.to).join(", ") || "a recipient"}: "${args.subject ?? ""}"`;
+    case "search_contacts": return `Look up contact "${args.query ?? ""}"`;
+    case "list_contacts": return "List contacts";
+    case "list_slack_users": return "List Slack members";
+    case "send_slack_dm": return `DM ${args.user ?? "someone"} on Slack`;
     case "list_outlook_events": return "List Outlook calendar events";
     case "create_outlook_event": return `Create Outlook event "${args.subject ?? ""}"`;
     case "list_teams_chats": return "List Teams chats";
@@ -1489,6 +1674,9 @@ export const READ_ONLY_ACTIONS = new Set([
   "search_notion_pages",
   "read_notion_page",
   "list_slack_channels",
+  "list_slack_users",
+  "search_contacts",
+  "list_contacts",
   "list_github_repos",
   "list_github_issues",
   "list_github_pull_requests",

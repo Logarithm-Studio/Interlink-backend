@@ -238,6 +238,17 @@ async function getProfessionalPersona(userId: string): Promise<string> {
 
 const PERSONAL_TOOL_NAMES = new Set(PERSONAL_TOOLS.map((tool) => tool.name));
 
+// Advertised to the professional agent so it knows the full personal-tool surface it
+// inherits (these are merged in via professionalToolsWithPersonal). Keep in sync with
+// PERSONAL_TOOLS capabilities.
+const PERSONAL_TOOLS_NOTE = [
+  "You ALSO have the user's full personal assistant toolkit — use it whenever the work calls for it:",
+  "- Email via Gmail to one OR many recipients (send_gmail), and resolve people by name to their address first with search_contacts.",
+  "- Schedule Google Meet meetings and invite multiple attendees at once; manage Google Calendar, Tasks, Drive (find/upload/share/delete one or many files), Notion, Todoist, Trello, Jira, GitHub.",
+  "- Message teams and people on Slack: post_slack_message for channels, send_slack_dm to reach a person's inbox by name.",
+  "- Spotify/YouTube, weather, and fitness for lighter requests.",
+].join("\n");
+
 function professionalToolsWithPersonal(tools: typeof PERSONAL_TOOLS): typeof PERSONAL_TOOLS {
   const seen = new Set<string>();
   return [...tools, ...PERSONAL_TOOLS].filter((tool) => {
@@ -312,7 +323,7 @@ export async function command(
         message,
         snapshot,
         tools: professionalToolsWithPersonal(vertical.tools),
-        system: `${vertical.systemPrompt}\nYou can also use the user's personal assistant tools, including Spotify playback, Google/Todoist tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
+        system: `${vertical.systemPrompt}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
         attachment,
         history,
         isReadOnly: isReadOnlyPersonalAction,
@@ -376,7 +387,7 @@ export async function command(
     message,
     snapshot,
     tools: professionalToolsWithPersonal(AGENT_TOOLS),
-    system: `${AGENT_SYSTEM}\nYou can also use the user's personal assistant tools, including Spotify playback, tasks, weather, fitness, Gmail, calendar, and Notion notes.\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
+    system: `${AGENT_SYSTEM}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
     attachment,
     history: financeHistory,
     isReadOnly: isReadOnlyPersonalAction,

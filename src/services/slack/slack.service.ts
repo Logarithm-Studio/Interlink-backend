@@ -31,6 +31,9 @@ const SLACK_BOT_SCOPES = [
 
 const SLACK_USER_SCOPES = [
   "chat:write",
+  // Open a direct-message channel with a person so we can DM their inbox, not just
+  // post to channels. Existing users must reconnect Slack to grant it.
+  "im:write",
 ];
 
 function clientId(): string {
@@ -233,6 +236,41 @@ export async function postMessage(
     opts.asUser === false ? "bot" : "user",
   );
   return { channel: data.channel ?? channel, ts: data.ts ?? "" };
+}
+
+/**
+ * Send a direct message to a person by name (resolves them from the workspace member
+ * list, opens the IM channel, then posts). This is what makes "DM Sarah that I'm running
+ * late" work — plain channel posting can't reach a person's inbox.
+ */
+export async function sendDirectMessage(
+  userId: string,
+  personQuery: string,
+  text: string,
+): Promise<{ channel: string; ts: string; to: string }> {
+  const q = personQuery.trim().toLowerCase();
+  if (!q) throw new BadRequestError("Tell me who to message.");
+
+  const users = await getUsers(userId);
+  const candidates = users.filter((u) => !u.isBot);
+  const match =
+    candidates.find((u) => u.realName.toLowerCase() === q || u.name.toLowerCase() === q) ??
+    candidates.find((u) => u.realName.toLowerCase().includes(q) || u.name.toLowerCase().includes(q));
+  if (!match) throw new BadRequestError(`I couldn't find "${personQuery}" in your Slack workspace.`);
+
+  // Open (or fetch) the IM channel with that user, then post into it.
+  const opened = await slackApi<{ channel?: { id?: string } }>(
+    userId,
+    "conversations.open",
+    { users: match.id },
+    "POST",
+    "user",
+  );
+  const channel = opened.channel?.id;
+  if (!channel) throw new BadRequestError("Slack couldn't open a direct message with that person.");
+
+  const posted = await postMessage(userId, channel, text);
+  return { channel: posted.channel, ts: posted.ts, to: match.realName || match.name };
 }
 
 /** Read recent messages from a channel (newest first) — used to monitor bug/alert channels. */
