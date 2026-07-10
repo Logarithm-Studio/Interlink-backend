@@ -113,10 +113,13 @@ export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
 function buildNowContext(clientNow?: string, tz?: string): string {
   const iso = clientNow && !Number.isNaN(Date.parse(clientNow)) ? clientNow : new Date().toISOString();
   return [
-    `CONTEXT — the current date and time is ${iso}${tz ? ` (timezone ${tz})` : ""}.`,
+    `CONTEXT — the current date and time is ${iso}${tz ? ` in timezone ${tz}` : ""}.`,
     `Resolve every relative date ("today", "tonight", "tomorrow", "next Monday", "in 2 hours") against this exact moment.`,
     `If the user gives no year, use the current year. NEVER schedule, create, or set anything in the past —`,
-    `if a requested time has already passed, use the next future occurrence and say so. Emit event times in RFC3339 with a timezone offset.`,
+    `if a requested time has already passed, use the next future occurrence and say so.`,
+    `When scheduling, interpret the user's stated time as their LOCAL wall-clock time: emit startTime/endTime as a plain`,
+    `local datetime WITHOUT any "Z" or UTC offset (e.g. 2026-07-11T15:00:00), and${tz ? ` pass timeZone="${tz}"` : " pass the IANA timeZone"} so it lands correctly.`,
+    `Do NOT convert times to UTC yourself.`,
   ].join(" ");
 }
 
@@ -356,9 +359,10 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
       type: "object",
       properties: {
         title: { type: "string", description: "Meeting title." },
-        startTime: { type: "string", description: "Start time in RFC3339/ISO 8601 (e.g. 2026-07-07T15:00:00+06:00)." },
-        endTime: { type: "string", description: "End time in RFC3339/ISO 8601." },
-        attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses." },
+        startTime: { type: "string", description: "Local start time WITHOUT offset/Z, e.g. 2026-07-11T15:00:00." },
+        endTime: { type: "string", description: "Local end time WITHOUT offset/Z, e.g. 2026-07-11T16:00:00." },
+        timeZone: { type: "string", description: "IANA timezone the start/end are in, e.g. Asia/Dhaka — use the one from the current-time context." },
+        attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses (one or many)." },
         description: { type: "string", description: "Optional agenda/notes." },
       },
       required: ["title", "startTime", "endTime"],
@@ -884,6 +888,8 @@ export interface ExecuteContext {
   lon?: number;
   /** A file the user attached this turn — used by upload_to_drive (base64, no data: prefix). */
   attachment?: { base64: string; mimeType: string; name: string };
+  /** Caller's IANA timezone — anchors scheduled events to their real local time. */
+  tz?: string;
 }
 
 export interface ExecuteResult {
@@ -1240,6 +1246,7 @@ export async function executeAction(
           title: String(args.title ?? "Meeting"),
           startTime: String(args.startTime ?? ""),
           endTime: String(args.endTime ?? ""),
+          timeZone: args.timeZone ? String(args.timeZone) : ctx.tz,
           attendees,
           description: args.description ? String(args.description) : undefined,
         });
@@ -1764,7 +1771,7 @@ export async function command(
       history,
       isReadOnly: (name) => READ_ONLY_ACTIONS.has(name),
       execReadOnly: (name, args) =>
-        executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon, attachment: opts.attachment }),
+        executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon, attachment: opts.attachment, tz: opts.tz }),
       looksLikeAction: looksLikeActionRequest(message),
     });
 

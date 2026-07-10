@@ -186,7 +186,9 @@ export async function planAgentActions(params: {
     {
       text:
         `CONTEXT — the current date and time is ${new Date().toISOString()} (UTC). ` +
-        `Resolve relative dates against this and never schedule or create anything in the past.`,
+        `Resolve relative dates against this and never schedule or create anything in the past. ` +
+        `When scheduling, emit the user's intended time as a plain local wall-clock datetime WITHOUT a "Z" or UTC offset ` +
+        `(e.g. 2026-07-11T15:00:00) — the calendar applies the user's own timezone. Do not convert to UTC yourself.`,
     },
     { text: `DATA SNAPSHOT:\n${params.snapshot}` },
     ...(params.attachment

@@ -146,6 +146,7 @@ const ExecuteBody = z.object({
   args: z.record(z.unknown()).optional(),
   lat: z.number().optional(),
   lon: z.number().optional(),
+  tz: z.string().optional(),
   conversationId: z.string().optional(),
   // File bytes for upload_to_drive (the attachment the command was about).
   fileBase64: z.string().min(1).optional(),
@@ -159,11 +160,11 @@ router.post("/execute", async (req: Request, res: Response, next: NextFunction) 
     const parsed = ExecuteBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("name is required.");
 
-    const { name, args = {}, lat, lon, conversationId, fileBase64, fileMimeType, fileName } = parsed.data;
+    const { name, args = {}, lat, lon, tz, conversationId, fileBase64, fileMimeType, fileName } = parsed.data;
     const attachment = fileBase64
       ? { base64: fileBase64, mimeType: fileMimeType ?? "application/octet-stream", name: fileName ?? "Upload" }
       : undefined;
-    const result = await executeAction(user.id, name, args, { lat, lon, attachment });
+    const result = await executeAction(user.id, name, args, { lat, lon, tz, attachment });
     const links = deriveOpenLinks(name, args, result.data);
 
     // Record the outcome in the conversation so reopening the chat shows it.
