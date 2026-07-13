@@ -182,6 +182,24 @@ Workflow bodies (JSON): `prd_to_tickets` `{ notionPageId\|notionPageQuery, proje
 Sales exposes the same pattern via three agent tools (`sync_pipeline_to_trello`,
 `import_from_trello`, `post_pipeline_to_slack`) invoked through `POST /api/v1/professional/action`.
 
+### `/api/v1/composio` (brokered integrations — HubSpot, Stripe, Linear, Zoom, …)
+One `COMPOSIO_API_KEY` unlocks the whole catalog; Composio owns the OAuth apps, so there is **no
+per-vendor client id/secret and no app-side code exchange**. See [doc/composio-setup.md](doc/composio-setup.md).
+
+- `GET /toolkits` → `{ available, toolkits: [{ slug, name, description, audience, status }] }`.
+  `available: false` means the server has no Composio key. `status` is
+  `disconnected|pending|active|failed|revoked`.
+- `POST /connect` `{ toolkit }` → `{ redirectUrl }` — the Composio-hosted consent URL to open.
+  `503` when Composio isn't configured; `400` for an unknown toolkit slug.
+- `GET /connections` → `{ connections }` — **reconciles against Composio**, so this is the call that
+  flips a connection `pending` → `active`. The app polls it after the browser consent step.
+- `DELETE /connections/:toolkit` → `{ ok: true }` — revokes upstream at Composio, then marks the row
+  revoked locally.
+- `GET /callback` — public (no auth), no code exchange; just deep-links the browser back into the app.
+
+Connected toolkits' tools are merged into **both** command centers automatically (`UPPER_SNAKE`
+slugs like `HUBSPOT_CREATE_CONTACT`), scoped to connected toolkits and capped at 40 tools.
+
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.
 Not called directly — published to via `enqueueJob()`. See [CLAUDE.md](CLAUDE.md) for the retry contract.

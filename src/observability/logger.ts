@@ -18,9 +18,14 @@
  *
  * Set LOG_LEVEL env var to control minimum level (default: "info").
  *
- * Security: never pass raw secrets, tokens, or passwords into log data.
- * The logger does NOT scrub values automatically.
+ * Security: every record is piped through `redactLogRecord` before it is written, so
+ * emails, phone numbers, card/SSN-like numbers, bearer/provider tokens, and health or
+ * biometric markers (steps, heart rate, calories, sleep, glucose, …) can never be cached
+ * in Interlink logs — the HIPAA/GDPR requirement. Do not rely on that as an excuse to log
+ * secrets deliberately, but it is a hard backstop.
  */
+
+import { redactLogRecord } from "../security/redact";
 
 // ─── Level definitions ────────────────────────────────────────────────────────
 
@@ -91,9 +96,13 @@ export class Logger {
       Object.assign(record, data);
     }
 
+    // Hard backstop: scrub PII / health markers / secrets from EVERY record before it
+    // is written. No caller can accidentally cache sensitive data in the logs.
+    const safe = redactLogRecord(record);
+
     const line = this.isDev
-      ? prettyFormat(level, record)
-      : JSON.stringify(record);
+      ? prettyFormat(level, safe)
+      : JSON.stringify(safe);
 
     if (isError) {
       process.stderr.write(line + "\n");

@@ -239,6 +239,42 @@ export async function postMessage(
 }
 
 /**
+ * All the human-readable names a Slack member can be addressed by. Matching against
+ * only one field is the usual reason "DM Joel" fails: a person's full name often lives
+ * only in profile.real_name / profile.display_name while the top-level real_name is blank.
+ */
+function namesOf(u: SlackUser): string[] {
+  return [u.profileRealName, u.realName, u.displayName, u.name]
+    .map((n) => n.toLowerCase().replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Resolve a person from a free-text query. Tries, in order: exact match on any name
+ * field, whole-query substring, then token-based match (every word in the query appears
+ * in the person's names) so "joel" or "joel skaria" both resolve "Joel Skaria (he/him)".
+ * Token matching only counts when it lands on a single person — an ambiguous match
+ * (e.g. two "Joel"s) returns nothing rather than DMing the wrong human.
+ */
+export function findSlackUser(candidates: SlackUser[], q: string): SlackUser | undefined {
+  const query = q.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!query) return undefined;
+
+  const exact = candidates.find((u) => namesOf(u).includes(query));
+  if (exact) return exact;
+
+  const substring = candidates.find((u) => namesOf(u).some((n) => n.includes(query)));
+  if (substring) return substring;
+
+  const tokens = query.split(" ").filter(Boolean);
+  const tokenMatches = candidates.filter((u) => {
+    const names = namesOf(u);
+    return tokens.every((t) => names.some((n) => n.includes(t)));
+  });
+  return tokenMatches.length === 1 ? tokenMatches[0] : undefined;
+}
+
+/**
  * Send a direct message to a person by name (resolves them from the workspace member
  * list, opens the IM channel, then posts). This is what makes "DM Sarah that I'm running
  * late" work — plain channel posting can't reach a person's inbox.
@@ -248,15 +284,23 @@ export async function sendDirectMessage(
   personQuery: string,
   text: string,
 ): Promise<{ channel: string; ts: string; to: string }> {
-  const q = personQuery.trim().toLowerCase();
+  const q = personQuery.trim().toLowerCase().replace(/\s+/g, " ");
   if (!q) throw new BadRequestError("Tell me who to message.");
 
   const users = await getUsers(userId);
   const candidates = users.filter((u) => !u.isBot);
-  const match =
-    candidates.find((u) => u.realName.toLowerCase() === q || u.name.toLowerCase() === q) ??
-    candidates.find((u) => u.realName.toLowerCase().includes(q) || u.name.toLowerCase().includes(q));
-  if (!match) throw new BadRequestError(`I couldn't find "${personQuery}" in your Slack workspace.`);
+  const match = findSlackUser(candidates, q);
+  if (!match) {
+    const sample = candidates
+      .map((u) => u.profileRealName || u.realName || u.displayName || u.name)
+      .filter(Boolean)
+      .slice(0, 8)
+      .join(", ");
+    throw new BadRequestError(
+      `I couldn't find "${personQuery}" in your Slack workspace.` +
+        (sample ? ` People I can see: ${sample}.` : " I couldn't see any members — reconnect Slack in Connected Accounts to grant the users:read permission."),
+    );
+  }
 
   // Open (or fetch) the IM channel with that user, then post into it.
   const opened = await slackApi<{ channel?: { id?: string } }>(
@@ -289,18 +333,52 @@ export async function getRecentMessages(userId: string, channel: string, limit =
 
 export interface SlackUser {
   id: string;
+  /** Legacy @username handle (often "joel.skaria"). */
   name: string;
+  /** Top-level real name; frequently blank — prefer profileRealName. */
   realName: string;
+  /** profile.real_name — the reliable full name ("Joel Skaria"). */
+  profileRealName: string;
+  /** profile.display_name — what the person chose to show ("Joel"). */
+  displayName: string;
   isBot: boolean;
 }
 
+interface SlackMember {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  is_bot?: boolean;
+  deleted?: boolean;
+  profile?: { real_name?: string; display_name?: string };
+}
+
 export async function getUsers(userId: string): Promise<SlackUser[]> {
-  const data = await slackApi<{
-    members?: { id?: string; name?: string; real_name?: string; is_bot?: boolean; deleted?: boolean }[];
-  }>(userId, "users.list", { limit: "200" });
-  return (data.members ?? [])
+  // users.list is paginated: a single page (max 200) silently hides everyone after
+  // it, which is the usual reason a real member "can't be found". Follow the cursor.
+  const members: SlackMember[] = [];
+  let cursor: string | undefined;
+  do {
+    const params: Record<string, string> = { limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const data = await slackApi<{
+      members?: SlackMember[];
+      response_metadata?: { next_cursor?: string };
+    }>(userId, "users.list", params);
+    members.push(...(data.members ?? []));
+    cursor = data.response_metadata?.next_cursor || undefined;
+  } while (cursor && members.length < 5000);
+
+  return members
     .filter((m) => !m.deleted)
-    .map((m) => ({ id: m.id ?? "", name: m.name ?? "", realName: m.real_name ?? "", isBot: m.is_bot ?? false }));
+    .map((m) => ({
+      id: m.id ?? "",
+      name: m.name ?? "",
+      realName: m.real_name ?? "",
+      profileRealName: m.profile?.real_name ?? "",
+      displayName: m.profile?.display_name ?? "",
+      isBot: m.is_bot ?? false,
+    }));
 }
 
 // ─── Request signature verification (for a future events endpoint) ──────────────

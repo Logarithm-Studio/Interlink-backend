@@ -16,7 +16,9 @@ import {
   getProjects,
   searchIssues,
   createIssue as createJiraIssue,
+  deleteIssue as deleteJiraIssue,
 } from "../../jira/jira.service";
+import { runSaga, sagaStep, SagaError, describeSagaFailure } from "../../workflow/saga";
 import {
   searchPages,
   getPageContent,
@@ -136,14 +138,38 @@ export async function prdToTickets(
   }
   if (stories.length === 0) return { ok: false, message: "No user stories could be extracted from that PRD." };
 
+  // TRANSACTION BOUNDARY: creating N tickets is one logical action. Previously a failure
+  // partway through left the already-created tickets orphaned in Jira. Now it's atomic —
+  // if any ticket fails, every ticket created in this run is rolled back.
   const created: string[] = [];
-  for (const s of stories) {
-    try {
-      const issue = await createJiraIssue(user.id, { projectKey, summary: s.summary, description: s.description, issueType: "Story" });
-      created.push(issue.key || s.summary);
-    } catch {
-      /* skip a single failure, keep going */
-    }
+  try {
+    await runSaga(
+      "prd_to_tickets",
+      stories.map((s) =>
+        sagaStep<string>({
+          key: `jira:create:${s.summary.slice(0, 40)}`,
+          run: async () => {
+            const issue = await createJiraIssue(user.id, {
+              projectKey,
+              summary: s.summary,
+              description: s.description,
+              issueType: "Story",
+            });
+            const key = issue.key || s.summary;
+            created.push(key);
+            return key;
+          },
+          undo: async (key) => {
+            await deleteJiraIssue(user.id, key);
+            const i = created.indexOf(key);
+            if (i >= 0) created.splice(i, 1);
+          },
+        }),
+      ),
+    );
+  } catch (err) {
+    if (err instanceof SagaError) return { ok: false, message: describeSagaFailure(err) };
+    return { ok: false, message: "Jira rejected the tickets. Check the project key and permissions." };
   }
   if (created.length === 0) return { ok: false, message: "Jira rejected the tickets. Check the project key and permissions." };
 
@@ -191,20 +217,47 @@ export async function sprintInterruption(
 
   const summary = `[Critical] ${defect.split("\n")[0].slice(0, 120)}`;
   const description = `Flagged critical defect:\n${defect}\n\nCurrent developer workloads: ${workloadSummary}.\nSuggested owner (least-loaded): ${leastLoaded}.`;
+  const alertChannel = args.alertChannel ?? args.slackChannel;
+
+  // TRANSACTION BOUNDARY (see services/workflow/saga.ts): creating the Jira ticket and
+  // alerting Slack is a multi-app write. If the Slack alert fails AFTER the ticket is
+  // created, the ticket is deleted so we never leave orphaned/partial state behind.
   let ticketKey = "";
   try {
-    const issue = await createJiraIssue(user.id, { projectKey, summary, description, issueType: "Bug" });
-    ticketKey = issue.key;
-  } catch {
+    await runSaga("sprint_interruption", [
+      sagaStep<string>({
+        key: "jira:create-issue",
+        run: async () => {
+          const issue = await createJiraIssue(user.id, { projectKey, summary, description, issueType: "Bug" });
+          ticketKey = issue.key;
+          return issue.key;
+        },
+        undo: async (key) => {
+          await deleteJiraIssue(user.id, key);
+          ticketKey = "";
+        },
+      }),
+      ...(alertChannel
+        ? [
+            sagaStep<void>({
+              key: "slack:alert-team",
+              run: async () => {
+                await postMessage(
+                  user.id,
+                  alertChannel,
+                  `🚨 *Critical defect logged* — ${ticketKey}\n${summary}\nSuggested owner: *${leastLoaded}* (lightest load). Workloads — ${workloadSummary}.`,
+                );
+              },
+            }),
+          ]
+        : []),
+    ]);
+  } catch (err) {
+    if (err instanceof SagaError) return { ok: false, message: describeSagaFailure(err) };
     return { ok: false, message: "Couldn't create the Jira bug ticket. Check the project key and permissions." };
   }
 
-  const alertChannel = args.alertChannel ?? args.slackChannel;
   if (!alertChannel) return { ok: true, message: `Logged ${ticketKey} for the defect. Tell me a Slack channel to alert the team.` };
-  await postMessage(
-    user.id, alertChannel,
-    `🚨 *Critical defect logged* — ${ticketKey}\n${summary}\nSuggested owner: *${leastLoaded}* (lightest load). Workloads — ${workloadSummary}.`,
-  );
 
   await recordActivity({
     userId: user.id, persona: PERSONA, kind: "sprint_interruption",

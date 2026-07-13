@@ -317,6 +317,22 @@ export async function createIssue(
   };
 }
 
+/**
+ * Delete an issue by key. Used as the COMPENSATION step when a multi-app workflow
+ * fails after the ticket was created (see services/workflow/saga.ts) — without this
+ * a downstream failure would leave an orphaned Jira ticket behind.
+ */
+export async function deleteIssue(userId: string, issueKey: string): Promise<void> {
+  const res = await jiraFetch(userId, `/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: "DELETE",
+  });
+  // 204 = deleted. 404 = already gone (treat as success — the goal state is "absent").
+  if (!res.ok && res.status !== 404) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Failed to delete Jira issue ${issueKey}: ${t.slice(0, 200)}`);
+  }
+}
+
 /** Current authenticated Jira user (for connection verification). */
 export async function getMyself(userId: string): Promise<{ accountId: string; displayName: string; email: string | null }> {
   const res = await jiraFetch(userId, "/rest/api/3/myself");

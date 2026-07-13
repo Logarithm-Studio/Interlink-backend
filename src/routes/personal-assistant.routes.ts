@@ -9,6 +9,7 @@ import {
   chat,
   clearChatHistory,
   command,
+  deleteConversation,
   deriveOpenLinks,
   executeAction,
   getChatHistory,
@@ -73,6 +74,15 @@ router.get("/conversations/:id", async (req: Request, res: Response, next: NextF
   try {
     const messages = await getConversationMessages((req as AuthenticatedRequest).user.id, req.params.id);
     res.json({ messages });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/conversations/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await deleteConversation((req as AuthenticatedRequest).user.id, req.params.id);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

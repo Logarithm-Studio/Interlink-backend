@@ -68,13 +68,28 @@ import { isConnected, listIntegrationsForUser } from "../integrations/tokenStore
 import { getTokens } from "../auth.service";
 import { listGmailMailboxMessages, sendAutomatedGmailMessage } from "../googleApi.service";
 import { searchContacts, listContacts } from "../google/contacts.service";
-import { searchPages as searchNotionPages, getPageContent, createPage as createNotionPage } from "../notion/notion.service";
+import {
+  searchPages as searchNotionPages,
+  getPageContent,
+  createPage as createNotionPage,
+  getDatabases as getNotionDatabases,
+  appendToPage as appendToNotionPage,
+  createDatabaseRow as createNotionDatabaseRow,
+} from "../notion/notion.service";
 import {
   getChannels as getSlackChannels,
   postMessage as postSlackMessage,
   getUsers as getSlackUsers,
   sendDirectMessage as sendSlackDirectMessage,
 } from "../slack/slack.service";
+import {
+  getComposioToolsForUser,
+  executeComposioTool,
+  isComposioToolName,
+  isComposioReadOnlyTool,
+  summarizeComposioAction,
+  connectedToolkitNames,
+} from "../composio/composio.service";
 import { getRepos as getGitHubRepos, getIssues as getGitHubIssues, getPullRequests as getGitHubPullRequests, createIssue as createGitHubIssue } from "../pm/github.service";
 import { getProjects as getJiraProjects, searchIssues as searchJiraIssues, createIssue as createJiraIssue } from "../jira/jira.service";
 import { getBoards as getTrelloBoards, getListsForBoard, getCardsForBoard, createCard as createTrelloCard } from "../pm/trello.service";
@@ -92,6 +107,36 @@ const PROFESSION_CONTEXT: Record<string, string> = {
   educator: "The user is an educator. Prioritize class schedules, grading deadlines, and student communication.",
   general: "Help the user manage their personal life efficiently across calendar, tasks, notes, music, and fitness.",
 };
+
+/**
+ * Non-negotiable rules shared by EVERY agent (personal + all professional personas).
+ *
+ * These exist because the agent was refusing things it can actually do ("I lack the
+ * ability to send emails"), answering in shallow one-liners, and was unconstrained on
+ * link fabrication / sensitive data. Appended to every system prompt.
+ */
+export const GLOBAL_AGENT_RULES = [
+  "NON-NEGOTIABLE RULES:",
+  "1. CAPABILITY HONESTY — Never say you 'can't' or 'lack the ability' to do something your tools CAN do.",
+  "   You can: send email, read/search mail, analyze attached images and PDFs, schedule meetings with Meet links,",
+  "   manage calendar/tasks/files/notes, message people on Slack and WhatsApp, and work across GitHub/Jira/Trello/Notion.",
+  "   If an app the task needs is not connected yet, name that ONE app, offer to connect it, and STILL do everything",
+  "   you can right now (draft the email, prepare the content, outline the steps). Never answer with a bare refusal.",
+  "2. DEPTH — Reason the problem through properly and answer completely. For anything non-trivial, state your plan,",
+  "   then act, then say what you did and what's next. Structure longer answers with short headings or bullets.",
+  "   Never reply with a vague one-liner, a deflection, or a padded disclaimer. Being unhelpful is a failure.",
+  "3. NO HALLUCINATED LINKS — Never invent, guess, or infer a URL, file link, image reference, or citation.",
+  "   Only include a link that a tool returned this turn, that appears in the data snapshot, or that the user gave you.",
+  "   If you don't have a verified link, say so plainly instead of fabricating one.",
+  "4. PRIVACY — Treat health, biometric, financial and personal-contact data as sensitive. Use it to answer the",
+  "   question, but never echo raw sensitive values back beyond what the task actually needs.",
+  "5. PARTIAL PROGRESS BEATS REFUSAL — If you genuinely cannot complete the whole request, do the part you can and",
+  "   clearly state the single blocker and how to clear it.",
+  "6. NEVER FABRICATE ATTACHMENT CONTENT — If the user refers to 'this photo'/'this file' but NO attachment was",
+  "   provided in this turn, do NOT invent what it contains. Say plainly that nothing is attached and ask them to",
+  "   attach it. Only describe an image or document you were actually given. The same goes for any data you were",
+  "   not shown: never invent figures, names, contacts, or sources to fill a gap.",
+].join("\n");
 
 export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "Connected-app workflow rules:",
@@ -128,20 +173,32 @@ function buildSystemPrompt(persona: string): string {
   return `You are Interlink — the user's personal AI chief of staff. You are the reasoning brain; Interlink's tools are your hands. Your job is to understand what the user actually wants and GET IT DONE across their connected apps — not to describe what you would do.
 ${professionCtx}
 
-Apps you can act on (only when listed as connected in the "Connected apps" line each turn):
-Google Calendar, Gmail, Google Tasks, Google Drive, Google Meet, Google Fit, YouTube, YouTube Music,
-Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (send only), Spotify, Todoist, Notion, Slack,
-GitHub, Jira, Trello, and weather.
-For music requests, prefer YouTube Music (search_youtube_music) — note it returns a link to open, it does not start playback on a device. Spotify can control playback only when the user's Spotify is properly authorized.
-If the user asks about an app that isn't connected, say so briefly and offer to connect it — don't pretend.
+Apps you act on: Google Calendar, Gmail, Google Tasks, Google Drive, Google Meet, Google Fit, YouTube,
+YouTube Music, Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (send only), Spotify, Todoist,
+Notion, Slack, GitHub, Jira, Trello, and weather. The "Connected apps" line each turn tells you which are
+already authorized. If a task needs one that ISN'T connected, name it, offer to connect it, and still do
+everything you can right now — do NOT refuse the whole request.
+The user can also connect apps through Composio (Zoom, Calendly, Dropbox, Airtable, Telegram, Discord,
+HubSpot, Stripe, Linear, and more). Those tools appear as UPPER_SNAKE names prefixed with the app
+(e.g. CALENDLY_LIST_EVENTS) and are only usable when the app is named on the "Connected apps" line — if it
+isn't there, tell the user to connect it in Settings → Connected accounts.
+For music requests, prefer YouTube Music (search_youtube_music) — it returns a link to open, it does not start playback on a device. Spotify can control playback only when the user's Spotify is properly authorized.
 
-How to think each turn (reason step by step, silently, then act):
+How to think each turn:
 1. Infer the real goal. Use the conversation history to resolve references like "it", "the other one", "that deal", "there".
 2. Choose the app(s) and tool(s) that achieve it. For multi-step goals, chain discovery → action within the same turn.
 3. Gather missing IDs with discovery tools BEFORE acting — never ask for an ID you can look up, and never invent one.
 4. Act. Read/list/search tools answer immediately; write actions (create/send/post/play) are confirmed by the app.
+5. Then explain what you did (and what you'd do next) so the user is never left guessing.
+
+If a request is analytical rather than an app action (research, drafting, explaining, summarizing, building a
+document or a plan), just DO the work directly and thoroughly with your own reasoning — that is squarely in
+scope. Where you lack live data, be explicit about what is estimated vs. verified, and never invent figures,
+sources, or links.
 
 ${CONNECTED_APP_ORCHESTRATION_PROMPT}
+
+${GLOBAL_AGENT_RULES}
 
 Signature "life agent" behaviors — handle these proactively and thoroughly:
 - "Prepare/plan my day" → read the calendar and tasks (plus weather/fitness if relevant), then give a prioritized, time-blocked plan and offer to reschedule conflicts.
@@ -156,7 +213,9 @@ Mapping examples (natural phrasing → tool):
 - "what's on my calendar tomorrow" → get_calendar_events(days=1)
 - "create a card 'ship v2' on my roadmap board" → list_trello_boards → list_trello_lists → create_trello_card(…)
 
-Tone: warm, concise, and genuinely competent — like a sharp human assistant. Never robotic, never childish, never padded with disclaimers. Prefer doing over explaining.`;
+Tone: warm, sharp, and genuinely competent — like an excellent human chief of staff. Substance over brevity:
+be as thorough as the question deserves (a quick fact gets a quick answer; a real task gets a real, structured
+one). Never robotic, never childish, never padded with disclaimers, and never a one-line brush-off.`;
 }
 
 // ─── Tool declarations ────────────────────────────────────────────────────────
@@ -545,6 +604,40 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
     },
   },
   {
+    name: "append_to_notion_page",
+    description:
+      "Append content (markdown: headings, bullets, to-dos, code) to an EXISTING Notion page. Resolve the page with search_notion_pages first, or pass pageQuery to match by title.",
+    parameters: {
+      type: "object",
+      properties: {
+        pageId: { type: "string", description: "Notion page id (preferred)." },
+        pageQuery: { type: "string", description: "Title (or part) of the page to append to, if id unknown." },
+        content: { type: "string", description: "Markdown content to append." },
+      },
+      required: ["content"],
+    },
+  },
+  {
+    name: "list_notion_databases",
+    description: "List the user's Notion databases (id + title) — e.g. to add a row to a task/CRM database.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "add_notion_database_row",
+    description:
+      "Add a row (item) to a Notion database — e.g. a task, CRM contact, or tracker entry. Resolve the database id with list_notion_databases first, or pass databaseQuery to match by title.",
+    parameters: {
+      type: "object",
+      properties: {
+        databaseId: { type: "string", description: "Notion database id (preferred)." },
+        databaseQuery: { type: "string", description: "Title (or part) of the database, if id unknown." },
+        title: { type: "string", description: "The row's title/name." },
+        content: { type: "string", description: "Optional markdown body for the new row's page." },
+      },
+      required: ["title"],
+    },
+  },
+  {
     name: "post_slack_message",
     description: "Post a message to a Slack channel.",
     parameters: {
@@ -770,6 +863,15 @@ export async function connectedAppsSummary(userId: string): Promise<string> {
     logger.warn("[personal-assistant] connectedAppsSummary failed", { err: String(err) });
   }
 
+  // Composio-brokered apps (HubSpot, Stripe, Linear, …). The model only uses a tool if it
+  // knows the app is available — omitting these here is exactly the bug that made the
+  // Google-backed apps invisible to the agent (fixed 2026-07-05).
+  try {
+    apps.push(...(await connectedToolkitNames(userId)));
+  } catch (err) {
+    logger.warn("[personal-assistant] connectedAppsSummary composio failed", { err: String(err) });
+  }
+
   if (apps.length === 0) return "Connected apps: none.";
   return `Connected apps: ${apps.join(", ")}.`;
 }
@@ -844,6 +946,11 @@ export async function listConversations(userId: string): Promise<ConversationSum
     logger.warn("[personal-assistant] listConversations failed", { err: String(err) });
     return [];
   }
+}
+
+/** Delete a conversation and its messages (messages cascade). Scoped to the user. */
+export async function deleteConversation(userId: string, conversationId: string): Promise<void> {
+  await query(`DELETE FROM personal_conversations WHERE id = $1 AND user_id = $2`, [conversationId, userId]);
 }
 
 export async function getConversationMessages(
@@ -1464,6 +1571,47 @@ export async function executeAction(
         });
         return { ok: true, message: `Created Notion page: "${page.title}".`, data: page };
       }
+      case "append_to_notion_page": {
+        if (!(await isConnected(userId, "notion"))) {
+          return { ok: false, message: "Notion is not connected. Connect it from Settings → Connected Accounts." };
+        }
+        const content = String(args.content ?? "").trim();
+        if (!content) return { ok: false, message: "Tell me what content to append." };
+        let pageId = String(args.pageId ?? "").trim();
+        if (!pageId) {
+          const q = String(args.pageQuery ?? "").trim();
+          if (!q) return { ok: false, message: "Which Notion page? Give a page title or search Notion first." };
+          const pages = await searchNotionPages(userId, q);
+          pageId = pages[0]?.id ?? "";
+          if (!pageId) return { ok: false, message: `I couldn't find a Notion page matching "${q}".` };
+        }
+        await appendToNotionPage(userId, pageId, content);
+        return { ok: true, message: "Added that to your Notion page." };
+      }
+      case "list_notion_databases": {
+        const dbs = await getNotionDatabases(userId);
+        const message = linesOrNone(dbs, (d) => `- ${d.title} (${d.id})`, "No Notion databases found.");
+        return { ok: true, message, data: dbs };
+      }
+      case "add_notion_database_row": {
+        if (!(await isConnected(userId, "notion"))) {
+          return { ok: false, message: "Notion is not connected. Connect it from Settings → Connected Accounts." };
+        }
+        const title = String(args.title ?? "").trim();
+        if (!title) return { ok: false, message: "What should the new row be called?" };
+        let databaseId = String(args.databaseId ?? "").trim();
+        if (!databaseId) {
+          const q = String(args.databaseQuery ?? "").trim();
+          const dbs = await getNotionDatabases(userId);
+          const match = q
+            ? dbs.find((d) => d.title.toLowerCase().includes(q.toLowerCase())) ?? dbs[0]
+            : dbs[0];
+          databaseId = match?.id ?? "";
+          if (!databaseId) return { ok: false, message: "I couldn't find a Notion database to add to. List your databases first." };
+        }
+        const row = await createNotionDatabaseRow(userId, databaseId, title, args.content ? String(args.content) : undefined);
+        return { ok: true, message: `Added "${row.title}" to your Notion database.`, data: row };
+      }
       case "list_slack_channels": {
         const channels = await getSlackChannels(userId);
         const channelLines = linesOrNone(
@@ -1485,7 +1633,7 @@ export async function executeAction(
       case "list_slack_users": {
         const users = await getSlackUsers(userId);
         const people = users.filter((u) => !u.isBot);
-        const message = linesOrNone(people, (u) => `- ${u.realName || u.name} (@${u.name})`, "No Slack members found.", 15);
+        const message = linesOrNone(people, (u) => `- ${u.profileRealName || u.realName || u.displayName || u.name} (@${u.name})`, "No Slack members found.", 15);
         return { ok: true, message, data: people };
       }
       case "send_slack_dm": {
@@ -1590,6 +1738,9 @@ export async function executeAction(
         return { ok: true, message, data: messages };
       }
       default:
+        // Not a native tool. Composio-brokered tools (HubSpot, Stripe, Linear, …) are
+        // UPPER_SNAKE slugs and are dispatched to Composio rather than dead-ending here.
+        if (isComposioToolName(name)) return executeComposioTool(userId, name, args);
         return { ok: false, message: `Action "${name}" isn't supported yet.` };
     }
   } catch (err) {
@@ -1614,6 +1765,9 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "search_notion_pages": return `Search Notion for "${args.query ?? ""}"`;
     case "read_notion_page": return "Read a Notion page";
     case "create_notion_note": return `Create Notion note: "${args.title}"`;
+    case "append_to_notion_page": return `Add content to Notion page${args.pageQuery ? ` "${args.pageQuery}"` : ""}`;
+    case "list_notion_databases": return "List Notion databases";
+    case "add_notion_database_row": return `Add "${args.title ?? "a row"}" to a Notion database`;
     case "list_slack_channels": return "List Slack channels";
     case "post_slack_message": return `Post a message to Slack`;
     case "list_github_repos": return "List GitHub repositories";
@@ -1657,7 +1811,10 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "send_whatsapp_message": return `Send a WhatsApp message to ${args.to ?? "a number"}`;
     case "search_gmail_messages": return `Search Gmail for "${args.query ?? ""}"`;
     case "get_gmail_inbox": return "Check Gmail inbox";
-    default: return `Run ${name}`;
+    default:
+      // Composio-brokered tool — build the confirmation text from its slug + args.
+      if (isComposioToolName(name)) return summarizeComposioAction(name, args);
+      return `Run ${name}`;
   }
 }
 
@@ -1680,6 +1837,7 @@ export const READ_ONLY_ACTIONS = new Set([
   "list_todoist_tasks",
   "search_notion_pages",
   "read_notion_page",
+  "list_notion_databases",
   "list_slack_channels",
   "list_slack_users",
   "search_contacts",
@@ -1695,7 +1853,10 @@ export const READ_ONLY_ACTIONS = new Set([
 ]);
 
 export function isReadOnlyAction(name: string): boolean {
-  return READ_ONLY_ACTIONS.has(name);
+  // Composio tools are classified by their action verb (GET_/LIST_/SEARCH_/…), defaulting
+  // to WRITE — so an unrecognized connector action goes through user confirmation rather
+  // than being auto-run mid-chain.
+  return READ_ONLY_ACTIONS.has(name) || isComposioReadOnlyTool(name);
 }
 
 export interface CommandOptions {
@@ -1721,6 +1882,19 @@ function looksLikeActionRequest(message: string): boolean {
   return ACTION_INTENT_PATTERN.test(message);
 }
 
+/**
+ * The user pointed at an attachment ("analyze this photo…") but didn't actually send one.
+ *
+ * A prompt rule alone does NOT stop this — verified live: Gemini happily invents a business
+ * card's contents and emails it. So we hard-block it in code before the model ever runs.
+ */
+const ATTACHMENT_REFERENCE_RE =
+  /\b(?:this|that|the|attached|uploaded|following)\s+(?:photo|image|picture|pic|screenshot|file|document|doc|pdf|receipt|invoice|card|scan)\b|\battachment\b/i;
+
+export function mentionsMissingAttachment(message: string, hasAttachment: boolean): boolean {
+  return !hasAttachment && ATTACHMENT_REFERENCE_RE.test(message);
+}
+
 export async function command(
   userId: string,
   message: string,
@@ -1739,6 +1913,17 @@ export async function command(
     await persistMessage(userId, "user", message, convId);
     await persistMessage(userId, "assistant", answer, convId);
     return { answer, action: null, isLive: false, conversationId: convId };
+  }
+
+  // Hard guard: never let the model invent the contents of an attachment that wasn't sent.
+  if (mentionsMissingAttachment(message, Boolean(opts.image || opts.attachment))) {
+    const answer =
+      "I don't see an attachment on that message — nothing came through.\n\n" +
+      "Tap the **+** button to attach the photo or file, then send it again. I'll read it properly and take it from there.\n\n" +
+      "I won't guess at what's in it — I'd rather ask than invent details.";
+    await persistMessage(userId, "user", message, convId);
+    await persistMessage(userId, "assistant", answer, convId);
+    return { answer, action: null, isLive: true, conversationId: convId };
   }
 
   const persona = await getPersonalPersona(userId);
@@ -1763,13 +1948,17 @@ export async function command(
   const history = await getConversationTurns(userId, convId, 8);
   await persistMessage(userId, "user", message, convId);
 
+  // Composio tools for the toolkits this user actually connected (budgeted + cached).
+  // Empty when Composio is off or nothing is connected, so the native surface is unchanged.
+  const composioTools = await getComposioToolsForUser(userId);
+
   try {
     const outcome = await runAgentTurn({
       system: systemPrompt,
-      tools: PERSONAL_TOOLS,
+      tools: [...PERSONAL_TOOLS, ...composioTools],
       userParts: parts,
       history,
-      isReadOnly: (name) => READ_ONLY_ACTIONS.has(name),
+      isReadOnly: isReadOnlyAction,
       execReadOnly: (name, args) =>
         executeAction(userId, name, args, { lat: opts.lat, lon: opts.lon, attachment: opts.attachment, tz: opts.tz }),
       looksLikeAction: looksLikeActionRequest(message),

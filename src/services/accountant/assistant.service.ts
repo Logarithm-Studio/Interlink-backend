@@ -16,16 +16,31 @@ import { getVertical } from "../professional/registry";
 import { AGENT_SYSTEM, AGENT_TOOLS, summarizeAction, isMoneyAdjacent } from "../ai/prompts/agentTools";
 import {
   CONNECTED_APP_ORCHESTRATION_PROMPT,
+  GLOBAL_AGENT_RULES,
   connectedAppsSummary,
   executeAction as executePersonalAction,
   isReadOnlyAction as isReadOnlyPersonalAction,
+  mentionsMissingAttachment,
   PERSONAL_TOOLS,
   summarizeAction as summarizePersonalAction,
 } from "../personal-assistant/personal-assistant.service";
+import {
+  getComposioToolsForUser,
+  executeComposioTool,
+  isComposioToolName,
+  summarizeComposioAction,
+} from "../composio/composio.service";
 import { bulkSendReminders, sendInvoiceReminder } from "./dunning.service";
 import { runExpenseAudit } from "./expenses.service";
 import { emailFlashReport } from "./reporting.service";
 import { listContractors, needsW9, sendW9Request } from "./tax.service";
+import {
+  buildAdvisorSnapshot,
+  prepareMeetingPacket,
+  sendClientCommunication,
+  resolveCompliance,
+  type ComplianceType,
+} from "./advisor.service";
 import {
   setClientDunningPaused,
   updateAutomation,
@@ -55,6 +70,10 @@ async function buildSnapshot(userId: string): Promise<string> {
 
   const fmt = (c: number) => `${(c / 100).toFixed(2)} ${currency}`;
 
+  // Advisory book (portfolios + compliance) grounds the Financial Advisor persona so it
+  // can ANSWER portfolio/compliance questions without a tool round-trip.
+  const advisory = await buildAdvisorSnapshot(userId).catch(() => "");
+
   return [
     `Outstanding receivables: ${fmt(outstanding)} across ${active.length} invoice(s); ${overdue.length} overdue.`,
     "Overdue invoices:",
@@ -68,6 +87,7 @@ async function buildSnapshot(userId: string): Promise<string> {
     ...flagged
       .slice(0, 8)
       .map((e) => `- FLAGGED ${e.merchant} ${fmt(e.amountCents)} — ${e.flagReason ?? "review"}`),
+    ...(advisory ? ["", advisory] : []),
   ].join("\n");
 }
 
@@ -197,6 +217,11 @@ export async function listConversations(
   return res.rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }));
 }
 
+/** Delete a conversation and its messages (messages cascade). Scoped to the user. */
+export async function deleteConversation(userId: string, conversationId: string): Promise<void> {
+  await query(`DELETE FROM accountant_conversations WHERE id = $1 AND user_id = $2`, [conversationId, userId]);
+}
+
 /** Fetch the messages of one conversation (oldest first), scoped to the user. */
 export async function getConversationMessages(
   userId: string,
@@ -215,7 +240,7 @@ export async function getConversationMessages(
 
 /** A user's Professional-Mode persona (defaults to finance). */
 const PERSONA_LABELS: Record<string, string> = {
-  finance: "Finance / Accountant",
+  finance: "Financial Advisor",
   product_manager: "Product Manager",
   hr: "HR",
   sales: "Sales",
@@ -247,11 +272,23 @@ const PERSONAL_TOOLS_NOTE = [
   "- Schedule Google Meet meetings and invite multiple attendees at once; manage Google Calendar, Tasks, Drive (find/upload/share/delete one or many files), Notion, Todoist, Trello, Jira, GitHub.",
   "- Message teams and people on Slack: post_slack_message for channels, send_slack_dm to reach a person's inbox by name.",
   "- Spotify/YouTube, weather, and fitness for lighter requests.",
+  "- Any app the user connected via Composio (HubSpot, Salesforce, Stripe, Zendesk, Linear, Zoom, …) appears",
+  "  as an UPPER_SNAKE tool prefixed with the app name (e.g. HUBSPOT_CREATE_CONTACT). Only the apps named on the",
+  "  'Connected apps' line are actually available — use them for CRM, billing, ticketing and issue-tracker work.",
 ].join("\n");
 
-function professionalToolsWithPersonal(tools: typeof PERSONAL_TOOLS): typeof PERSONAL_TOOLS {
+/**
+ * The tool surface for a professional persona: its own tools + the personal toolkit +
+ * whatever Composio toolkits the user connected. Every persona (finance and all five
+ * verticals) goes through here, so connecting HubSpot once lights it up everywhere.
+ */
+async function professionalToolsWithPersonal(
+  userId: string,
+  tools: typeof PERSONAL_TOOLS,
+): Promise<typeof PERSONAL_TOOLS> {
+  const composioTools = await getComposioToolsForUser(userId);
   const seen = new Set<string>();
-  return [...tools, ...PERSONAL_TOOLS].filter((tool) => {
+  return [...tools, ...PERSONAL_TOOLS, ...composioTools].filter((tool) => {
     if (seen.has(tool.name)) return false;
     seen.add(tool.name);
     return true;
@@ -263,6 +300,7 @@ function summarizeProfessionalAction(
   args: Record<string, unknown>,
   verticalSummary?: (name: string, args: Record<string, unknown>) => string,
 ): string {
+  if (isComposioToolName(name)) return summarizeComposioAction(name, args);
   if (PERSONAL_TOOL_NAMES.has(name)) return summarizePersonalAction(name, args);
   return verticalSummary ? verticalSummary(name, args) : summarizeAction(name, args);
 }
@@ -310,6 +348,21 @@ export async function command(
   attachment?: { data: string; mimeType: string },
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
+
+  // Hard guard: never let the model invent the contents of an attachment that wasn't sent
+  // (verified live — a prompt rule alone does not stop Gemini fabricating a document).
+  if (mentionsMissingAttachment(message, Boolean(attachment))) {
+    const answer =
+      "I don't see an attachment on that message — nothing came through.\n\n" +
+      "Tap the **+** button to attach the file or photo, then send it again. I'd rather ask than invent its contents.";
+    await query(
+      `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
+       VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
+      [userId, message, answer, convId],
+    ).catch(() => {});
+    return { answer, action: null, isLive: true, conversationId: convId };
+  }
+
   const persona = await getProfessionalPersona(userId);
 
   // Non-finance roles are served by their persona vertical: agentic tools +
@@ -322,8 +375,8 @@ export async function command(
       const plan = await planAgentActions({
         message,
         snapshot,
-        tools: professionalToolsWithPersonal(vertical.tools),
-        system: `${vertical.systemPrompt}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
+        tools: await professionalToolsWithPersonal(userId, vertical.tools),
+        system: `${vertical.systemPrompt}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
         attachment,
         history,
         isReadOnly: isReadOnlyPersonalAction,
@@ -386,8 +439,8 @@ export async function command(
   const plan = await planAgentActions({
     message,
     snapshot,
-    tools: professionalToolsWithPersonal(AGENT_TOOLS),
-    system: `${AGENT_SYSTEM}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}`,
+    tools: await professionalToolsWithPersonal(userId, AGENT_TOOLS),
+    system: `${AGENT_SYSTEM}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
     attachment,
     history: financeHistory,
     isReadOnly: isReadOnlyPersonalAction,
@@ -436,6 +489,10 @@ export async function executeAction(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ ok: boolean; message: string }> {
+  // Composio-brokered tools are persona-agnostic — a connected HubSpot works the same for
+  // finance and every vertical — so dispatch them before the persona branch.
+  if (isComposioToolName(name)) return executeComposioTool(user.id, name, args);
+
   // Non-finance personas dispatch to their vertical's tool executor.
   const persona = await getProfessionalPersona(user.id);
   if (persona !== "finance") {
@@ -533,6 +590,26 @@ export async function executeAction(
           }
         }
         return { ok: true, message: `Requested W-9 tax docs from ${sent} contractor${sent === 1 ? "" : "s"}.` };
+      }
+      case "prepare_meeting_packet": {
+        const clientName = String(args.clientName ?? "").trim();
+        if (!clientName) return { ok: false, message: "Which client should I prepare a packet for?" };
+        const packet = await prepareMeetingPacket(user, clientName);
+        return { ok: true, message: `Meeting packet for ${packet.clientName} emailed to ${packet.emailedTo}.` };
+      }
+      case "send_client_update": {
+        const clientName = String(args.clientName ?? "").trim();
+        if (!clientName) return { ok: false, message: "Which client should I email?" };
+        const sent = await sendClientCommunication(user, clientName, args.topic ? String(args.topic) : undefined);
+        return { ok: true, message: `Sent "${sent.subject}" to ${sent.recipients.join(", ")}.` };
+      }
+      case "resolve_compliance": {
+        const res = await resolveCompliance(user.id, {
+          clientRef: args.clientName ? String(args.clientName) : undefined,
+          type: args.type ? (String(args.type) as ComplianceType) : undefined,
+        });
+        if (res.resolved === 0) return { ok: false, message: "No matching open compliance actions to resolve." };
+        return { ok: true, message: `Marked ${res.resolved} compliance action(s) done: ${res.titles.join(", ")}.` };
       }
       case "pause_client": {
         const clientName = String(args.clientName ?? "");

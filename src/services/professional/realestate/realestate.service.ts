@@ -10,8 +10,17 @@ import { sendProfessionalEmail } from "../email";
 import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
+import { getMarketStats, isRentCastConfigured, searchListings, type MarketListing } from "./rentcast.service";
 
 const PERSONA = "real_estate";
+
+const usd = (cents: number): string => `$${Math.round(cents / 100).toLocaleString("en-US")}`;
+
+/** Pull a bedroom count out of free-text interest ("3bd near downtown" → 3). */
+function bedsFromInterest(interest: string | null): number | null {
+  const m = (interest ?? "").match(/(\d+)\s*(?:bd|bed|bedroom)/i);
+  return m ? Number(m[1]) : null;
+}
 
 export type ListingStatus = "draft" | "active" | "pending" | "sold";
 export type LeadStage = "new" | "qualified" | "touring" | "offer" | "closed" | "lost";
@@ -134,6 +143,9 @@ async function buildSnapshot(userId: string): Promise<string> {
   const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US")}`;
   return [
     `Active listings: ${active.length}. Leads: ${leads.length}.`,
+    isRentCastConfigured()
+      ? "Live market data (RentCast) is connected: you can search_market for external for-sale listings and market_report for area stats by ZIP."
+      : "RentCast market data is NOT connected — search_market/market_report are unavailable until RENTCAST_API_KEY is set.",
     "Listings:",
     ...listings.slice(0, 15).map((l) => `- ${l.address} | ${fmt(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
     "Leads:",
@@ -144,6 +156,8 @@ async function buildSnapshot(userId: string): Promise<string> {
 const SYSTEM_PROMPT = [
   "You are the user's AI real-estate assistant inside the Interlink app.",
   "Answer questions about listings/leads using ONLY the DATA SNAPSHOT, or perform ONE action by calling a function when asked.",
+  "You can match buyer leads to the agent's listings (match_buyers), search live for-sale inventory",
+  "(search_market — needs a city/state or ZIP), and produce an area market report by ZIP (market_report).",
   "Never invent properties or leads. You never send anything yourself — the app confirms before executing.",
 ].join("\n");
 
@@ -153,7 +167,10 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "qualify_lead", description: "Move a buyer lead to a new stage.", parameters: { type: "object", properties: { name: { type: "string" }, stage: { type: "string", enum: ["new", "qualified", "touring", "offer", "closed", "lost"] } }, required: ["name", "stage"] } },
   { name: "follow_up_lead", description: "Draft and send a follow-up email to a buyer lead.", parameters: { type: "object", properties: { name: { type: "string" }, note: { type: "string" } }, required: ["name"] } },
   { name: "schedule_showing", description: "Record a property showing for a lead.", parameters: { type: "object", properties: { address: { type: "string" }, leadName: { type: "string" }, when: { type: "string", description: "ISO datetime." } }, required: ["address"] } },
-  { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." } }, required: ["property"] } },
+  { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant. Optionally pass the property's ZIP to factor localized market pricing trends into the renewal terms.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." }, zipCode: { type: "string", description: "Property ZIP — pulls localized pricing trends (RentCast) to inform the renewal." } }, required: ["property"] } },
+  { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
+  { name: "search_market", description: "Search live for-sale market listings (RentCast). Provide a city+state or a ZIP code.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number" }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
+  { name: "market_report", description: "Generate an area market report (average/median sale price, inventory) for a ZIP code using RentCast.", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
@@ -164,6 +181,9 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "follow_up_lead": return `Draft & send a follow-up to ${args.name ?? "the lead"}.`;
     case "schedule_showing": return `Record a showing at ${args.address ?? "the property"}.`;
     case "lease_renewal": return `Draft & send a renewal for ${args.property ?? "the lease"}.`;
+    case "match_buyers": return args.name ? `Match ${args.name} to your listings.` : "Match your buyer leads to your listings.";
+    case "search_market": return `Search the market${args.zipCode ? ` in ${args.zipCode}` : args.city ? ` in ${args.city}${args.state ? `, ${args.state}` : ""}` : ""}.`;
+    case "market_report": return `Generate a market report for ${args.zipCode ?? "the area"}.`;
     default: return `Run ${name}.`;
   }
 }
@@ -212,10 +232,79 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         const l = leases.find((x) => x.property.toLowerCase().includes(String(args.property ?? "").toLowerCase()));
         if (!l) return { ok: false, message: "Couldn't find that lease." };
         if (!l.tenantEmail) return { ok: false, message: `No tenant email on file for ${l.property}.` };
-        const draft = await draftEmail({ role: "property manager", purpose: "a friendly lease-renewal offer", context: `Property: ${l.property}. Tenant: ${l.tenantName ?? ""}. Lease ends ${l.endDate ?? "soon"}. Current rent ${l.rentCents ? `$${(l.rentCents / 100).toLocaleString("en-US")}/mo` : "unknown"}.` });
+        // PRD: pull localized pricing trends to inform renewal terms when a ZIP is given.
+        let marketContext = "";
+        const zip = String(args.zipCode ?? "").trim();
+        if (zip && isRentCastConfigured()) {
+          const stats = await getMarketStats(zip);
+          if (stats?.averagePriceCents) {
+            marketContext = ` Localized market (ZIP ${stats.zipCode}): average sale price ${usd(stats.averagePriceCents)}${stats.averagePricePerSqftCents ? `, ~${usd(stats.averagePricePerSqftCents)}/sqft` : ""}${stats.totalListings != null ? `, ${stats.totalListings} active listings` : ""} — factor this into a fair renewal adjustment.`;
+          }
+        }
+        const draft = await draftEmail({ role: "property manager", purpose: "a friendly lease-renewal offer", context: `Property: ${l.property}. Tenant: ${l.tenantName ?? ""}. Lease ends ${l.endDate ?? "soon"}. Current rent ${l.rentCents ? `$${(l.rentCents / 100).toLocaleString("en-US")}/mo` : "unknown"}.${marketContext}` });
         await sendProfessionalEmail({ user, to: l.tenantEmail, subject: draft.subject, body: draft.body, tag: "re_lease_renewal" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "lease_renewal_sent", title: `Renewal sent for ${l.property}`, detail: draft.subject, entityType: "re_lease", entityId: l.id });
         return { ok: true, message: `Renewal sent to ${l.tenantName ?? "tenant"}.` };
+      }
+      case "match_buyers": {
+        const [leads, listings] = await Promise.all([listLeads(user.id), listListings(user.id)]);
+        const inventory = listings.filter((l) => l.status === "active" || l.status === "pending");
+        if (inventory.length === 0) return { ok: false, message: "You have no active listings to match against." };
+        const targetName = String(args.name ?? "").trim().toLowerCase();
+        const buyers = leads
+          .filter((l) => l.stage !== "closed" && l.stage !== "lost")
+          .filter((l) => (targetName ? l.name.toLowerCase().includes(targetName) : true));
+        if (buyers.length === 0) return { ok: false, message: targetName ? `No active buyer lead named "${args.name}".` : "No active buyer leads to match." };
+
+        const blocks: string[] = [];
+        for (const b of buyers) {
+          const wantBeds = bedsFromInterest(b.interest);
+          const matches = inventory
+            .filter((l) => (b.budgetCents ? l.priceCents <= b.budgetCents : true))
+            .filter((l) => (wantBeds != null && l.beds != null ? l.beds >= wantBeds : true))
+            .sort((a, c) => c.priceCents - a.priceCents) // best they can afford first
+            .slice(0, 3);
+          const lines = matches.length
+            ? matches.map((l) => `   • ${l.address} — ${usd(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba`).join("\n")
+            : "   • (no current listing fits their budget/criteria)";
+          blocks.push(`${b.name}${b.budgetCents ? ` (budget ${usd(b.budgetCents)}${wantBeds ? `, ${wantBeds}bd+` : ""})` : ""}:\n${lines}`);
+        }
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "buyers_matched", title: `Matched ${buyers.length} buyer(s) to listings` });
+        return { ok: true, message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}` };
+      }
+      case "search_market": {
+        if (!isRentCastConfigured()) return { ok: false, message: "RentCast isn't connected. Set RENTCAST_API_KEY to search live market listings." };
+        const results: MarketListing[] = await searchListings({
+          city: args.city ? String(args.city) : undefined,
+          state: args.state ? String(args.state) : undefined,
+          zipCode: args.zipCode ? String(args.zipCode) : undefined,
+          beds: typeof args.beds === "number" ? args.beds : undefined,
+          maxPriceDollars: typeof args.maxPrice === "number" ? args.maxPrice : undefined,
+          limit: 15,
+        });
+        if (results.length === 0) return { ok: true, message: "No active market listings matched that search (or the area returned no data)." };
+        const lines = results.map((l) => `- ${l.address} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);
+        return { ok: true, message: `Found ${results.length} for-sale listing(s):\n${lines.join("\n")}` };
+      }
+      case "market_report": {
+        const zip = String(args.zipCode ?? "").trim();
+        if (!zip) return { ok: false, message: "Which ZIP code should I report on?" };
+        if (!isRentCastConfigured()) return { ok: false, message: "RentCast isn't connected. Set RENTCAST_API_KEY to generate market reports." };
+        const s = await getMarketStats(zip);
+        if (!s) return { ok: true, message: `No market data is available for ${zip} right now.` };
+        const line = (label: string, cents: number | null) => (cents != null ? `- ${label}: ${usd(cents)}` : null);
+        const body = [
+          `Market report — ${s.zipCode}`,
+          line("Average sale price", s.averagePriceCents),
+          line("Median sale price", s.medianPriceCents),
+          line("Price range", s.minPriceCents),
+          s.maxPriceCents != null ? `  to ${usd(s.maxPriceCents)}` : null,
+          line("Avg price / sqft", s.averagePricePerSqftCents),
+          s.totalListings != null ? `- Active listings: ${s.totalListings}` : null,
+          s.newListings != null ? `- New this period: ${s.newListings}` : null,
+        ].filter(Boolean).join("\n");
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${s.zipCode}` });
+        return { ok: true, message: body };
       }
       default:
         return { ok: false, message: `Unsupported action: ${name}.` };

@@ -210,6 +210,40 @@ export async function getIssues(userId: string, owner: string, repo: string): Pr
     }));
 }
 
+// ─── Commits (contribution tracking) ────────────────────────────────────────
+
+export interface GitHubCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+  htmlUrl: string;
+}
+
+/** Recent commits on a repo's default branch (newest first) — for contribution tracking. */
+export async function getRecentCommits(
+  userId: string,
+  owner: string,
+  repo: string,
+  limit = 15,
+): Promise<GitHubCommit[]> {
+  const res = await ghFetch(userId, `/repos/${owner}/${repo}/commits?per_page=${limit}`);
+  if (!res.ok) return [];
+  const items = (await res.json()) as {
+    sha?: string;
+    html_url?: string;
+    commit?: { message?: string; author?: { name?: string; date?: string } };
+    author?: { login?: string } | null;
+  }[];
+  return items.map((c) => ({
+    sha: (c.sha ?? "").slice(0, 7),
+    message: (c.commit?.message ?? "").split("\n")[0],
+    author: c.author?.login ?? c.commit?.author?.name ?? "",
+    date: c.commit?.author?.date ?? "",
+    htmlUrl: c.html_url ?? "",
+  }));
+}
+
 export async function createIssue(
   userId: string,
   owner: string,

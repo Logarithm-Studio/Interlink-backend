@@ -10,10 +10,16 @@
 import type { GeminiToolFunction } from "../geminiClient";
 
 export const AGENT_SYSTEM = [
-  "You are the user's AI accountant agent inside the Interlink app.",
-  "You can (a) ANSWER questions about their accounts-receivable and expenses using ONLY the DATA SNAPSHOT,",
+  "You are the user's AI Financial Advisor agent inside the Interlink app.",
+  "You can (a) ANSWER questions about their advisory book (client portfolios + compliance) and their",
+  "accounts-receivable/expenses using ONLY the DATA SNAPSHOT,",
   "and (b) PERFORM an action by calling a function when the user clearly asks you to do something.",
   "Your capabilities:",
+  "- Portfolio analysis: ANSWER from the snapshot — each client shows allocation vs. target and drift (pp);",
+  "  flag anyone marked REBALANCE and explain which asset class drifted.",
+  "- Meeting prep: prepare_meeting_packet builds a per-client briefing and emails it to the advisor.",
+  "- Client communications: send_client_update drafts and sends a client-facing portfolio update email.",
+  "- Compliance: ANSWER which actions are due from the snapshot; resolve_compliance marks matching items done.",
   "- Dunning: send_reminder (one client) / remind_all_overdue (every overdue client), with an escalation tone.",
   "- Expense auditing: run_expense_audit flags anomalous expenses.",
   "- Flash reporting: email_flash_report sends the AR + expense + cash-runway summary.",
@@ -78,6 +84,45 @@ export const AGENT_TOOLS: GeminiToolFunction[] = [
     },
   },
   {
+    name: "prepare_meeting_packet",
+    description:
+      "Build a client meeting packet (portfolio allocation vs. target, drift, top holdings, open compliance items, talking points) and email it to the advisor. Resolve the client from the snapshot by name.",
+    parameters: {
+      type: "object",
+      properties: { clientName: { type: "string", description: "The advisory client's name (from the snapshot)." } },
+      required: ["clientName"],
+    },
+  },
+  {
+    name: "send_client_update",
+    description:
+      "Draft and send a client-facing portfolio update email to an advisory client. Use for 'send/email <client> a quarterly update / market note'.",
+    parameters: {
+      type: "object",
+      properties: {
+        clientName: { type: "string", description: "The advisory client's name (must have an email on file)." },
+        topic: { type: "string", description: "Optional subject/topic, e.g. 'Quarterly update' (default)." },
+      },
+      required: ["clientName"],
+    },
+  },
+  {
+    name: "resolve_compliance",
+    description:
+      "Mark open compliance action(s) as done. Optionally scope to one client and/or one type (kyc_refresh, suitability_review, adv_disclosure, rmd, beneficiary).",
+    parameters: {
+      type: "object",
+      properties: {
+        clientName: { type: "string", description: "Optional client to scope to." },
+        type: {
+          type: "string",
+          enum: ["kyc_refresh", "suitability_review", "adv_disclosure", "rmd", "beneficiary"],
+          description: "Optional compliance type to scope to.",
+        },
+      },
+    },
+  },
+  {
     name: "set_automation",
     description: "Set an automation's autonomy level (off/suggest/auto).",
     parameters: {
@@ -100,6 +145,9 @@ export type AgentActionName =
   | "run_expense_audit"
   | "email_flash_report"
   | "gather_tax_docs"
+  | "prepare_meeting_packet"
+  | "send_client_update"
+  | "resolve_compliance"
   | "pause_client"
   | "set_automation";
 
@@ -119,6 +167,12 @@ export function summarizeAction(
       return "Email you the flash financial report.";
     case "gather_tax_docs":
       return `Request W-9 tax docs from ${args.contractorName ?? "all contractors over the threshold"}.`;
+    case "prepare_meeting_packet":
+      return `Prepare a meeting packet for ${args.clientName ?? "the client"} and email it to you.`;
+    case "send_client_update":
+      return `Send ${args.clientName ?? "the client"} a ${args.topic ?? "portfolio update"} email.`;
+    case "resolve_compliance":
+      return `Mark ${args.type ? `${args.type} ` : ""}compliance action(s)${args.clientName ? ` for ${args.clientName}` : ""} as done.`;
     case "pause_client":
       return `Pause automated reminders for ${args.clientName ?? "this client"}.`;
     case "set_automation":

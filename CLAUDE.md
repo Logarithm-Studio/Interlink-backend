@@ -119,6 +119,57 @@ see `src/services/email/templates.service.ts`.
 `src/services/ai/` wraps OpenAI (`openai` SDK) with Zod-validated outputs and prompt modules
 (e.g. `prompts/emailConflict.ts`). AI is a supporting feature, not the required MVP path.
 
+### Composio — the brokered long tail of integrations
+[composio.service.ts](src/services/composio/composio.service.ts) + `/api/v1/composio/*`
+([composio.routes.ts](src/routes/composio.routes.ts)). One `COMPOSIO_API_KEY` unlocks HubSpot,
+Salesforce, Stripe, Zendesk, Intercom, QuickBooks, Linear, Asana, Greenhouse, DocuSign, Mailchimp,
+Zoom, Calendly, Dropbox, Airtable, Telegram, Discord — Composio owns the OAuth apps, so **we
+register no OAuth app and store no tokens** (`composio_connections`, migration `060`, holds only a
+pointer). Setup + costs: [doc/composio-setup.md](doc/composio-setup.md).
+
+**Strictly additive.** The native integrations above (Google, Slack, Notion, Jira, GitHub, Trello,
+Todoist, Spotify, Microsoft) are untouched: they are deeper than a generic connector and cost zero
+metered Composio calls. Composio is a second tool source on the same agent loop.
+
+Four things worth knowing before touching it:
+- **Tool budget.** Gemini function-calling degrades past a few dozen declarations. Tools are loaded
+  only for the toolkits a user actually connected, capped (40 total / 12 per toolkit) and cached
+  5 min. Never load the whole catalog.
+- **Schema sanitizer.** `toGeminiSchema()` is load-bearing: Composio emits full JSON Schema and
+  Gemini accepts only an OpenAPI-3.0 subset, so one unsanitized connector schema HTTP-400s the
+  entire turn — including every native tool in the same request.
+- **Naming is the dispatch key.** Composio slugs are `UPPER_SNAKE` (`HUBSPOT_CREATE_CONTACT`);
+  native tools are `lower_snake` (`send_gmail`). `isComposioToolName()` routes on that in the
+  `default:` arm of both `executeAction` switches.
+- **Read-only defaults to WRITE.** Only `GET_/LIST_/SEARCH_/…` verbs auto-chain; anything else goes
+  through confirm-before-execute. Deliberate — auto-running an unknown `STRIPE_CREATE_REFUND` is not
+  an acceptable failure mode.
+
+With `COMPOSIO_API_KEY` unset every function degrades to empty/not-connected and the assistant
+behaves exactly as before (same contract as `rentcast.service.ts`).
+
+### Professional Mode — Financial Advisor (finance persona)
+The `finance` persona is branded **Financial Advisor** (label/copy only — the persona key, routes, and
+tables stay `finance`/`accountant*`). On top of the AR/expense engine it has an advisory book:
+[advisor.service.ts](src/services/accountant/advisor.service.ts) over `advisor_clients` / `advisor_holdings`
+/ `advisor_compliance_items` (migration `059`). Portfolio analysis is **deterministic** (allocation vs.
+risk-profile target + drift) and folded into the finance agent's snapshot in
+[assistant.service.ts](src/services/accountant/assistant.service.ts) `buildSnapshot`, so the agent *answers*
+portfolio/compliance questions with no tool call. The action tools (`prepare_meeting_packet`,
+`send_client_update`, `resolve_compliance`) live in [agentTools.ts](src/services/ai/prompts/agentTools.ts)
+and dispatch in the same `executeAction` switch as dunning/tax. REST surface: `/accountant/advisor/*`;
+demo data seeds via the existing `/accountant/seed-demo`.
+
+### Professional verticals — external data
+Non-finance personas register a `PersonaVertical` in
+[professional/registry.ts](src/services/professional/registry.ts). Two carry live external data:
+**Real Estate** uses [rentcast.service.ts](src/services/professional/realestate/rentcast.service.ts)
+(RentCast, `RENTCAST_API_KEY`, free tier) for `search_market`/`market_report`, with `match_buyers`
+matching leads to listings locally — all degrade gracefully when the key is unset. **Product Manager**
+[pm.vertical.ts](src/services/professional/pm/pm.vertical.ts) auto-syncs recent GitHub commits/merged PRs
+(`getRecentCommits`) + recently-updated Jira issues into its snapshot for contribution tracking
+(`contribution_summary`), reusing the already-wired GitHub/Jira OAuth (no new credentials).
+
 ## Conventions
 - TypeScript `strict` is on; `npm run lint` (tsc --noEmit) must pass.
 - Errors: throw the typed errors in [src/utils/errors.ts](src/utils/errors.ts)

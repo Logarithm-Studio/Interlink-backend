@@ -49,6 +49,7 @@ import {
 import {
   chat,
   command,
+  deleteConversation,
   executeAction,
   getChatHistory,
   getConversationMessages,
@@ -71,6 +72,17 @@ import {
   type AutomationType,
   type AutonomyLevel,
 } from "../services/accountant/automations.service";
+import {
+  analyzePortfolio,
+  listClients,
+  listCompliance,
+  prepareMeetingPacket,
+  resolveCompliance,
+  sendClientCommunication,
+  seedDemoAdvisor,
+  setComplianceStatus,
+  type ComplianceStatus,
+} from "../services/accountant/advisor.service";
 import {
   listActivity,
   setActivityStatus,
@@ -452,6 +464,16 @@ router.get(
   },
 );
 
+router.delete("/assistant/conversations/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    await deleteConversation(user.id, req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Agentic command center — plan an action (or answer) from a natural-language command.
 const CommandBody = z.object({
   message: z.string().min(1).max(2000),
@@ -673,13 +695,93 @@ router.post("/seed-demo", async (req: Request, res: Response, next: NextFunction
     const insertedInvoices = await seedDemoInvoices(user.id, clientEmail);
     const insertedExpenses = await seedDemoExpenses(user.id);
     const insertedContractors = await seedDemoContractors(user.id);
+    const advisor = await seedDemoAdvisor(user.id);
     res.json({
       insertedInvoices,
       insertedExpenses,
       insertedContractors,
+      insertedClients: advisor.clients,
+      insertedCompliance: advisor.compliance,
       invoices: await listInvoices(user.id),
       expenses: await listExpenses(user.id),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Financial Advisor: clients, portfolios, compliance ──────────────────────
+router.get("/advisor/clients", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ clients: await listClients(user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/advisor/clients/:id/portfolio", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ analysis: await analyzePortfolio(user.id, req.params.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/advisor/clients/:id/meeting-packet", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json(await prepareMeetingPacket(user, req.params.id));
+  } catch (err) {
+    mapSendError(err, next);
+  }
+});
+
+const ClientCommBody = z.object({ topic: z.string().max(120).optional() });
+router.post("/advisor/clients/:id/communication", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ClientCommBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid topic.");
+    res.json(await sendClientCommunication(user, req.params.id, parsed.data.topic));
+  } catch (err) {
+    mapSendError(err, next);
+  }
+});
+
+router.get("/advisor/compliance", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const openOnly = String(req.query.openOnly ?? "") === "true";
+    res.json({ items: await listCompliance(user.id, { openOnly }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const ComplianceStatusBody = z.object({ status: z.enum(["open", "in_progress", "done"]) });
+router.post("/advisor/compliance/:id/status", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = ComplianceStatusBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Invalid status.");
+    await setComplianceStatus(user.id, req.params.id, parsed.data.status as ComplianceStatus);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/advisor/resolve-compliance", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const body = (req.body ?? {}) as { clientName?: string; type?: string };
+    const result = await resolveCompliance(user.id, {
+      clientRef: body.clientName,
+      type: body.type as never,
+    });
+    res.json(result);
   } catch (err) {
     next(err);
   }

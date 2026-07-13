@@ -31,6 +31,7 @@ import microsoftRoutes from "./routes/microsoft.routes";
 import settingsRoutes from "./routes/settings.routes";
 import notionRoutes from "./routes/notion.routes";
 import fitnessRoutes from "./routes/fitness.routes";
+import composioRoutes from "./routes/composio.routes";
 import personalAssistantRoutes from "./routes/personal-assistant.routes";
 // Professional mode personas
 import pmRoutes from "./routes/pm.routes";
@@ -100,6 +101,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/settings", settingsRoutes);
   app.use("/api/v1/notion", notionRoutes);
   app.use("/api/v1/fitness", fitnessRoutes);
+  app.use("/api/v1/composio", composioRoutes);
   app.use("/api/v1/personal-assistant", personalAssistantRoutes);
   // Professional mode
   app.use("/api/v1/pm", pmRoutes);

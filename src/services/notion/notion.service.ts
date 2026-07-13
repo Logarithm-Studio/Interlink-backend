@@ -131,9 +131,9 @@ export async function createPage(
   userId: string,
   data: { parentId: string; title: string; content?: string },
 ): Promise<NotionPage> {
-  const children = data.content
-    ? [{ object: "block", type: "paragraph", paragraph: { rich_text: [{ text: { content: data.content } }] } }]
-    : [];
+  // Render the body as real Notion blocks (headings/bullets/to-dos/code), not a single
+  // paragraph — so created pages are structured documents, not text blobs.
+  const children = data.content ? markdownToBlocks(data.content) : [];
 
   const res = await notionFetch(userId, "/pages", {
     method: "POST",
@@ -152,6 +152,134 @@ export async function createPage(
   }
   const p = (await res.json()) as { id?: string; url?: string; last_edited_time?: string };
   return { id: p.id ?? "", title: data.title, url: p.url ?? "", lastEdited: p.last_edited_time ?? "" };
+}
+
+/**
+ * Append markdown content to an existing page as structured blocks (the way "add
+ * this to my Notion page" and richer publishing work). Notion caps 100 blocks per
+ * request, so we chunk.
+ */
+export async function appendToPage(userId: string, pageId: string, markdown: string): Promise<void> {
+  const blocks = markdownToBlocks(markdown);
+  if (blocks.length === 0) return;
+  for (let i = 0; i < blocks.length; i += 100) {
+    const res = await notionFetch(userId, `/blocks/${pageId}/children`, {
+      method: "PATCH",
+      body: JSON.stringify({ children: blocks.slice(i, i + 100) }),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Failed to append to Notion page: ${t.slice(0, 200)}`);
+    }
+  }
+}
+
+/**
+ * Add a row to a Notion database. Resolves the database's title property name from
+ * its schema, then creates a page under it. `extraProps` maps property name → a
+ * simple rich-text/select value (best-effort; unknown props are skipped by Notion).
+ */
+export async function createDatabaseRow(
+  userId: string,
+  databaseId: string,
+  title: string,
+  content?: string,
+): Promise<NotionPage> {
+  // Find the title property's name (it varies: "Name", "Task", etc.).
+  const schemaRes = await notionFetch(userId, `/databases/${databaseId}`, { method: "GET" });
+  let titleProp = "Name";
+  if (schemaRes.ok) {
+    const schema = (await schemaRes.json()) as { properties?: Record<string, { type?: string }> };
+    const found = Object.entries(schema.properties ?? {}).find(([, v]) => v.type === "title");
+    if (found) titleProp = found[0];
+  }
+
+  const res = await notionFetch(userId, "/pages", {
+    method: "POST",
+    body: JSON.stringify({
+      parent: { type: "database_id", database_id: databaseId },
+      properties: { [titleProp]: { title: [{ text: { content: title } }] } },
+      children: content ? markdownToBlocks(content) : [],
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Failed to add Notion database row: ${t.slice(0, 200)}`);
+  }
+  const p = (await res.json()) as { id?: string; url?: string; last_edited_time?: string };
+  return { id: p.id ?? "", title, url: p.url ?? "", lastEdited: p.last_edited_time ?? "" };
+}
+
+// ─── Markdown → Notion blocks ──────────────────────────────────────────────────
+
+type NotionBlock = { object: "block"; type: string; [k: string]: unknown };
+
+const richText = (content: string) => [{ type: "text", text: { content: content.slice(0, 2000) } }];
+const textBlock = (type: string, content: string, extra: Record<string, unknown> = {}): NotionBlock => ({
+  object: "block",
+  type,
+  [type]: { rich_text: richText(content), ...extra },
+});
+
+/** Convert lightweight markdown into Notion blocks (headings, lists, to-dos, code, quotes). */
+export function markdownToBlocks(markdown: string): NotionBlock[] {
+  const blocks: NotionBlock[] = [];
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let inFence = false;
+  let codeBuf: string[] = [];
+  let codeLang = "";
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const fence = line.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fence) {
+      if (inFence) {
+        blocks.push({ object: "block", type: "code", code: { rich_text: richText(codeBuf.join("\n")), language: (codeLang || "plain text") as string } });
+        inFence = false;
+        codeBuf = [];
+        codeLang = "";
+      } else {
+        inFence = true;
+        codeLang = fence[1] ?? "";
+      }
+      continue;
+    }
+    if (inFence) {
+      codeBuf.push(raw);
+      continue;
+    }
+    if (!line.trim()) continue; // Notion collapses empty paragraphs anyway
+
+    const h = line.match(/^(#{1,3})\s+(.+)$/);
+    if (h) {
+      const level = Math.min(3, h[1].length);
+      blocks.push(textBlock(`heading_${level}`, h[2]));
+      continue;
+    }
+    const todo = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/);
+    if (todo) {
+      blocks.push(textBlock("to_do", todo[2], { checked: todo[1].toLowerCase() === "x" }));
+      continue;
+    }
+    if (/^\s*[-*•]\s+/.test(line)) {
+      blocks.push(textBlock("bulleted_list_item", line.replace(/^\s*[-*•]\s+/, "")));
+      continue;
+    }
+    const num = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (num) {
+      blocks.push(textBlock("numbered_list_item", num[1]));
+      continue;
+    }
+    if (/^\s*>\s+/.test(line)) {
+      blocks.push(textBlock("quote", line.replace(/^\s*>\s+/, "")));
+      continue;
+    }
+    blocks.push(textBlock("paragraph", line));
+  }
+  if (inFence && codeBuf.length) {
+    blocks.push({ object: "block", type: "code", code: { rich_text: richText(codeBuf.join("\n")), language: "plain text" } });
+  }
+  return blocks;
 }
 
 // ─── Databases ───────────────────────────────────────────────────────────────

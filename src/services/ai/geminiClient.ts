@@ -125,16 +125,19 @@ export async function geminiGenerateContent(args: {
     temperature: useJson ? 0 : args.temperature ?? 0.4,
     // Agentic (tool) turns get plenty of room: on 2.5 models the hidden "thinking"
     // tokens are drawn from this same budget, so a small cap here truncates the real
-    // answer/tool-call and the model appears to "fail" for no reason.
-    maxOutputTokens: args.maxOutputTokens ?? (args.tools ? 8192 : 2048),
+    // answer/tool-call and the model appears to "fail" for no reason. These are sized
+    // so the model can reason DEEPLY and still have ample room to write a full answer
+    // (thin budgets were a major cause of short, shallow, "toddler" replies).
+    maxOutputTokens: args.maxOutputTokens ?? (args.tools ? 16384 : 4096),
   };
   if (useJson) {
     generationConfig.responseMimeType = "application/json";
     if (args.responseSchema) generationConfig.responseSchema = args.responseSchema;
   }
-  // Cap thinking on tool turns by default so the model can't spend the whole budget
-  // reasoning and leave nothing for the function call. Callers can override.
-  const thinkingBudget = args.thinkingBudget ?? (args.tools ? 2048 : undefined);
+  // Cap thinking on tool turns so the model can't spend the WHOLE budget reasoning and
+  // leave nothing for the function call — but leave it generous enough to actually think.
+  // With 16384 total, a 4096 thinking cap still leaves ~12k for the answer/tool call.
+  const thinkingBudget = args.thinkingBudget ?? (args.tools ? 4096 : undefined);
   if (thinkingBudget != null) {
     generationConfig.thinkingConfig = { thinkingBudget };
   }
