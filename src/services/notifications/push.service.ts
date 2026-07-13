@@ -75,12 +75,15 @@ async function getFcmAccessToken(): Promise<string | null> {
   }
 
   try {
-    const auth = new google.auth.JWT(
-      serviceAccount.client_email,
-      undefined,
-      serviceAccount.private_key,
-      ["https://www.googleapis.com/auth/firebase.messaging"],
-    );
+    // google-auth-library v10 removed the positional constructor
+    // `new JWT(email, keyFile, key, scopes)` — it now only accepts an options object
+    // (`constructor(options?: JWTOptions)`). The old call still *ran*, but no longer
+    // type-checks, which broke `npm run build` and therefore every Vercel deploy.
+    const auth = new google.auth.JWT({
+      email: serviceAccount.client_email,
+      key: serviceAccount.private_key,
+      scopes: ["https://www.googleapis.com/auth/firebase.messaging"],
+    });
     const { token, res } = await auth.getAccessToken();
     if (!token) return null;
 
