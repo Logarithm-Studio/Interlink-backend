@@ -65,6 +65,12 @@ export const COMPOSIO_CATALOG: ToolkitMeta[] = [
   { slug: "intercom", name: "Intercom", description: "Customer messaging and support inbox", audience: "professional" },
   { slug: "stripe", name: "Stripe", description: "Payments, customers, and invoices", audience: "professional" },
   { slug: "quickbooks", name: "QuickBooks", description: "Accounting, invoices, and expenses", audience: "professional" },
+  // PRD §4.4 names Xero + Excel as primary Finance apps; §4.2 names Google Slides for the
+  // status-deck workflow. Verified available on Composio (twilio/zillow/appfolio/dotloop/plaid
+  // are NOT — those gaps cannot be closed this way).
+  { slug: "xero", name: "Xero", description: "Accounting ledger, invoices, and bank reconciliation", audience: "professional" },
+  { slug: "excel", name: "Excel", description: "Spreadsheets — tracking sheets and cash models", audience: "professional" },
+  { slug: "googleslides", name: "Google Slides", description: "Status decks and presentation updates", audience: "professional" },
   { slug: "linear", name: "Linear", description: "Issue tracking and product planning", audience: "professional" },
   { slug: "asana", name: "Asana", description: "Projects, tasks, and team workload", audience: "professional" },
   { slug: "greenhouse", name: "Greenhouse", description: "Recruiting pipeline and candidates", audience: "professional" },

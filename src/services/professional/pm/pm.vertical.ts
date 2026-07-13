@@ -117,6 +117,10 @@ const SYSTEM_PROMPT = [
   "alert the team (sprint_interruption); draft & publish release notes from GitHub PRs (release_notes);",
   "compile a cross-functional status update (status_sync); check a client request for scope creep and",
   "draft a change order (scope_creep_check). Use exact repo full-names (owner/name) from the snapshot.",
+  "FINISH THE CHAIN (PRD): release_notes returns the drafted notes — if Intercom is connected, then CALL the",
+  "Intercom tool to publish them to the customer-facing changelog/article. status_sync returns the compiled",
+  "update — if Google Slides is connected, then CALL the Google Slides tool to update the status deck. If",
+  "Linear is connected, treat it as an equal alternative to Jira for issues. Chain these in the same turn.",
   "You never write anything yourself — the app confirms before executing.",
 ].join("\n");
 
