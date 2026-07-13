@@ -21,7 +21,7 @@
  * and the connection/tool-schema reads hit their API; native tools stay free.
  */
 
-import { Composio } from "@composio/core";
+import type { Composio } from "@composio/core";
 import { query } from "../../config/db";
 import { logger } from "../../observability/logger";
 import type { GeminiToolFunction } from "../ai/geminiClient";
@@ -29,17 +29,47 @@ import type { ExecuteResult } from "../personal-assistant/personal-assistant.ser
 
 // ─── Client ───────────────────────────────────────────────────────────────────
 
-let client: Composio | null = null;
+/**
+ * `@composio/core` is ESM-only ("type": "module", and its only export is
+ * dist/index.mjs — there is no CommonJS build). Under our `module: commonjs`
+ * tsconfig a static `import { Composio }` compiles down to `require()`, which
+ * throws ERR_REQUIRE_ESM on Vercel's Node runtime and kills the entire
+ * serverless function at cold start — every route 500s, not just Composio ones.
+ *
+ * So: import the type only (erased at compile time, emits no require) and pull
+ * the runtime value in through a real dynamic `import()`. The `new Function`
+ * wrapper is load-bearing — TypeScript would otherwise downlevel a plain
+ * `await import()` back into the same `require()` we are trying to avoid.
+ */
+const importESM = new Function("specifier", "return import(specifier)") as (
+  specifier: string,
+) => Promise<unknown>;
+
+type ComposioModule = {
+  Composio: new (opts: { apiKey: string }) => Composio;
+};
+
+let clientPromise: Promise<Composio> | null = null;
 
 export function isComposioLive(): boolean {
   return Boolean(process.env.COMPOSIO_API_KEY);
 }
 
-function getClient(): Composio | null {
+async function getClient(): Promise<Composio | null> {
   const apiKey = process.env.COMPOSIO_API_KEY;
   if (!apiKey) return null;
-  if (!client) client = new Composio({ apiKey });
-  return client;
+  if (!clientPromise) {
+    clientPromise = (async () => {
+      const mod = (await importESM("@composio/core")) as ComposioModule;
+      return new mod.Composio({ apiKey });
+    })();
+    // Don't cache a rejected import — a transient failure would otherwise wedge
+    // Composio off for the lifetime of the warm lambda.
+    clientPromise.catch(() => {
+      clientPromise = null;
+    });
+  }
+  return clientPromise;
 }
 
 // ─── Catalog ──────────────────────────────────────────────────────────────────
@@ -178,7 +208,7 @@ export async function connectToolkit(
   userId: string,
   toolkitSlug: string,
 ): Promise<{ redirectUrl: string }> {
-  const composio = getClient();
+  const composio = await getClient();
   if (!composio) throw new Error("Composio is not configured. Add COMPOSIO_API_KEY on the server.");
   if (!isKnownToolkit(toolkitSlug)) throw new Error(`Unknown toolkit "${toolkitSlug}".`);
 
@@ -198,7 +228,7 @@ export async function connectToolkit(
  * works regardless of how Composio's hosted callback is configured (no webhook needed).
  */
 export async function syncConnections(userId: string): Promise<ComposioConnection[]> {
-  const composio = getClient();
+  const composio = await getClient();
   if (!composio) return listConnections(userId);
 
   try {
@@ -221,7 +251,7 @@ export async function syncConnections(userId: string): Promise<ComposioConnectio
 }
 
 export async function disconnectToolkit(userId: string, toolkitSlug: string): Promise<void> {
-  const composio = getClient();
+  const composio = await getClient();
   const res = await query<{ connected_account_id: string | null }>(
     `SELECT connected_account_id FROM composio_connections
       WHERE user_id = $1 AND toolkit_slug = $2`,
@@ -374,7 +404,7 @@ export function invalidateToolCache(userId: string): void {
  * spread it unconditionally.
  */
 export async function getComposioToolsForUser(userId: string): Promise<GeminiToolFunction[]> {
-  const composio = getClient();
+  const composio = await getClient();
   if (!composio) return [];
 
   const cached = toolCache.get(userId);
@@ -456,7 +486,7 @@ export async function executeComposioTool(
   slug: string,
   args: Record<string, unknown> = {},
 ): Promise<ExecuteResult> {
-  const composio = getClient();
+  const composio = await getClient();
   if (!composio) {
     return { ok: false, message: "That app isn't available — Composio is not configured on the server." };
   }
