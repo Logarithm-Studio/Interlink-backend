@@ -365,7 +365,7 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   {
     name: "create_drive_doc",
     description:
-      "Create a Google Doc — a report, memo, brief, meeting notes, proposal, summary, letter, etc. — in the user's Drive with FULL formatted content, and return its link. Use this whenever the user asks you to write up, draft, or produce a document/report/file. Put the ENTIRE document body in `content` as Markdown (use #/##/### headings, - bullet lists, 1. numbered lists, **bold**); never leave it empty. The result is a real Google Doc the user can open, download as PDF or Word, or share. Set `share: true` to also make it viewable by anyone with the link so it can be sent to other people.",
+      "Create a Google Doc — a report, memo, brief, meeting notes, proposal, summary, letter, etc. — in the user's Drive with FULL formatted content. Use this whenever the user asks you to write up, draft, produce, or SEND a document/report/file. Put the ENTIRE document body in `content` as Markdown (use #/##/### headings, - bullet lists, 1. numbered lists, **bold**); never leave it empty. The result is a real Google Doc the user can open, download as PDF or Word, or share. IMPORTANT: to SEND the finished document to someone (\"create X and send it to <email>\"), set `emailTo` to their email — this one tool creates the doc, makes it viewable, and emails them the link in a single step. Do NOT create the doc and then separately call send_gmail; use emailTo instead. Set `share: true` (without emailTo) to just make it link-shareable.",
     parameters: {
       type: "object",
       properties: {
@@ -378,6 +378,12 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
           type: "boolean",
           description: "If true, make the doc link-shareable (anyone with the link can view) and return that link.",
         },
+        emailTo: {
+          type: "string",
+          description: "Recipient email address(es), comma-separated. When set, the doc is created, shared, and emailed to them with the link — all in one step.",
+        },
+        emailSubject: { type: "string", description: "Optional subject for the email (defaults to the document title)." },
+        emailBody: { type: "string", description: "Optional message to include above the document link in the email." },
       },
       required: ["name"],
     },
@@ -1313,9 +1319,12 @@ export async function executeAction(
           String(args.name ?? "Untitled document"),
           typeof args.content === "string" ? args.content : undefined,
         );
+        const emailTo = toEmailList(args.emailTo);
+        // A private link is useless to an external recipient, so emailing forces a share.
+        const shouldShare = args.share === true || emailTo.length > 0;
         let link = doc.webViewLink;
         let shared = false;
-        if (args.share === true && doc.id) {
+        if (shouldShare && doc.id) {
           try {
             const shareLink = await shareDriveFile(userId, doc.id);
             if (shareLink) link = shareLink;
@@ -1324,10 +1333,30 @@ export async function executeAction(
             /* sharing failed — fall back to the private link */
           }
         }
-        const shareNote = shared ? " Anyone with the link can view it." : "";
+
+        // If asked to send it, email the doc link in the same step (no separate send_gmail).
+        let emailNote = "";
+        if (emailTo.length > 0) {
+          const fromEmail = await getPrimaryGoogleEmail(userId);
+          if (!fromEmail) {
+            emailNote = " — but I couldn't send the email (reconnect Google in Connected Accounts)";
+          } else {
+            const subject = String(args.emailSubject ?? "").trim() || doc.name;
+            const preamble = String(args.emailBody ?? "").trim();
+            const body = `${preamble ? `${preamble}\n\n` : `Hi,\n\nPlease find the document "${doc.name}" below.\n\n`}${link}\n\nSent via Interlink.`;
+            try {
+              await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: emailTo.join(", "), subject, body });
+              emailNote = ` and emailed it to ${emailTo.join(", ")}`;
+            } catch (err) {
+              emailNote = ` — the doc was created but the email to ${emailTo.join(", ")} failed (${err instanceof Error ? err.message : "unknown error"})`;
+            }
+          }
+        }
+
+        const shareNote = shared && emailTo.length === 0 ? " Anyone with the link can view it." : "";
         return {
           ok: true,
-          message: `Created "${doc.name}"${link ? `: ${link}` : "."}${shareNote} You can open it to download as PDF or Word, or share it.`,
+          message: `Created "${doc.name}"${emailNote}${link ? `: ${link}` : "."}${shareNote}`,
           data: doc,
           links: link ? [{ app: "google-drive", url: link, label: "Open document" }] : undefined,
         };
@@ -1816,7 +1845,12 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "get_weather": return `Get weather for ${args.location}`;
     case "get_fitness_summary": return "Check today's fitness stats";
     case "list_drive_files": return `Search Google Drive${args.query ? ` for "${args.query}"` : ""}`;
-    case "create_drive_doc": return `Create Google Doc "${args.name ?? ""}"`;
+    case "create_drive_doc": {
+      const to = toEmailList(args.emailTo);
+      return to.length
+        ? `Create document "${args.name ?? ""}" and email it to ${to.join(", ")}`
+        : `Create Google Doc "${args.name ?? ""}"`;
+    }
     case "delete_drive_file": return `Delete Drive file ${args.name ? `"${args.name}"` : ""}`.trim();
     case "share_drive_file": return `Share Drive file ${args.name ? `"${args.name}"` : ""}`.trim();
     case "upload_to_drive": return `Upload ${args.name ? `"${args.name}"` : "the attached file"} to Google Drive`;
