@@ -45,6 +45,27 @@ const importESM = new Function("specifier", "return import(specifier)") as (
   specifier: string,
 ) => Promise<unknown>;
 
+/**
+ * DEPENDENCY-TRACE ANCHOR (do not delete).
+ *
+ * Vercel bundles the serverless function by statically tracing dependencies with
+ * `@vercel/nft`. The `new Function("import(...)")` above is opaque to that tracer, so nft
+ * never sees `@composio/core` and OMITS it from the deployment — the runtime then throws
+ * `Cannot find package '@composio/core'` (a different failure from the earlier
+ * ERR_REQUIRE_ESM, but same root: a hidden import).
+ *
+ * `require.resolve` gives nft a plain string literal it DOES follow, so the package and its
+ * transitive deps get bundled. Crucially, `resolve` only computes the file path — it never
+ * evaluates the module — so it does NOT reintroduce the ERR_REQUIRE_ESM that a real
+ * `require()` of this ESM-only package would. Guarded + swallowed so a missing package can
+ * never crash boot (Composio just stays disabled).
+ */
+try {
+  require.resolve("@composio/core");
+} catch {
+  /* not installed in this environment — fine, Composio stays disabled */
+}
+
 type ComposioModule = {
   Composio: new (opts: { apiKey: string }) => Composio;
 };
