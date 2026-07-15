@@ -11,6 +11,7 @@ import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
 import { getMarketStats, isRentCastConfigured, searchListings, type MarketListing } from "./rentcast.service";
+import { getCensusMarketStats, isCensusConfigured } from "./census.service";
 
 const PERSONA = "real_estate";
 
@@ -144,8 +145,10 @@ async function buildSnapshot(userId: string): Promise<string> {
   return [
     `Active listings: ${active.length}. Leads: ${leads.length}.`,
     isRentCastConfigured()
-      ? "Live market data (RentCast) is connected: you can search_market for external for-sale listings and market_report for area stats by ZIP."
-      : "RentCast market data is NOT connected — search_market/market_report are unavailable until RENTCAST_API_KEY is set.",
+      ? "Live market data (RentCast) is connected: use search_market for external for-sale listings and market_report for area stats by ZIP."
+      : isCensusConfigured()
+        ? "market_report gives free area stats (median home value, median rent, ownership) by ZIP via US Census. Live for-sale listing search (search_market) needs RENTCAST_API_KEY."
+        : "Market data is not configured yet — set CENSUS_API_KEY (free) for market_report.",
     "Listings:",
     ...listings.slice(0, 15).map((l) => `- ${l.address} | ${fmt(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
     "Leads:",
@@ -170,7 +173,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant. Optionally pass the property's ZIP to factor localized market pricing trends into the renewal terms.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." }, zipCode: { type: "string", description: "Property ZIP — pulls localized pricing trends (RentCast) to inform the renewal." } }, required: ["property"] } },
   { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
   { name: "search_market", description: "Search live for-sale market listings (RentCast). Provide a city+state or a ZIP code.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number" }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
-  { name: "market_report", description: "Generate an area market report (average/median sale price, inventory) for a ZIP code using RentCast.", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
+  { name: "market_report", description: "Generate an area market report for a ZIP code — median home value, median rent, and owner-occupancy from free US Census data (or live sale stats if RentCast is configured).", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
   { name: "transaction_tasks", description: "Produce a standard purchase/closing task checklist for a property that's gone under contract, with milestone due dates counted back from the close date. Use when a deal is accepted and the agent needs to manage the transaction to closing.", parameters: { type: "object", properties: { property: { type: "string", description: "The property address or listing under contract." }, closeDate: { type: "string", description: "Target closing date (YYYY-MM-DD). Defaults to 30 days out." } }, required: ["property"] } },
 ];
 
@@ -251,12 +254,19 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         if (!l) return { ok: false, message: "Couldn't find that lease." };
         if (!l.tenantEmail) return { ok: false, message: `No tenant email on file for ${l.property}.` };
         // PRD: pull localized pricing trends to inform renewal terms when a ZIP is given.
+        // RentCast (paid) gives sale comps; Census (free) gives the median gross rent — which
+        // is actually the more relevant benchmark for a lease renewal.
         let marketContext = "";
         const zip = String(args.zipCode ?? "").trim();
         if (zip && isRentCastConfigured()) {
           const stats = await getMarketStats(zip);
           if (stats?.averagePriceCents) {
             marketContext = ` Localized market (ZIP ${stats.zipCode}): average sale price ${usd(stats.averagePriceCents)}${stats.averagePricePerSqftCents ? `, ~${usd(stats.averagePricePerSqftCents)}/sqft` : ""}${stats.totalListings != null ? `, ${stats.totalListings} active listings` : ""} — factor this into a fair renewal adjustment.`;
+          }
+        } else if (zip && isCensusConfigured()) {
+          const c = await getCensusMarketStats(zip);
+          if (c?.medianGrossRentCents) {
+            marketContext = ` Local benchmark (ZIP ${c.zipCode}, ${c.source}): median gross rent ${usd(c.medianGrossRentCents)}/mo — factor this into a fair renewal adjustment.`;
           }
         }
         const draft = await draftEmail({ role: "property manager", purpose: "a friendly lease-renewal offer", context: `Property: ${l.property}. Tenant: ${l.tenantName ?? ""}. Lease ends ${l.endDate ?? "soon"}. Current rent ${l.rentCents ? `$${(l.rentCents / 100).toLocaleString("en-US")}/mo` : "unknown"}.${marketContext}` });
@@ -291,7 +301,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}` };
       }
       case "search_market": {
-        if (!isRentCastConfigured()) return { ok: false, message: "RentCast isn't connected. Set RENTCAST_API_KEY to search live market listings." };
+        if (!isRentCastConfigured()) return { ok: false, message: "Live for-sale listing search needs a listings provider (RENTCAST_API_KEY). For free area market stats by ZIP, use market_report instead (US Census data)." };
         const results: MarketListing[] = await searchListings({
           city: args.city ? String(args.city) : undefined,
           state: args.state ? String(args.state) : undefined,
@@ -307,22 +317,50 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       case "market_report": {
         const zip = String(args.zipCode ?? "").trim();
         if (!zip) return { ok: false, message: "Which ZIP code should I report on?" };
-        if (!isRentCastConfigured()) return { ok: false, message: "RentCast isn't connected. Set RENTCAST_API_KEY to generate market reports." };
-        const s = await getMarketStats(zip);
-        if (!s) return { ok: true, message: `No market data is available for ${zip} right now.` };
         const line = (label: string, cents: number | null) => (cents != null ? `- ${label}: ${usd(cents)}` : null);
-        const body = [
-          `Market report — ${s.zipCode}`,
-          line("Average sale price", s.averagePriceCents),
-          line("Median sale price", s.medianPriceCents),
-          line("Price range", s.minPriceCents),
-          s.maxPriceCents != null ? `  to ${usd(s.maxPriceCents)}` : null,
-          line("Avg price / sqft", s.averagePricePerSqftCents),
-          s.totalListings != null ? `- Active listings: ${s.totalListings}` : null,
-          s.newListings != null ? `- New this period: ${s.newListings}` : null,
-        ].filter(Boolean).join("\n");
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${s.zipCode}` });
-        return { ok: true, message: body };
+
+        // Prefer RentCast when configured (live for-sale stats); otherwise use the FREE
+        // US Census ACS data (median home value, median rent, ownership) — no cost.
+        if (isRentCastConfigured()) {
+          const s = await getMarketStats(zip);
+          if (s) {
+            const body = [
+              `Market report — ${s.zipCode}`,
+              line("Average sale price", s.averagePriceCents),
+              line("Median sale price", s.medianPriceCents),
+              line("Price range", s.minPriceCents),
+              s.maxPriceCents != null ? `  to ${usd(s.maxPriceCents)}` : null,
+              line("Avg price / sqft", s.averagePricePerSqftCents),
+              s.totalListings != null ? `- Active listings: ${s.totalListings}` : null,
+              s.newListings != null ? `- New this period: ${s.newListings}` : null,
+              "(Source: RentCast)",
+            ].filter(Boolean).join("\n");
+            await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${s.zipCode}` });
+            return { ok: true, message: body };
+          }
+        }
+
+        if (isCensusConfigured()) {
+          const c = await getCensusMarketStats(zip);
+          if (c && (c.medianHomeValueCents != null || c.medianGrossRentCents != null)) {
+            const body = [
+              `Market report — ${c.zipCode}${c.areaName ? ` (${c.areaName.replace(/^ZCTA5\s*/, "")})` : ""}`,
+              line("Median home value", c.medianHomeValueCents),
+              c.medianGrossRentCents != null ? `- Median gross rent: ${usd(c.medianGrossRentCents)}/mo` : null,
+              c.ownerOccupiedPct != null ? `- Owner-occupied: ${c.ownerOccupiedPct}%` : null,
+              `(Source: ${c.source})`,
+            ].filter(Boolean).join("\n");
+            await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${c.zipCode}` });
+            return { ok: true, message: body };
+          }
+          return { ok: true, message: `No Census market data is available for ${zip}.` };
+        }
+
+        return {
+          ok: false,
+          message:
+            "No market-data source is configured. Set CENSUS_API_KEY (free — api.census.gov/data/key_signup.html) for area market reports, or RENTCAST_API_KEY for live for-sale stats.",
+        };
       }
       case "transaction_tasks": {
         const property = String(args.property ?? "").trim();
