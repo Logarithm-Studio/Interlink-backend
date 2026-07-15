@@ -23,6 +23,7 @@
 
 import type { Composio } from "@composio/core";
 import { query } from "../../config/db";
+import { AppError } from "../../utils/errors";
 import { logger } from "../../observability/logger";
 import type { GeminiToolFunction } from "../ai/geminiClient";
 import type { ExecuteResult } from "../personal-assistant/personal-assistant.service";
@@ -245,14 +246,29 @@ async function getOrCreateAuthConfig(
     });
   }
 
-  const created = await composio.authConfigs.create(toolkitSlug, {
-    type: "use_composio_managed_auth",
-    name: `Interlink ${toolkitName(toolkitSlug)}`,
-  });
-  if (!created?.id) {
-    throw new Error(`Could not set up ${toolkitName(toolkitSlug)} — Composio returned no auth config id.`);
+  try {
+    const created = await composio.authConfigs.create(toolkitSlug, {
+      type: "use_composio_managed_auth",
+      name: `Interlink ${toolkitName(toolkitSlug)}`,
+    });
+    if (!created?.id) {
+      throw new Error(`Composio returned no auth config id for ${toolkitSlug}.`);
+    }
+    return created.id;
+  } catch (err) {
+    // Toolkits that authenticate with an API key / bot token (e.g. Telegram) have no
+    // Composio-managed OAuth app, so create() 400s with "Default auth config not found".
+    // That's a user-actionable limitation, not a server fault — surface it as a clean 422
+    // instead of a raw 500 with a Composio stack string.
+    const msg = String((err as Error)?.message ?? "");
+    if (/auth config|managed auth|not found/i.test(msg)) {
+      throw new AppError(
+        `${toolkitName(toolkitSlug)} connects with an API key rather than a sign-in, which isn't supported in-app yet.`,
+        422,
+      );
+    }
+    throw err;
   }
-  return created.id;
 }
 
 /**
