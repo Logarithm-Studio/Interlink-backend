@@ -157,11 +157,23 @@ function markdownToHtml(md: string): string {
  */
 export async function exportDriveFileToPdf(userId: string, fileId: string): Promise<string> {
   const drive = await getDriveClient(userId);
-  const res = await drive.files.export(
-    { fileId, mimeType: "application/pdf" },
-    { responseType: "arraybuffer" },
-  );
-  return Buffer.from(res.data as ArrayBuffer).toString("base64");
+  // A doc exported the instant it's created can 500/return empty while Drive finalizes the
+  // conversion, so retry a couple of times with a short backoff.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1200));
+    try {
+      const res = await drive.files.export(
+        { fileId, mimeType: "application/pdf" },
+        { responseType: "arraybuffer" },
+      );
+      const b64 = Buffer.from(res.data as ArrayBuffer).toString("base64");
+      if (b64) return b64;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("PDF export returned no data");
 }
 
 /**
