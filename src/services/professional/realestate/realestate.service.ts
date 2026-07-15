@@ -171,6 +171,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
   { name: "search_market", description: "Search live for-sale market listings (RentCast). Provide a city+state or a ZIP code.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number" }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
   { name: "market_report", description: "Generate an area market report (average/median sale price, inventory) for a ZIP code using RentCast.", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
+  { name: "transaction_tasks", description: "Produce a standard purchase/closing task checklist for a property that's gone under contract, with milestone due dates counted back from the close date. Use when a deal is accepted and the agent needs to manage the transaction to closing.", parameters: { type: "object", properties: { property: { type: "string", description: "The property address or listing under contract." }, closeDate: { type: "string", description: "Target closing date (YYYY-MM-DD). Defaults to 30 days out." } }, required: ["property"] } },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
@@ -184,6 +185,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "match_buyers": return args.name ? `Match ${args.name} to your listings.` : "Match your buyer leads to your listings.";
     case "search_market": return `Search the market${args.zipCode ? ` in ${args.zipCode}` : args.city ? ` in ${args.city}${args.state ? `, ${args.state}` : ""}` : ""}.`;
     case "market_report": return `Generate a market report for ${args.zipCode ?? "the area"}.`;
+    case "transaction_tasks": return `Build a closing checklist for ${args.property ?? "the property"}.`;
     default: return `Run ${name}.`;
   }
 }
@@ -304,6 +306,38 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           s.newListings != null ? `- New this period: ${s.newListings}` : null,
         ].filter(Boolean).join("\n");
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${s.zipCode}` });
+        return { ok: true, message: body };
+      }
+      case "transaction_tasks": {
+        const property = String(args.property ?? "").trim();
+        if (!property) return { ok: false, message: "Which property is under contract?" };
+        // Standard residential purchase timeline, counted back from the close date.
+        const close = args.closeDate ? new Date(String(args.closeDate)) : new Date(Date.now() + 30 * 864e5);
+        if (isNaN(close.getTime())) return { ok: false, message: "That close date isn't a valid YYYY-MM-DD." };
+        const dayBefore = (n: number) => {
+          const d = new Date(close.getTime() - n * 864e5);
+          return d.toISOString().slice(0, 10);
+        };
+        const milestones: [string, string][] = [
+          ["Open escrow & deliver earnest money", dayBefore(28)],
+          ["Schedule home inspection", dayBefore(25)],
+          ["Complete inspection & negotiate repairs", dayBefore(20)],
+          ["Order appraisal", dayBefore(18)],
+          ["Buyer finalizes mortgage / loan approval", dayBefore(14)],
+          ["Title search & preliminary title report", dayBefore(12)],
+          ["Secure homeowner's insurance", dayBefore(10)],
+          ["Remove contingencies", dayBefore(7)],
+          ["Final walkthrough", dayBefore(2)],
+          ["Sign closing documents & fund", dayBefore(1)],
+          ["Close & hand over keys", close.toISOString().slice(0, 10)],
+        ];
+        const body = [
+          `Closing checklist — ${property}`,
+          `Target close: ${close.toISOString().slice(0, 10)}`,
+          "",
+          ...milestones.map(([task, due]) => `- [ ] ${due} — ${task}`),
+        ].join("\n");
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "transaction_tasks", title: `Closing checklist for ${property}` });
         return { ok: true, message: body };
       }
       default:
