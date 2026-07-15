@@ -1347,19 +1347,22 @@ export async function executeAction(
             const preamble = String(args.emailBody ?? "").trim();
             // Export the Doc to a real PDF and attach it. If export fails, still send the link.
             let attachments: { filename: string; mimeType: string; base64: string }[] | undefined;
+            let exportErr = "";
             if (doc.id) {
               try {
                 const pdfBase64 = await exportDriveFileToPdf(userId, doc.id);
                 if (pdfBase64) attachments = [{ filename: `${doc.name}.pdf`, mimeType: "application/pdf", base64: pdfBase64 }];
-              } catch {
-                /* export failed — fall back to link-only */
+              } catch (err) {
+                exportErr = err instanceof Error ? err.message : String(err);
+                console.error("[create_drive_doc] PDF export failed:", exportErr);
               }
             }
+            void exportErr;
             const attachedPhrase = attachments ? ' (PDF attached below).' : ':';
             const body = `${preamble ? `${preamble}\n\n` : `Hi,\n\nPlease find the document "${doc.name}" attached${attachedPhrase}\n\n`}${link}\n\nSent via Interlink.`;
             try {
               await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: emailTo.join(", "), subject, body, attachments });
-              emailNote = ` and emailed it to ${emailTo.join(", ")}${attachments ? " with the PDF attached" : ""}`;
+              emailNote = ` and emailed it to ${emailTo.join(", ")}${attachments ? " with the PDF attached" : ` [debug: pdf export err=${exportErr || "none"}]`}`;
             } catch (err) {
               emailNote = ` — the doc was created but the email to ${emailTo.join(", ")} failed (${err instanceof Error ? err.message : "unknown error"})`;
             }
