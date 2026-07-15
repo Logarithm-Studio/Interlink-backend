@@ -152,6 +152,19 @@ function markdownToHtml(md: string): string {
 }
 
 /**
+ * Export a native Google Doc/Sheet/Slide to PDF and return the bytes as base64 — used to
+ * attach a real, downloadable file to an email rather than only a Drive link.
+ */
+export async function exportDriveFileToPdf(userId: string, fileId: string): Promise<string> {
+  const drive = await getDriveClient(userId);
+  const res = await drive.files.export(
+    { fileId, mimeType: "application/pdf" },
+    { responseType: "arraybuffer" },
+  );
+  return Buffer.from(res.data as ArrayBuffer).toString("base64");
+}
+
+/**
  * Create a new Google Doc and return its link. When `content` is given (Markdown), it's
  * converted to HTML and uploaded so Drive produces a fully-formatted document — the vehicle
  * for agent-generated reports the user can then download (PDF/Word) or share.

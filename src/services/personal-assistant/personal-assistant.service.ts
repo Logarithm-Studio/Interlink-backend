@@ -35,6 +35,7 @@ import {
   shareDriveFile,
   findDriveFile,
   uploadDriveFile,
+  exportDriveFileToPdf,
 } from "../google/drive.service";
 import { scheduleMeetMeeting } from "../google/meet.service";
 import {
@@ -1334,7 +1335,8 @@ export async function executeAction(
           }
         }
 
-        // If asked to send it, email the doc link in the same step (no separate send_gmail).
+        // If asked to send it, email it in the same step (no separate send_gmail) — with the
+        // document attached as a PDF, plus the link in the body as a fallback.
         let emailNote = "";
         if (emailTo.length > 0) {
           const fromEmail = await getPrimaryGoogleEmail(userId);
@@ -1343,10 +1345,21 @@ export async function executeAction(
           } else {
             const subject = String(args.emailSubject ?? "").trim() || doc.name;
             const preamble = String(args.emailBody ?? "").trim();
-            const body = `${preamble ? `${preamble}\n\n` : `Hi,\n\nPlease find the document "${doc.name}" below.\n\n`}${link}\n\nSent via Interlink.`;
+            // Export the Doc to a real PDF and attach it. If export fails, still send the link.
+            let attachments: { filename: string; mimeType: string; base64: string }[] | undefined;
+            if (doc.id) {
+              try {
+                const pdfBase64 = await exportDriveFileToPdf(userId, doc.id);
+                if (pdfBase64) attachments = [{ filename: `${doc.name}.pdf`, mimeType: "application/pdf", base64: pdfBase64 }];
+              } catch {
+                /* export failed — fall back to link-only */
+              }
+            }
+            const attachedPhrase = attachments ? ' (PDF attached below).' : ':';
+            const body = `${preamble ? `${preamble}\n\n` : `Hi,\n\nPlease find the document "${doc.name}" attached${attachedPhrase}\n\n`}${link}\n\nSent via Interlink.`;
             try {
-              await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: emailTo.join(", "), subject, body });
-              emailNote = ` and emailed it to ${emailTo.join(", ")}`;
+              await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: emailTo.join(", "), subject, body, attachments });
+              emailNote = ` and emailed it to ${emailTo.join(", ")}${attachments ? " with the PDF attached" : ""}`;
             } catch (err) {
               emailNote = ` — the doc was created but the email to ${emailTo.join(", ")} failed (${err instanceof Error ? err.message : "unknown error"})`;
             }

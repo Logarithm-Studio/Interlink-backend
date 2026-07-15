@@ -220,30 +220,72 @@ function encodeRawMime(mime: string): string {
     .replace(/=+$/, "");
 }
 
+export interface MailAttachment {
+  filename: string;
+  mimeType: string;
+  /** File bytes, base64-encoded. */
+  base64: string;
+}
+
 function buildMimeMessage(params: {
   from: string;
   to: string;
   subject: string;
   body: string;
   inReplyToMessageId?: string;
+  attachments?: MailAttachment[];
 }): string {
   const encodedSubject = `=?UTF-8?B?${Buffer.from(params.subject).toString("base64")}?=`;
 
-  const lines = [
+  const headers = [
     `From: ${params.from}`,
     `To: ${params.to}`,
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit",
   ];
-
   if (params.inReplyToMessageId) {
-    lines.push(`In-Reply-To: ${params.inReplyToMessageId}`);
-    lines.push(`References: ${params.inReplyToMessageId}`);
+    headers.push(`In-Reply-To: ${params.inReplyToMessageId}`);
+    headers.push(`References: ${params.inReplyToMessageId}`);
   }
 
-  return [...lines, "", params.body].join("\r\n");
+  const attachments = (params.attachments ?? []).filter((a) => a.base64);
+  if (attachments.length === 0) {
+    return [
+      ...headers,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      params.body,
+    ].join("\r\n");
+  }
+
+  // multipart/mixed: the text body + each file as a base64 attachment part.
+  const boundary = `=_Interlink_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const parts: string[] = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    params.body,
+  ];
+  for (const a of attachments) {
+    const safeName = a.filename.replace(/["\\\r\n]/g, "").trim() || "attachment";
+    // RFC 2045 requires base64 wrapped at <=76 chars per line.
+    const wrapped = a.base64.replace(/(.{76})/g, "$1\r\n").trimEnd();
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${a.mimeType}; name="${safeName}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${safeName}"`,
+      "",
+      wrapped,
+    );
+  }
+  parts.push(`--${boundary}--`);
+  return parts.join("\r\n");
 }
 
 export async function listGmailMailboxMessages(params: {
@@ -378,6 +420,7 @@ export async function sendAutomatedGmailMessage(params: {
   body: string;
   threadId?: string;
   inReplyToMessageId?: string;
+  attachments?: MailAttachment[];
 }): Promise<{
   id: string;
   threadId: string;
@@ -403,6 +446,7 @@ export async function sendAutomatedGmailMessage(params: {
     subject: params.subject,
     body: params.body,
     inReplyToMessageId: params.inReplyToMessageId,
+    attachments: params.attachments,
   });
 
   const response = await gmail.users.messages.send({
