@@ -221,9 +221,48 @@ async function upsertConnection(
 // ─── Connect / reconcile / disconnect ─────────────────────────────────────────
 
 /**
- * Begin an OAuth connect for a toolkit. Composio creates the auth config on demand
- * (using ITS OAuth app — we register nothing, hold no client secret) and hands back a
- * consent URL. The app opens it in a browser; completion is observed by `syncConnections`.
+ * Reuse (or create) a Composio-managed auth config for a toolkit, returning its id.
+ *
+ * Composio v3 requires a concrete `auth_config_id` before a connection can be linked. We
+ * own the config (created via OUR api key against Composio's managed OAuth app — we still
+ * register nothing and hold no client secret), and reuse it across users so we don't spawn
+ * a fresh config per connect.
+ */
+async function getOrCreateAuthConfig(
+  composio: Composio,
+  toolkitSlug: string,
+): Promise<string> {
+  try {
+    const existing = await composio.authConfigs.list({ toolkit: toolkitSlug, limit: 1 });
+    const found = existing.items?.find(
+      (c) => c.toolkit?.slug?.toLowerCase() === toolkitSlug,
+    );
+    if (found?.id) return found.id;
+  } catch (err) {
+    logger.warn("[composio] authConfigs.list failed; will try to create one", {
+      err: String(err),
+      toolkitSlug,
+    });
+  }
+
+  const created = await composio.authConfigs.create(toolkitSlug, {
+    type: "use_composio_managed_auth",
+    name: `Interlink ${toolkitName(toolkitSlug)}`,
+  });
+  if (!created?.id) {
+    throw new Error(`Could not set up ${toolkitName(toolkitSlug)} — Composio returned no auth config id.`);
+  }
+  return created.id;
+}
+
+/**
+ * Begin a connect for a toolkit and hand back a consent URL. The app opens it in a browser;
+ * completion is observed by `syncConnections`.
+ *
+ * v3 flow: get/create the toolkit's auth config, then `connectedAccounts.link(userId, cfg)`.
+ * This replaces `toolkits.authorize()` / `connectedAccounts.initiate()`, both of which now hit
+ * Composio's RETIRED legacy endpoint (the "Creating connections on this endpoint … is no
+ * longer supported. Use POST /api/v3/connected_accounts/link" 400 the connect screen showed).
  */
 export async function connectToolkit(
   userId: string,
@@ -233,10 +272,16 @@ export async function connectToolkit(
   if (!composio) throw new Error("Composio is not configured. Add COMPOSIO_API_KEY on the server.");
   if (!isKnownToolkit(toolkitSlug)) throw new Error(`Unknown toolkit "${toolkitSlug}".`);
 
-  const request = await composio.toolkits.authorize(userId, toolkitSlug);
+  const authConfigId = await getOrCreateAuthConfig(composio, toolkitSlug);
+
+  const request = await composio.connectedAccounts.link(userId, authConfigId);
   const redirectUrl = request.redirectUrl;
   if (!redirectUrl) {
-    throw new Error(`${toolkitName(toolkitSlug)} did not return a consent URL. It may need an API key rather than OAuth.`);
+    // API-key/bot-token toolkits (e.g. Telegram) have no OAuth consent screen — there is
+    // nothing to redirect to. Surface that plainly instead of a blank browser.
+    throw new Error(
+      `${toolkitName(toolkitSlug)} connects with an API key rather than a sign-in, which isn't supported in-app yet.`,
+    );
   }
 
   await upsertConnection(userId, toolkitSlug, request.id ?? null, "pending");
