@@ -225,9 +225,25 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Follow-up sent to ${ld.name}.` };
       }
       case "schedule_showing": {
-        const s = await createShowing(user.id, { address: String(args.address ?? "").trim(), leadName: args.leadName ? String(args.leadName) : undefined, scheduledAt: args.when ? String(args.when) : undefined, source: "assistant" });
+        const address = String(args.address ?? "").trim();
+        if (!address) return { ok: false, message: "Which property is the showing for?" };
+        // `when` may be an ISO datetime OR free text ("Sat 2:00 PM"). scheduled_at is a
+        // timestamptz column, so only pass it a value it can store; otherwise keep the raw
+        // phrasing in notes so nothing is lost (and the insert never fails).
+        const whenRaw = args.when ? String(args.when).trim() : "";
+        const parsed = whenRaw ? new Date(whenRaw) : null;
+        const scheduledAt = parsed && !isNaN(parsed.getTime()) ? parsed.toISOString() : undefined;
+        const notes = whenRaw && !scheduledAt ? `Requested time: ${whenRaw}` : undefined;
+        const s = await createShowing(user.id, {
+          address,
+          leadName: args.leadName ? String(args.leadName) : undefined,
+          scheduledAt,
+          notes,
+          source: "assistant",
+        });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "showing_scheduled", title: `Showing at ${s.address}`, entityType: "re_showing", entityId: s.id });
-        return { ok: true, message: `Showing recorded for ${s.address}.` };
+        const whenMsg = scheduledAt ? ` for ${parsed!.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}` : whenRaw ? ` (${whenRaw})` : "";
+        return { ok: true, message: `Showing recorded for ${s.address}${whenMsg}.` };
       }
       case "lease_renewal": {
         const leases = await listLeases(user.id);
