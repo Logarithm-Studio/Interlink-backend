@@ -364,10 +364,21 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "create_drive_doc",
-    description: "Create a new Google Doc in the user's Drive and return its link.",
+    description:
+      "Create a Google Doc — a report, memo, brief, meeting notes, proposal, summary, letter, etc. — in the user's Drive with FULL formatted content, and return its link. Use this whenever the user asks you to write up, draft, or produce a document/report/file. Put the ENTIRE document body in `content` as Markdown (use #/##/### headings, - bullet lists, 1. numbered lists, **bold**); never leave it empty. The result is a real Google Doc the user can open, download as PDF or Word, or share. Set `share: true` to also make it viewable by anyone with the link so it can be sent to other people.",
     parameters: {
       type: "object",
-      properties: { name: { type: "string", description: "Document title." } },
+      properties: {
+        name: { type: "string", description: "Document title." },
+        content: {
+          type: "string",
+          description: "The complete document body in Markdown. Write the full report/letter/notes here.",
+        },
+        share: {
+          type: "boolean",
+          description: "If true, make the doc link-shareable (anyone with the link can view) and return that link.",
+        },
+      },
       required: ["name"],
     },
   },
@@ -1297,8 +1308,29 @@ export async function executeAction(
         return { ok: true, message, data: files };
       }
       case "create_drive_doc": {
-        const doc = await createDriveDoc(userId, String(args.name ?? "Untitled document"));
-        return { ok: true, message: `Created Google Doc "${doc.name}"${doc.webViewLink ? `: ${doc.webViewLink}` : "."}`, data: doc };
+        const doc = await createDriveDoc(
+          userId,
+          String(args.name ?? "Untitled document"),
+          typeof args.content === "string" ? args.content : undefined,
+        );
+        let link = doc.webViewLink;
+        let shared = false;
+        if (args.share === true && doc.id) {
+          try {
+            const shareLink = await shareDriveFile(userId, doc.id);
+            if (shareLink) link = shareLink;
+            shared = true;
+          } catch {
+            /* sharing failed — fall back to the private link */
+          }
+        }
+        const shareNote = shared ? " Anyone with the link can view it." : "";
+        return {
+          ok: true,
+          message: `Created "${doc.name}"${link ? `: ${link}` : "."}${shareNote} You can open it to download as PDF or Word, or share it.`,
+          data: doc,
+          links: link ? [{ app: "google-drive", url: link, label: "Open document" }] : undefined,
+        };
       }
       case "delete_drive_file": {
         const targets = await resolveDriveTargets(userId, args);

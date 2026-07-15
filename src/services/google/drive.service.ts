@@ -94,11 +94,76 @@ export async function shareDriveFile(userId: string, fileId: string): Promise<st
   return res.data.webViewLink ?? "";
 }
 
-/** Create a new Google Doc and return its link. */
-export async function createDriveDoc(userId: string, name: string): Promise<DriveFile> {
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Minimal inline Markdown → HTML (bold, italic, code, links). */
+function inlineMarkdown(s: string): string {
+  return escapeHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*]+?)\*/g, "$1<em>$2</em>")
+    .replace(/`([^`]+?)`/g, "<code>$1</code>")
+    .replace(/\[(.+?)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+/**
+ * Block-level Markdown → HTML. Drive converts uploaded HTML into a formatted Google Doc, so
+ * this is what turns an agent-authored report (headings, bullet/numbered lists, paragraphs)
+ * into a real document instead of a wall of text.
+ */
+function markdownToHtml(md: string): string {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let inUl = false;
+  let inOl = false;
+  const closeLists = () => {
+    if (inUl) { out.push("</ul>"); inUl = false; }
+    if (inOl) { out.push("</ol>"); inOl = false; }
+  };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { closeLists(); continue; }
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/^(#{1,6})\s+(.+)$/))) {
+      closeLists();
+      const lvl = m[1].length;
+      out.push(`<h${lvl}>${inlineMarkdown(m[2])}</h${lvl}>`);
+    } else if (/^\s*[-*]\s+\[[ xX]\]\s+/.test(line)) {
+      const text = line.replace(/^\s*[-*]\s+\[([ xX])\]\s+/, (_s, c) => (c.toLowerCase() === "x" ? "☑ " : "☐ "));
+      if (inOl) { out.push("</ol>"); inOl = false; }
+      if (!inUl) { out.push("<ul>"); inUl = true; }
+      out.push(`<li>${inlineMarkdown(text)}</li>`);
+    } else if ((m = line.match(/^\s*[-*]\s+(.+)$/))) {
+      if (inOl) { out.push("</ol>"); inOl = false; }
+      if (!inUl) { out.push("<ul>"); inUl = true; }
+      out.push(`<li>${inlineMarkdown(m[1])}</li>`);
+    } else if ((m = line.match(/^\s*\d+[.)]\s+(.+)$/))) {
+      if (inUl) { out.push("</ul>"); inUl = false; }
+      if (!inOl) { out.push("<ol>"); inOl = true; }
+      out.push(`<li>${inlineMarkdown(m[1])}</li>`);
+    } else {
+      closeLists();
+      out.push(`<p>${inlineMarkdown(line)}</p>`);
+    }
+  }
+  closeLists();
+  return `<!DOCTYPE html><html><body>${out.join("")}</body></html>`;
+}
+
+/**
+ * Create a new Google Doc and return its link. When `content` is given (Markdown), it's
+ * converted to HTML and uploaded so Drive produces a fully-formatted document — the vehicle
+ * for agent-generated reports the user can then download (PDF/Word) or share.
+ */
+export async function createDriveDoc(userId: string, name: string, content?: string): Promise<DriveFile> {
   const drive = await getDriveClient(userId);
+  const body = content?.trim();
   const res = await drive.files.create({
     requestBody: { name: name || "Untitled document", mimeType: "application/vnd.google-apps.document" },
+    ...(body
+      ? { media: { mimeType: "text/html", body: Readable.from(Buffer.from(markdownToHtml(body), "utf8")) } }
+      : {}),
     fields: "id,name,mimeType,webViewLink,modifiedTime",
   });
   const f = res.data;
