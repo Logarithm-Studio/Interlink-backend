@@ -573,6 +573,20 @@ export async function executeComposioTool(
     return { ok: false, message: "That app isn't available — Composio is not configured on the server." };
   }
 
+  // Proactive connection check: a tool for a known toolkit that isn't ACTIVE (e.g. an OAuth
+  // that was started but never finished — status 'pending') would otherwise fail with an
+  // opaque "Error executing the tool". Tell the user plainly to finish connecting it.
+  const toolkitSlug = slug.split("_")[0].toLowerCase();
+  if (isKnownToolkit(toolkitSlug)) {
+    const active = await activeToolkitSlugs(userId);
+    if (!active.includes(toolkitSlug)) {
+      return {
+        ok: false,
+        message: `${toolkitName(toolkitSlug)} isn't fully connected yet. Open Settings → Connected accounts and finish connecting ${toolkitName(toolkitSlug)}, then try again.`,
+      };
+    }
+  }
+
   try {
     const result = await composio.tools.execute(slug, {
       userId,
