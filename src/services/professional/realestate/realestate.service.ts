@@ -12,6 +12,7 @@ import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
 import { getMarketStats, isRentCastConfigured, searchListings, type MarketListing } from "./rentcast.service";
 import { getCensusMarketStats, isCensusConfigured } from "./census.service";
+import { searchRapidListings, isRapidListingsConfigured } from "./rapidListings.service";
 
 const PERSONA = "real_estate";
 
@@ -144,11 +145,11 @@ async function buildSnapshot(userId: string): Promise<string> {
   const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US")}`;
   return [
     `Active listings: ${active.length}. Leads: ${leads.length}.`,
-    isRentCastConfigured()
-      ? "Live market data (RentCast) is connected: use search_market for external for-sale listings and market_report for area stats by ZIP."
+    isRentCastConfigured() || isRapidListingsConfigured()
+      ? "Live listings are connected: use search_market for real for-sale listings by area, and market_report for area stats by ZIP."
       : isCensusConfigured()
-        ? "market_report gives free area stats (median home value, median rent, ownership) by ZIP via US Census. Live for-sale listing search (search_market) needs RENTCAST_API_KEY."
-        : "Market data is not configured yet — set CENSUS_API_KEY (free) for market_report.",
+        ? "market_report gives free area stats (median home value, median rent, ownership) by ZIP via US Census. For live for-sale listings (search_market), set RAPIDAPI_KEY (free tier)."
+        : "Market data is not configured yet — set CENSUS_API_KEY (free) for market_report, and RAPIDAPI_KEY (free tier) for live listings.",
     "Listings:",
     ...listings.slice(0, 15).map((l) => `- ${l.address} | ${fmt(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
     "Leads:",
@@ -172,7 +173,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "schedule_showing", description: "Record a property showing for a lead.", parameters: { type: "object", properties: { address: { type: "string" }, leadName: { type: "string" }, when: { type: "string", description: "ISO datetime." } }, required: ["address"] } },
   { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant. Optionally pass the property's ZIP to factor localized market pricing trends into the renewal terms.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." }, zipCode: { type: "string", description: "Property ZIP — pulls localized pricing trends (RentCast) to inform the renewal." } }, required: ["property"] } },
   { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
-  { name: "search_market", description: "Search live for-sale market listings (RentCast). Provide a city+state or a ZIP code.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number" }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
+  { name: "search_market", description: "Search LIVE for-sale market listings (real current listings from Realtor.com/RentCast). Provide a city+state or a ZIP code; optionally filter by beds and max price. Returns real properties on the market with address, price, beds/baths, and size.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number", description: "Minimum bedrooms." }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
   { name: "market_report", description: "Generate an area market report for a ZIP code — median home value, median rent, and owner-occupancy from free US Census data (or live sale stats if RentCast is configured).", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
   { name: "transaction_tasks", description: "Produce a standard purchase/closing task checklist for a property that's gone under contract, with milestone due dates counted back from the close date. Use when a deal is accepted and the agent needs to manage the transaction to closing.", parameters: { type: "object", properties: { property: { type: "string", description: "The property address or listing under contract." }, closeDate: { type: "string", description: "Target closing date (YYYY-MM-DD). Defaults to 30 days out." } }, required: ["property"] } },
 ];
@@ -301,18 +302,33 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}` };
       }
       case "search_market": {
-        if (!isRentCastConfigured()) return { ok: false, message: "Live for-sale listing search needs a listings provider (RENTCAST_API_KEY). For free area market stats by ZIP, use market_report instead (US Census data)." };
-        const results: MarketListing[] = await searchListings({
+        const searchArgs = {
           city: args.city ? String(args.city) : undefined,
           state: args.state ? String(args.state) : undefined,
           zipCode: args.zipCode ? String(args.zipCode) : undefined,
           beds: typeof args.beds === "number" ? args.beds : undefined,
           maxPriceDollars: typeof args.maxPrice === "number" ? args.maxPrice : undefined,
           limit: 15,
-        });
-        if (results.length === 0) return { ok: true, message: "No active market listings matched that search (or the area returned no data)." };
-        const lines = results.map((l) => `- ${l.address} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);
-        return { ok: true, message: `Found ${results.length} for-sale listing(s):\n${lines.join("\n")}` };
+        };
+        // RentCast if configured; otherwise the free RapidAPI Realtor.com listings feed.
+        let results: MarketListing[] = [];
+        let source = "";
+        if (isRentCastConfigured()) {
+          results = await searchListings(searchArgs);
+          source = "RentCast";
+        } else if (isRapidListingsConfigured()) {
+          results = await searchRapidListings(searchArgs);
+          source = "Realtor.com";
+        } else {
+          return {
+            ok: false,
+            message:
+              "Live listing search needs a listings key. Set RAPIDAPI_KEY (free tier — rapidapi.com, subscribe to the Realtor API) for live for-sale listings, or use market_report for free area stats (US Census).",
+          };
+        }
+        if (results.length === 0) return { ok: true, message: "No active for-sale listings matched that search (or the area returned no data)." };
+        const lines = results.map((l) => `- ${l.address}${l.city ? `, ${l.city}${l.state ? `, ${l.state}` : ""}` : ""} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);
+        return { ok: true, message: `Found ${results.length} live for-sale listing(s) via ${source}:\n${lines.join("\n")}` };
       }
       case "market_report": {
         const zip = String(args.zipCode ?? "").trim();
