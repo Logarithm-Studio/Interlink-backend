@@ -18,14 +18,8 @@ import {
 import { runAgentTurn } from "../ai/agentLoop";
 
 // Integration services used by executeAction (function dispatch).
-import {
-  resumePlayback,
-  pausePlayback,
-  skipToNext,
-  search as spotifySearch,
-  playContext,
-  playTrack,
-} from "../spotify/spotify.service";
+// Spotify is no longer a native integration — it's brokered through Composio
+// (SPOTIFY_* tools), so the native spotify.service and its tools were removed here.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
 import {
@@ -68,6 +62,7 @@ import { getUserEvents } from "../events.service";
 import { isConnected, listIntegrationsForUser } from "../integrations/tokenStore";
 import { getTokens } from "../auth.service";
 import { listGmailMailboxMessages, sendAutomatedGmailMessage } from "../googleApi.service";
+import { listSpreadsheets, readSheetRange } from "../hr/sheets.service";
 import { searchContacts, listContacts } from "../google/contacts.service";
 import {
   searchPages as searchNotionPages,
@@ -100,7 +95,7 @@ import { getBoards as getTrelloBoards, getListsForBoard, getCardsForBoard, creat
 const PROFESSION_CONTEXT: Record<string, string> = {
   developer: "The user is a software developer. Prioritize GitHub PRs, coding tasks, and technical work. For music suggestions, default to focus/coding playlists. When calendar events involve 'standup', 'review', or 'sprint', treat them as high-priority.",
   designer: "The user is a designer/creative professional. Prioritize creative tasks, portfolio reviews, and client presentations in their calendar.",
-  student: "The user is a student. Prioritize assignments and study sessions. Use due dates on tasks as hard deadlines. Weather matters for campus commute.",
+  student: "The user is a student. Prioritize assignments and study sessions. Use due dates on tasks as hard deadlines. Weather matters for campus commute. If they connected Canvas via Composio, act on their LMS directly with the CANVAS_* tools — list courses, show upcoming assignments and grades, view a course's people/roster, create assignments, and enroll people. For 'here's a spreadsheet, add these people to <course>', call read_sheet to get the rows, then enroll each person with the Canvas enroll tool.",
   healthcare_professional: "The user works in healthcare. Prioritize patient-related scheduling, fitness metrics, and work-life balance. Be sensitive about sensitive medical context.",
   business_professional: "The user is a business professional. Prioritize meetings, client calls, and action items. Suggest productivity-focused music.",
   freelancer: "The user is a freelancer. Balance client work with personal time. Track deadlines across Todoist and Calendar carefully.",
@@ -144,7 +139,7 @@ export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "- Treat broad or vague requests as workflow requests. Infer the user's likely goal from the current prompt, conversation history, persona, and connected apps.",
   "- You can chain tools to finish a workflow in one turn. When an ID is missing (channel, board, list, repo, project, page), CALL the relevant discovery tool FIRST — its result is fed back to you in the same turn — then call the action tool with the resolved ID. Never ask the user for an ID you can look up.",
   "- Read/list/search tools run automatically as you chain. Only the final WRITE action (create/send/post/play) is shown to the user to confirm before it executes — so keep chaining until you reach that write, then emit it.",
-  "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to Spotify, email questions to Gmail.",
+  "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to YouTube Music (or Spotify if the user connected it via Composio), email questions to Gmail.",
   "- People by name: when a request names a person (invite, email, DM) but not their address, call search_contacts FIRST to resolve their email/handle, then act. Do this for EACH person named.",
   "- Act on MULTIPLES in one turn: an invite/email can go to several recipients at once (pass them all as a list), and Drive delete/share can take several files (via `names` or a `query`). Never make the user repeat themselves per person or per file.",
   "- To reach a person's Slack inbox use send_slack_dm (resolves them by name); use post_slack_message only for channels.",
@@ -175,15 +170,16 @@ function buildSystemPrompt(persona: string): string {
 ${professionCtx}
 
 Apps you act on: Google Calendar, Gmail, Google Tasks, Google Drive, Google Meet, Google Fit, YouTube,
-YouTube Music, Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (send only), Spotify, Todoist,
+YouTube Music, Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (send only), Todoist,
 Notion, Slack, GitHub, Jira, Trello, and weather. The "Connected apps" line each turn tells you which are
 already authorized. If a task needs one that ISN'T connected, name it, offer to connect it, and still do
 everything you can right now — do NOT refuse the whole request.
-The user can also connect apps through Composio (Zoom, Calendly, Dropbox, Airtable, Telegram, Discord,
-HubSpot, Stripe, Linear, and more). Those tools appear as UPPER_SNAKE names prefixed with the app
-(e.g. CALENDLY_LIST_EVENTS) and are only usable when the app is named on the "Connected apps" line — if it
-isn't there, tell the user to connect it in Settings → Connected accounts.
-For music requests, prefer YouTube Music (search_youtube_music) — it returns a link to open, it does not start playback on a device. Spotify can control playback only when the user's Spotify is properly authorized.
+The user can also connect apps through Composio (Spotify, Zoom, Calendly, Dropbox, Airtable, Telegram,
+Discord, HubSpot, Stripe, Linear, and more). Those tools appear as UPPER_SNAKE names prefixed with the app
+(e.g. SPOTIFY_PAUSE_PLAYBACK, CALENDLY_LIST_EVENTS) and are only usable when the app is named on the
+"Connected apps" line — if it isn't there, tell the user to connect it in Settings → Connected accounts.
+For music requests, prefer YouTube Music (search_youtube_music) — it returns a link to open. If the user
+connected Spotify via Composio, you can also control their playback with the SPOTIFY_* tools.
 
 How to think each turn:
 1. Infer the real goal. Use the conversation history to resolve references like "it", "the other one", "that deal", "there".
@@ -208,7 +204,7 @@ Signature "life agent" behaviors — handle these proactively and thoroughly:
 - Life admin → surface tasks due, reminders, and anything time-sensitive, and offer to act on them.
 
 Mapping examples (natural phrasing → tool):
-- "play see you again" / "…on spotify" → search_and_play_spotify(query="see you again")
+- "play see you again" → search_youtube_music(query="see you again"); if Spotify is connected via Composio, use SPOTIFY_* tools to actually start playback.
 - "add milk to my todoist" → create_todoist_task(content="milk")
 - "post to the team that the build is green" → list_slack_channels → post_slack_message(channel=<resolved id>, text=…)
 - "what's on my calendar tomorrow" → get_calendar_events(days=1)
@@ -244,42 +240,6 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
         days: { type: "number", description: "Forecast days (1-7)" },
       },
       required: [],
-    },
-  },
-  {
-    name: "play_spotify",
-    description:
-      "Resume playback or play a Spotify URI you already know. Use this ONLY to resume/continue or when you have an exact Spotify context URI. To play a named song, artist, album, or playlist, use search_and_play_spotify instead.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "What to play (playlist name, genre, mood, or artist)" },
-        contextUri: { type: "string", description: "Spotify URI if known" },
-      },
-      required: [],
-    },
-  },
-  {
-    name: "pause_spotify",
-    description: "Pause Spotify playback.",
-    parameters: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "skip_spotify",
-    description: "Skip to the next track on Spotify.",
-    parameters: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "search_and_play_spotify",
-    description:
-      "Search Spotify for a named song, artist, album, or playlist and play the top result. Use this for any request like 'play <song>', 'play <song> on Spotify', 'play some <artist>', or 'put on <playlist>'.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query (track name, artist, playlist)" },
-        type: { type: "string", enum: ["track", "playlist", "album"], description: "Type to search for" },
-      },
-      required: ["query"],
     },
   },
   {
@@ -495,6 +455,46 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
         body: { type: "string" },
       },
       required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "list_spreadsheets",
+    description:
+      "List the user's Google Sheets (id + name). Use this to resolve a spreadsheet the user named (e.g. 'the new employees sheet') to its id before reading it or emailing from it.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "read_sheet",
+    description:
+      "Read rows from a Google Sheet. Pass spreadsheetId (resolve it with list_spreadsheets first) and an optional A1 range (defaults to the first sheet). Returns the header row + data rows so you can inspect columns like name, email, and join date.",
+    parameters: {
+      type: "object",
+      properties: {
+        spreadsheetId: { type: "string", description: "Spreadsheet id (from list_spreadsheets)." },
+        range: { type: "string", description: "Optional A1 range, e.g. 'Sheet1!A1:Z1000'. Defaults to the first sheet." },
+      },
+      required: ["spreadsheetId"],
+    },
+  },
+  {
+    name: "send_bulk_email_from_sheet",
+    description:
+      "Send a personalized templated email to many people listed in a Google Sheet — e.g. a welcome message to new employees who joined within a date range. Reads the sheet, keeps rows whose date column falls between fromDate and toDate (when given), fills {{ColumnName}} placeholders (plus {{name}} and {{email}}) per row, and sends each via Gmail. Resolve the sheet with list_spreadsheets first, or pass spreadsheetName and it will be resolved. This is a WRITE/bulk action — the app confirms before anything is sent.",
+    parameters: {
+      type: "object",
+      properties: {
+        spreadsheetId: { type: "string", description: "Spreadsheet id (resolve via list_spreadsheets)." },
+        spreadsheetName: { type: "string", description: "Spreadsheet name — used if spreadsheetId is not provided." },
+        range: { type: "string", description: "Optional A1 range; defaults to the first sheet." },
+        emailColumn: { type: "string", description: "Header of the email column (auto-detected if omitted)." },
+        nameColumn: { type: "string", description: "Header of the recipient's name column (auto-detected if omitted)." },
+        dateColumn: { type: "string", description: "Header of the join/entry date column used for the date filter (auto-detected if omitted)." },
+        fromDate: { type: "string", description: "Only include rows dated on/after this YYYY-MM-DD (optional)." },
+        toDate: { type: "string", description: "Only include rows dated on/before this YYYY-MM-DD (optional)." },
+        subject: { type: "string", description: "Email subject; may include {{ColumnName}} placeholders." },
+        bodyTemplate: { type: "string", description: "Email body; use {{name}}, {{email}}, or any {{ColumnName}} placeholder to personalize per row." },
+      },
+      required: ["subject", "bodyTemplate"],
     },
   },
   {
@@ -1092,13 +1092,6 @@ export function deriveOpenLinks(
       return ytList("youtube");
     case "search_youtube_music":
       return ytList("youtube-music");
-    case "search_and_play_spotify":
-    case "play_spotify": {
-      const uri = str(d.uri);
-      const m = uri.match(/^spotify:(\w+):(.+)$/);
-      const url = m ? `https://open.spotify.com/${m[1]}/${m[2]}` : "";
-      return url ? [{ label: `Open in Spotify`, url, app: "spotify" }] : [];
-    }
     case "create_github_issue": {
       const url = str((d as { htmlUrl?: unknown; url?: unknown }).htmlUrl) || str((d as { url?: unknown }).url);
       return url ? [{ label: "Open issue", url, app: "web" }] : [];
@@ -1106,52 +1099,6 @@ export function deriveOpenLinks(
     default:
       return [];
   }
-}
-
-const DEFAULT_SPOTIFY_SEARCH_TYPES = "track,album,playlist";
-
-function normalizeSpotifySearchTypes(value: unknown): string {
-  const raw = String(value ?? "").toLowerCase().trim();
-  if (!raw) return DEFAULT_SPOTIFY_SEARCH_TYPES;
-
-  const aliases: Record<string, string> = {
-    song: "track",
-    songs: "track",
-    track: "track",
-    tracks: "track",
-    album: "album",
-    albums: "album",
-    playlist: "playlist",
-    playlists: "playlist",
-  };
-  const types = raw
-    .split(",")
-    .map((part) => aliases[part.trim()])
-    .filter((part): part is string => Boolean(part));
-  return [...new Set(types)].join(",") || DEFAULT_SPOTIFY_SEARCH_TYPES;
-}
-
-async function searchAndPlaySpotify(userId: string, queryText: string, rawType?: unknown): Promise<ExecuteResult> {
-  const q = queryText.trim();
-  if (!q) return { ok: false, message: "Tell me what song, album, or playlist to play on Spotify." };
-
-  const searchTypes = normalizeSpotifySearchTypes(rawType);
-  const results = await spotifySearch(userId, q, searchTypes);
-  const requestedTypes = searchTypes.split(",");
-  const playlistFirst = requestedTypes.length === 1 && requestedTypes[0] === "playlist";
-  const albumFirst = requestedTypes.length === 1 && requestedTypes[0] === "album";
-
-  const match =
-    playlistFirst ? results.playlists[0] ?? results.tracks[0] ?? results.albums[0]
-    : albumFirst ? results.albums[0] ?? results.tracks[0] ?? results.playlists[0]
-    : results.tracks[0] ?? results.albums[0] ?? results.playlists[0];
-
-  if (!match?.uri) return { ok: false, message: `No Spotify results found for "${q}".` };
-
-  if (match.uri.includes(":playlist:") || match.uri.includes(":album:")) await playContext(userId, match.uri);
-  else await playTrack(userId, match.uri);
-
-  return { ok: true, message: `Playing "${match.name || q}" on Spotify.`, data: { uri: match.uri, name: match.name } };
 }
 
 function splitRepo(full: unknown): { owner: string; repo: string } | null {
@@ -1260,6 +1207,120 @@ async function resolveNotionParent(userId: string, args: Record<string, unknown>
   return pages[0]?.id ?? null;
 }
 
+// ─── Sheet → templated bulk email (e.g. "welcome new employees in a date range") ───
+
+/** Cap a single bulk-send so a malformed sheet can't fan out into thousands of emails. */
+const MAX_BULK_EMAILS = 100;
+
+/** Resolve a sheet column by an explicit header hint (or a column letter), else common fallbacks. */
+function resolveColumnIndex(headers: string[], hint: string | undefined, fallbacks: string[]): number {
+  const norm = (s: string) => s.toLowerCase().trim();
+  const H = headers.map(norm);
+  if (hint && hint.trim()) {
+    const h = norm(hint);
+    const exact = H.indexOf(h);
+    if (exact >= 0) return exact;
+    const partial = H.findIndex((x) => x.includes(h) || h.includes(x));
+    if (partial >= 0) return partial;
+    if (/^[A-Za-z]$/.test(hint.trim())) return hint.trim().toUpperCase().charCodeAt(0) - 65;
+  }
+  for (const f of fallbacks) {
+    const i = H.findIndex((x) => x.includes(f));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+/** Fill {{placeholder}} tokens from a row record (keys are lower-cased header names + name/email). */
+function renderTemplate(tpl: string, record: Record<string, string>): string {
+  return tpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, key: string) => record[key.toLowerCase().trim()] ?? "");
+}
+
+async function sendBulkEmailFromSheet(userId: string, args: Record<string, unknown>): Promise<ExecuteResult> {
+  const subject = String(args.subject ?? "").trim();
+  const bodyTemplate = String(args.bodyTemplate ?? "").trim();
+  if (!subject || !bodyTemplate) {
+    return { ok: false, message: "I need a subject and a body template to send from the sheet." };
+  }
+
+  // Resolve the sheet by id, or by name via a Drive lookup.
+  let spreadsheetId = String(args.spreadsheetId ?? "").trim();
+  if (!spreadsheetId && args.spreadsheetName) {
+    const name = String(args.spreadsheetName).trim().toLowerCase();
+    const all = await listSpreadsheets(userId);
+    const match = all.find((s) => s.name.toLowerCase() === name) ?? all.find((s) => s.name.toLowerCase().includes(name));
+    if (!match) return { ok: false, message: `I couldn't find a Google Sheet named "${args.spreadsheetName}".` };
+    spreadsheetId = match.id;
+  }
+  if (!spreadsheetId) return { ok: false, message: "Which spreadsheet? Resolve it with list_spreadsheets first, or give me its name." };
+
+  const range = String(args.range ?? "A1:Z1000").trim() || "A1:Z1000";
+  const rows = await readSheetRange(userId, spreadsheetId, range);
+  if (rows.length < 2) return { ok: false, message: "That sheet has no data rows to email." };
+
+  const headers = rows[0].values;
+  const emailIdx = resolveColumnIndex(headers, args.emailColumn ? String(args.emailColumn) : undefined, ["email", "e-mail", "mail"]);
+  if (emailIdx < 0) {
+    return { ok: false, message: "I couldn't find an email column in that sheet. Tell me which column holds the email addresses." };
+  }
+  const nameIdx = resolveColumnIndex(headers, args.nameColumn ? String(args.nameColumn) : undefined, ["name", "employee", "full name"]);
+  const dateIdx = resolveColumnIndex(headers, args.dateColumn ? String(args.dateColumn) : undefined, ["join", "start", "hired", "date", "created", "timestamp"]);
+
+  const fromDate = args.fromDate ? new Date(`${String(args.fromDate)}T00:00:00`) : null;
+  const toDate = args.toDate ? new Date(`${String(args.toDate)}T23:59:59`) : null;
+  const inRange = (v: string): boolean => {
+    if (!fromDate && !toDate) return true;
+    if (dateIdx < 0) return true; // no date column to filter on → include the row
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return false;
+    if (fromDate && d < fromDate) return false;
+    if (toDate && d > toDate) return false;
+    return true;
+  };
+
+  const fromEmail = await getPrimaryGoogleEmail(userId);
+  if (!fromEmail) return { ok: false, message: "I couldn't resolve your Gmail address. Reconnect Google in Connected Accounts." };
+
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const sent: string[] = [];
+  let skipped = 0;
+
+  for (const row of rows.slice(1)) {
+    if (sent.length >= MAX_BULK_EMAILS) break;
+    const cells = row.values;
+    if (!inRange(dateIdx >= 0 ? cells[dateIdx] ?? "" : "")) continue;
+    const to = (cells[emailIdx] ?? "").trim();
+    if (!emailRe.test(to)) { skipped++; continue; }
+
+    const record: Record<string, string> = {};
+    headers.forEach((h, i) => { record[h.toLowerCase().trim()] = (cells[i] ?? "").trim(); });
+    record.email = to;
+    if (nameIdx >= 0) record.name = (cells[nameIdx] ?? "").trim();
+
+    try {
+      await sendAutomatedGmailMessage({
+        userId,
+        fromEmail,
+        toEmail: to,
+        subject: renderTemplate(subject, record),
+        body: renderTemplate(bodyTemplate, record),
+      });
+      sent.push(record.name || to);
+    } catch {
+      skipped++;
+    }
+  }
+
+  if (sent.length === 0) {
+    return { ok: false, message: `No emails were sent — no rows had a valid email in the given range${skipped ? ` (${skipped} skipped)` : ""}.` };
+  }
+  const rangeNote = fromDate || toDate ? ` (joined ${args.fromDate ?? "any"} → ${args.toDate ?? "any"})` : "";
+  return {
+    ok: true,
+    message: `Sent to ${sent.length} recipient(s)${rangeNote}: ${sent.slice(0, 15).join(", ")}${sent.length > 15 ? "…" : ""}.${skipped ? ` Skipped ${skipped} row(s) without a valid email.` : ""}`,
+  };
+}
+
 /**
  * Execute a single personal-assistant action. Used both for confirmed write
  * actions (via /execute) and for auto-running read-only actions inside command().
@@ -1273,23 +1334,6 @@ export async function executeAction(
 ): Promise<ExecuteResult> {
   try {
     switch (name) {
-      case "play_spotify": {
-        const contextUri = String(args.contextUri ?? "").trim();
-        const q = String(args.query ?? "").trim();
-        if (contextUri) await playContext(userId, contextUri);
-        else if (q) return searchAndPlaySpotify(userId, q, args.type);
-        else await resumePlayback(userId);
-        return { ok: true, message: "Playing on Spotify." };
-      }
-      case "search_and_play_spotify": {
-        return searchAndPlaySpotify(userId, String(args.query ?? ""), args.type);
-      }
-      case "pause_spotify":
-        await pausePlayback(userId);
-        return { ok: true, message: "Playback paused." };
-      case "skip_spotify":
-        await skipToNext(userId);
-        return { ok: true, message: "Skipped to the next track." };
       case "get_weather": {
         if (ctx.lat == null || ctx.lon == null) {
           return { ok: false, message: "I need your location to check the weather. Enable location access and try again." };
@@ -1496,6 +1540,22 @@ export async function executeAction(
         await sendAutomatedGmailMessage({ userId, fromEmail, toEmail: recipients.join(", "), subject, body });
         return { ok: true, message: `Sent your email to ${recipients.join(", ")}.` };
       }
+      case "list_spreadsheets": {
+        const sheets = await listSpreadsheets(userId);
+        const message = linesOrNone(sheets, (s) => `- ${s.name} (id: ${s.id})`, "You have no Google Sheets I can see.", 30);
+        return { ok: true, message, data: sheets };
+      }
+      case "read_sheet": {
+        const spreadsheetId = String(args.spreadsheetId ?? "").trim();
+        if (!spreadsheetId) return { ok: false, message: "Which spreadsheet? Resolve it with list_spreadsheets first." };
+        const range = String(args.range ?? "A1:Z1000").trim() || "A1:Z1000";
+        const rows = await readSheetRange(userId, spreadsheetId, range);
+        if (rows.length === 0) return { ok: true, message: "That sheet/range is empty.", data: [] };
+        const preview = rows.slice(0, 20).map((r) => `- ${r.values.join(" | ")}`).join("\n");
+        return { ok: true, message: `${rows.length} row(s):\n${preview}${rows.length > 20 ? "\n…" : ""}`, data: rows };
+      }
+      case "send_bulk_email_from_sheet":
+        return sendBulkEmailFromSheet(userId, args);
       case "search_contacts": {
         const contacts = await searchContacts(userId, String(args.query ?? ""));
         const message = linesOrNone(contacts, (c) => `- ${c.name} <${c.email}>`, "No matching contacts found.", 10);
@@ -1827,10 +1887,6 @@ export async function executeAction(
 
 export function summarizeAction(name: string, args: Record<string, unknown>): string {
   switch (name) {
-    case "play_spotify": return `Play ${args.query ? `"${args.query}"` : "music"} on Spotify`;
-    case "pause_spotify": return "Pause Spotify playback";
-    case "skip_spotify": return "Skip to next track";
-    case "search_and_play_spotify": return `Search and play "${args.query}" on Spotify`;
     case "create_google_task": return `Create task: "${args.title}"`;
     case "complete_google_task": return `Mark task "${args.title ?? ""}" as done`;
     case "delete_google_task": return `Delete task "${args.title ?? ""}"`;
@@ -1877,6 +1933,12 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "get_outlook_inbox": return "Check Outlook inbox";
     case "send_outlook_mail": return `Send an Outlook email to ${toEmailList(args.to).join(", ") || "a recipient"}`;
     case "send_gmail": return `Email ${toEmailList(args.to).join(", ") || "a recipient"}: "${args.subject ?? ""}"`;
+    case "list_spreadsheets": return "List your Google Sheets";
+    case "read_sheet": return "Read a Google Sheet";
+    case "send_bulk_email_from_sheet":
+      return `Send "${args.subject ?? "an email"}" to people in ${
+        args.spreadsheetName ? `"${args.spreadsheetName}"` : "a Google Sheet"
+      }${args.fromDate || args.toDate ? ` (joined ${args.fromDate ?? "any"} → ${args.toDate ?? "any"})` : ""}`;
     case "search_contacts": return `Look up contact "${args.query ?? ""}"`;
     case "list_contacts": return "List contacts";
     case "list_slack_users": return "List Slack members";
@@ -1911,6 +1973,8 @@ export const READ_ONLY_ACTIONS = new Set([
   "list_onedrive_files",
   "get_gmail_inbox",
   "search_gmail_messages",
+  "list_spreadsheets",
+  "read_sheet",
   "get_calendar_events",
   "list_google_tasks",
   "list_todoist_tasks",

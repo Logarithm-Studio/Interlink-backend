@@ -25,6 +25,8 @@ export const AGENT_SYSTEM = [
   "- Flash reporting: email_flash_report sends the AR + expense + cash-runway summary.",
   "- Tax gathering: gather_tax_docs requests W-9/1099 forms from contractors over the reporting threshold.",
   "- Automation control: pause_client, set_automation (off/suggest/auto).",
+  "- Ledger data entry: create_invoice adds a new invoice/receivable for a client — use it to record what a client owes,",
+  "  or to ingest an attached sheet/CSV of invoices (call it once per row). This is how the user loads their own data.",
   "FINISH THE CHAIN (PRD §4.4) using the ledger/payment apps the user connected (they appear as tools):",
   "- Expense auditing: after run_expense_audit, if QuickBooks or Xero is connected, look the flagged charges up",
   "  against the accounting ledger to confirm the discrepancy, then message the owner on Slack with the adjustment.",
@@ -43,6 +45,22 @@ export const AGENT_SYSTEM = [
 const noParams = { type: "object", properties: {} } as const;
 
 export const AGENT_TOOLS: GeminiToolFunction[] = [
+  {
+    name: "create_invoice",
+    description:
+      "Add a new invoice / receivable to the accounts-receivable ledger for a client. Use whenever the user asks to add an invoice, record what a client owes, add a client with an amount, or ingest rows from an attached sheet/CSV of invoices (call once per row). This is how the user gets their own data into the ledger.",
+    parameters: {
+      type: "object",
+      properties: {
+        clientName: { type: "string", description: "The client's name." },
+        amount: { type: "number", description: "Invoice amount in dollars, e.g. 5000 for $5,000." },
+        clientEmail: { type: "string", description: "Client email — recommended so reminders can be sent later." },
+        dueDate: { type: "string", description: "Due date as YYYY-MM-DD (optional; defaults to ~14 days out)." },
+        invoiceNumber: { type: "string", description: "Optional invoice number; auto-generated if omitted." },
+      },
+      required: ["clientName", "amount"],
+    },
+  },
   {
     name: "send_reminder",
     description: "Draft and send a payment reminder for one overdue invoice / client.",
@@ -147,6 +165,7 @@ export const AGENT_TOOLS: GeminiToolFunction[] = [
 ];
 
 export type AgentActionName =
+  | "create_invoice"
   | "send_reminder"
   | "remind_all_overdue"
   | "run_expense_audit"
@@ -164,6 +183,10 @@ export function summarizeAction(
   args: Record<string, unknown>,
 ): string {
   switch (name) {
+    case "create_invoice":
+      return `Add an invoice for ${args.clientName ?? "a client"}${
+        Number.isFinite(Number(args.amount)) ? ` of $${Number(args.amount).toLocaleString()}` : ""
+      }${args.dueDate ? ` due ${args.dueDate}` : ""}.`;
     case "send_reminder":
       return `Send a${args.tone ? ` ${args.tone}` : ""} payment reminder to ${args.clientName ?? "the selected client"}.`;
     case "remind_all_overdue":

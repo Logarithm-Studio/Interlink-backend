@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "crypto";
 import { query } from "../../config/db";
 import { generateAssistantReply } from "../ai/ai.service";
 import type { AssistantReply, AssistantChatTurn } from "../ai/prompts/assistant";
-import { listInvoices } from "./invoices.service";
+import { listInvoices, createInvoice, type Invoice } from "./invoices.service";
 import { listExpenses } from "./expenses.service";
 import { planAgentActions, planPersonaReply } from "../ai/multimodal.service";
 import { getVertical } from "../professional/registry";
@@ -56,6 +56,53 @@ function daysOverdue(due: string): number {
   return Math.max(0, Math.round((Date.now() - d) / 86_400_000));
 }
 
+/**
+ * Roll invoices up per client so the agent can answer about ANY client — not just the
+ * ones with an overdue invoice. Before this, a client whose invoices were all paid or
+ * merely open (e.g. "Acme Corp" with a current invoice) was invisible to the agent, which
+ * then truthfully but unhelpfully said it couldn't find them.
+ */
+interface ClientLedger {
+  name: string;
+  email: string;
+  invoiceCount: number;
+  outstandingCents: number;
+  openCount: number;
+  overdueCents: number;
+  overdueCount: number;
+  paidCents: number;
+  paidCount: number;
+}
+
+function buildClientLedgers(invoices: Invoice[]): ClientLedger[] {
+  const byClient = new Map<string, ClientLedger>();
+  for (const inv of invoices) {
+    const key = inv.clientName.trim().toLowerCase();
+    if (!key) continue;
+    const entry =
+      byClient.get(key) ??
+      { name: inv.clientName.trim(), email: inv.clientEmail || "", invoiceCount: 0, outstandingCents: 0, openCount: 0, overdueCents: 0, overdueCount: 0, paidCents: 0, paidCount: 0 };
+    entry.invoiceCount += 1;
+    if (!entry.email && inv.clientEmail) entry.email = inv.clientEmail;
+    if (inv.status === "paid") {
+      entry.paidCents += inv.amountCents;
+      entry.paidCount += 1;
+    } else {
+      entry.outstandingCents += inv.amountCents;
+      entry.openCount += 1;
+      if (daysOverdue(inv.dueDate) > 0) {
+        entry.overdueCents += inv.amountCents;
+        entry.overdueCount += 1;
+      }
+    }
+    byClient.set(key, entry);
+  }
+  // Most commercially relevant first: biggest outstanding, then biggest lifetime billing.
+  return [...byClient.values()].sort(
+    (a, b) => b.outstandingCents - a.outstandingCents || b.paidCents - a.paidCents,
+  );
+}
+
 async function buildSnapshot(userId: string): Promise<string> {
   const invoices = await listInvoices(userId);
   const expenses = await listExpenses(userId);
@@ -70,12 +117,27 @@ async function buildSnapshot(userId: string): Promise<string> {
 
   const fmt = (c: number) => `${(c / 100).toFixed(2)} ${currency}`;
 
+  const ledgers = buildClientLedgers(invoices);
+
   // Advisory book (portfolios + compliance) grounds the Financial Advisor persona so it
   // can ANSWER portfolio/compliance questions without a tool round-trip.
   const advisory = await buildAdvisorSnapshot(userId).catch(() => "");
 
   return [
     `Outstanding receivables: ${fmt(outstanding)} across ${active.length} invoice(s); ${overdue.length} overdue.`,
+    // Full client roster/ledger — every client the user has, so the agent can answer
+    // "what does <client> owe / what's their history" for anyone, not only overdue ones.
+    `Client ledger (${ledgers.length} client(s) — every client with any invoice):`,
+    ...ledgers
+      .slice(0, 40)
+      .map(
+        (c) =>
+          `- ${c.name} | outstanding ${fmt(c.outstandingCents)} (${c.openCount} open, ${c.overdueCount} overdue${
+            c.overdueCents ? `, ${fmt(c.overdueCents)} overdue` : ""
+          }) | lifetime paid ${fmt(c.paidCents)} across ${c.paidCount} | ${c.invoiceCount} invoice(s) total${
+            c.email ? ` | ${c.email}` : " | no email on file"
+          }`,
+      ),
     "Overdue invoices:",
     ...overdue
       .slice(0, 12)
@@ -271,7 +333,7 @@ const PERSONAL_TOOLS_NOTE = [
   "- Email via Gmail to one OR many recipients (send_gmail), and resolve people by name to their address first with search_contacts.",
   "- Schedule Google Meet meetings and invite multiple attendees at once; manage Google Calendar, Tasks, Drive (find/upload/share/delete one or many files), Notion, Todoist, Trello, Jira, GitHub.",
   "- Message teams and people on Slack: post_slack_message for channels, send_slack_dm to reach a person's inbox by name.",
-  "- Spotify/YouTube, weather, and fitness for lighter requests.",
+  "- YouTube / YouTube Music, weather, and fitness for lighter requests.",
   "- Any app the user connected via Composio (HubSpot, Salesforce, Stripe, Zendesk, Linear, Zoom, …) appears",
   "  as an UPPER_SNAKE tool prefixed with the app name (e.g. HUBSPOT_CREATE_CONTACT). Only the apps named on the",
   "  'Connected apps' line are actually available — use them for CRM, billing, ticketing and issue-tracker work.",
@@ -504,6 +566,34 @@ export async function executeAction(
   try {
     if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args);
     switch (name) {
+      case "create_invoice": {
+        const clientName = String(args.clientName ?? "").trim();
+        if (!clientName) return { ok: false, message: "Which client is this invoice for?" };
+        const dollars = Number(args.amount);
+        if (!Number.isFinite(dollars) || dollars <= 0) {
+          return { ok: false, message: "What dollar amount should the invoice be for?" };
+        }
+        const inv = await createInvoice(user.id, {
+          clientName,
+          clientEmail: args.clientEmail ? String(args.clientEmail).trim() : undefined,
+          amountCents: Math.round(dollars * 100),
+          dueDate: args.dueDate ? String(args.dueDate).trim() : undefined,
+          invoiceNumber: args.invoiceNumber ? String(args.invoiceNumber).trim() : undefined,
+        });
+        await recordActivity({
+          userId: user.id,
+          kind: "invoice_created",
+          title: `Invoice ${inv.invoiceNumber} added for ${inv.clientName}`,
+          detail: `$${(inv.amountCents / 100).toLocaleString("en-US")} · due ${inv.dueDate}`,
+          entityType: "invoice",
+          entityId: inv.id,
+          status: "done",
+        });
+        return {
+          ok: true,
+          message: `Added invoice ${inv.invoiceNumber} for ${inv.clientName} — $${(inv.amountCents / 100).toLocaleString("en-US")} due ${inv.dueDate}.`,
+        };
+      }
       case "send_reminder": {
         let invoiceId = String(args.invoiceId ?? "");
         if (!invoiceId && args.clientName) {

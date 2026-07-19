@@ -123,13 +123,22 @@ see `src/services/email/templates.service.ts`.
 [composio.service.ts](src/services/composio/composio.service.ts) + `/api/v1/composio/*`
 ([composio.routes.ts](src/routes/composio.routes.ts)). One `COMPOSIO_API_KEY` unlocks HubSpot,
 Salesforce, Stripe, Zendesk, Intercom, QuickBooks, Linear, Asana, Greenhouse, DocuSign, Mailchimp,
-Zoom, Calendly, Dropbox, Airtable, Telegram, Discord — Composio owns the OAuth apps, so **we
-register no OAuth app and store no tokens** (`composio_connections`, migration `060`, holds only a
-pointer). Setup + costs: [doc/composio-setup.md](doc/composio-setup.md).
+Zoom, Calendly, Dropbox, Airtable, Telegram, Discord, Spotify, Canvas — Composio owns the OAuth apps
+for most, so **we register no OAuth app and store no tokens** (`composio_connections`, migration
+`060`, holds only a pointer). Setup + costs: [doc/composio-setup.md](doc/composio-setup.md).
 
-**Strictly additive.** The native integrations above (Google, Slack, Notion, Jira, GitHub, Trello,
-Todoist, Spotify, Microsoft) are untouched: they are deeper than a generic connector and cost zero
-metered Composio calls. Composio is a second tool source on the same agent loop.
+**Bring-your-own-credentials.** A few toolkits authenticate against *our own* registered app rather
+than a Composio-managed one — **Spotify** (`SPOTIFY_CLIENT_ID/SECRET`) and **Canvas**
+(`CANVAS_CLIENT_ID/SECRET`). `getOrCreateAuthConfig()` creates a custom-auth config from those env
+vars (`BYOC_CREDENTIALS` map); unset → the toolkit degrades to a "not supported yet" notice.
+
+**Spotify moved fully onto Composio** — the old native `spotify.service.ts` + `/api/v1/spotify/*`
+routes and the `play_spotify`/`search_and_play_spotify`/… tools were removed. Music now runs through
+the `SPOTIFY_*` Composio tools (playback still needs the user's Spotify Premium).
+
+**Otherwise strictly additive.** The remaining native integrations (Google, Slack, Notion, Jira,
+GitHub, Trello, Todoist, Microsoft) are untouched: they are deeper than a generic connector and cost
+zero metered Composio calls. Composio is a second tool source on the same agent loop.
 
 Four things worth knowing before touching it:
 - **Tool budget.** Gemini function-calling degrades past a few dozen declarations. Tools are loaded
@@ -163,9 +172,11 @@ demo data seeds via the existing `/accountant/seed-demo`.
 ### Professional verticals — external data
 Non-finance personas register a `PersonaVertical` in
 [professional/registry.ts](src/services/professional/registry.ts). Two carry live external data:
-**Real Estate** uses [rentcast.service.ts](src/services/professional/realestate/rentcast.service.ts)
-(RentCast, `RENTCAST_API_KEY`, free tier) for `search_market`/`market_report`, with `match_buyers`
-matching leads to listings locally — all degrade gracefully when the key is unset. **Product Manager**
+**Real Estate** `search_market` prefers RentCast (`RENTCAST_API_KEY`) → RapidAPI Realtor
+(`RAPIDAPI_KEY`) → **SimplyRETS** ([simplyrets.service.ts](src/services/professional/realestate/simplyrets.service.ts)),
+the keyless default that returns realistic demo MLS listings (Houston, TX) with no setup — so listing
+search works out of the box. `market_report` uses RentCast or free US Census; `match_buyers` matches
+the user's OWN leads (seeded/added, not from a listings API) to their listings locally. **Product Manager**
 [pm.vertical.ts](src/services/professional/pm/pm.vertical.ts) auto-syncs recent GitHub commits/merged PRs
 (`getRecentCommits`) + recently-updated Jira issues into its snapshot for contribution tracking
 (`contribution_summary`), reusing the already-wired GitHub/Jira OAuth (no new credentials).

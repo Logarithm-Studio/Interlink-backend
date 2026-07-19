@@ -2,7 +2,7 @@
 
 Composio brokers OAuth + API access to the long tail of third-party apps (HubSpot, Salesforce,
 Stripe, Zendesk, Intercom, QuickBooks, Linear, Asana, Greenhouse, DocuSign, Mailchimp, Zoom,
-Calendly, Dropbox, Airtable, Telegram, Discord).
+Calendly, Dropbox, Airtable, Telegram, Discord, **Spotify**, **Canvas**).
 
 **The point:** every native integration in this repo (Google, Slack, Notion, Jira, GitHub, Trello,
 Todoist, Spotify, Microsoft) required registering an OAuth app, holding a client secret, and
@@ -63,6 +63,24 @@ COUNT_/EXPORT_` are read-only and auto-chain inside the agent loop. **Everything
 write**, so it goes through the app's existing confirm-before-execute sheet. This default is
 deliberate — silently auto-running an unknown connector write (say `STRIPE_CREATE_REFUND`) is not
 an acceptable failure mode.
+
+## Bring-your-own-credentials toolkits (Spotify, Canvas)
+
+Most toolkits use Composio's **managed** OAuth app — you register nothing. A few authenticate
+against **your own** registered app instead; for those, `getOrCreateAuthConfig()` in
+[composio.service.ts](../src/services/composio/composio.service.ts) creates a *custom-auth* config
+from client credentials in the environment (`BYOC_CREDENTIALS` map):
+
+- **Spotify** — reuses `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (the native Spotify integration
+  was removed; Spotify now runs entirely through Composio). In the Spotify Developer Dashboard, add
+  Composio's hosted callback as a redirect URI, and request **Extended Quota Mode** so accounts
+  beyond your dev allow-list can connect. **Playback control still requires the user to have Spotify
+  Premium and an active device** — a Spotify platform rule Composio cannot bypass.
+- **Canvas** — `CANVAS_CLIENT_ID` / `CANVAS_CLIENT_SECRET` from a Canvas **Developer Key** (Account →
+  Developer Keys → + Developer Key → API Key), with Composio's callback as the redirect URI.
+
+When a BYOC toolkit's env vars are unset, connecting it degrades to the usual "not supported in-app
+yet" notice rather than erroring.
 
 ## Known hardening follow-ups
 

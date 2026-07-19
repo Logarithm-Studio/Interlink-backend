@@ -23,7 +23,6 @@ import workersRoutes from "./routes/workers.routes";
 import accountantRoutes from "./routes/accountant.routes";
 // Personal mode integrations
 import personaRoutes from "./routes/persona.routes";
-import spotifyRoutes from "./routes/spotify.routes";
 import weatherRoutes from "./routes/weather.routes";
 import tasksRoutes from "./routes/tasks.routes";
 import todoistRoutes from "./routes/todoist.routes";
@@ -93,7 +92,6 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/accountant", accountantRoutes);
   app.use("/api/v1/workers", workersRoutes);
   // Personal mode
-  app.use("/api/v1/spotify", spotifyRoutes);
   app.use("/api/v1/weather", weatherRoutes);
   app.use("/api/v1/tasks", tasksRoutes);
   app.use("/api/v1/todoist", todoistRoutes);

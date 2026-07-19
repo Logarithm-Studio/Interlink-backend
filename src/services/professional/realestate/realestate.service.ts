@@ -13,6 +13,7 @@ import type { AutomationProposal, PersonaVertical } from "../registry";
 import { getMarketStats, isRentCastConfigured, searchListings, type MarketListing } from "./rentcast.service";
 import { getCensusMarketStats, isCensusConfigured } from "./census.service";
 import { searchRapidListings, isRapidListingsConfigured } from "./rapidListings.service";
+import { searchSimplyRets, isSimplyRetsLive } from "./simplyrets.service";
 
 const PERSONA = "real_estate";
 
@@ -145,11 +146,11 @@ async function buildSnapshot(userId: string): Promise<string> {
   const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US")}`;
   return [
     `Active listings: ${active.length}. Leads: ${leads.length}.`,
-    isRentCastConfigured() || isRapidListingsConfigured()
+    isRentCastConfigured() || isRapidListingsConfigured() || isSimplyRetsLive()
       ? "Live listings are connected: use search_market for real for-sale listings by area, and market_report for area stats by ZIP."
-      : isCensusConfigured()
-        ? "market_report gives free area stats (median home value, median rent, ownership) by ZIP via US Census. For live for-sale listings (search_market), set RAPIDAPI_KEY (free tier)."
-        : "Market data is not configured yet — set CENSUS_API_KEY (free) for market_report, and RAPIDAPI_KEY (free tier) for live listings.",
+      : `search_market returns real for-sale listings out of the box (SimplyRETS demo MLS — Houston, TX metro; set RENTCAST_API_KEY or RAPIDAPI_KEY for live nationwide data). market_report gives area stats by ZIP${
+          isCensusConfigured() ? " via US Census (free)." : " — set CENSUS_API_KEY (free) to enable it."
+        }`,
     "Listings:",
     ...listings.slice(0, 15).map((l) => `- ${l.address} | ${fmt(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
     "Leads:",
@@ -278,12 +279,23 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       case "match_buyers": {
         const [leads, listings] = await Promise.all([listLeads(user.id), listListings(user.id)]);
         const inventory = listings.filter((l) => l.status === "active" || l.status === "pending");
-        if (inventory.length === 0) return { ok: false, message: "You have no active listings to match against." };
+        if (inventory.length === 0)
+          return {
+            ok: false,
+            message:
+              "You have no active listings to match against yet. Add a listing (tell me the address + price), or tap “Load demo” on your dashboard to try this with sample data.",
+          };
         const targetName = String(args.name ?? "").trim().toLowerCase();
         const buyers = leads
           .filter((l) => l.stage !== "closed" && l.stage !== "lost")
           .filter((l) => (targetName ? l.name.toLowerCase().includes(targetName) : true));
-        if (buyers.length === 0) return { ok: false, message: targetName ? `No active buyer lead named "${args.name}".` : "No active buyer leads to match." };
+        if (buyers.length === 0)
+          return {
+            ok: false,
+            message: targetName
+              ? `No active buyer lead named "${args.name}".`
+              : "You have no active buyer leads yet. Add one (give me a name + budget), or tap “Load demo” on your dashboard to load sample buyers and listings.",
+          };
 
         const blocks: string[] = [];
         for (const b of buyers) {
@@ -310,7 +322,9 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           maxPriceDollars: typeof args.maxPrice === "number" ? args.maxPrice : undefined,
           limit: 15,
         };
-        // RentCast if configured; otherwise the free RapidAPI Realtor.com listings feed.
+        // Source preference: RentCast → RapidAPI Realtor.com → SimplyRETS. SimplyRETS is the
+        // keyless, unlimited default (demo MLS data), so listing search works out of the box;
+        // the paid/keyed feeds take over automatically when their env keys are present.
         let results: MarketListing[] = [];
         let source = "";
         if (isRentCastConfigured()) {
@@ -320,11 +334,8 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           results = await searchRapidListings(searchArgs);
           source = "Realtor.com";
         } else {
-          return {
-            ok: false,
-            message:
-              "Live listing search needs a listings key. Set RAPIDAPI_KEY (free tier — rapidapi.com, subscribe to the Realtor API) for live for-sale listings, or use market_report for free area stats (US Census).",
-          };
+          results = await searchSimplyRets(searchArgs);
+          source = isSimplyRetsLive() ? "SimplyRETS" : "SimplyRETS demo MLS (Houston, TX metro)";
         }
         if (results.length === 0) return { ok: true, message: "No active for-sale listings matched that search (or the area returned no data)." };
         const lines = results.map((l) => `- ${l.address}${l.city ? `, ${l.city}${l.state ? `, ${l.state}` : ""}` : ""} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);

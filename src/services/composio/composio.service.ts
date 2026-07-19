@@ -130,6 +130,8 @@ export const COMPOSIO_CATALOG: ToolkitMeta[] = [
   { slug: "mailchimp", name: "Mailchimp", description: "Email campaigns and audience lists", audience: "professional" },
 
   // Personal — the PRD catalog rows still marked "not built".
+  { slug: "spotify", name: "Spotify", description: "Play, pause, search music and manage playlists", audience: "personal" },
+  { slug: "canvas", name: "Canvas", description: "Courses, assignments, grades, people & enrollments (LMS)", audience: "personal" },
   { slug: "zoom", name: "Zoom", description: "Meetings, recordings, and transcripts", audience: "personal" },
   { slug: "calendly", name: "Calendly", description: "Scheduling links and booked events", audience: "personal" },
   { slug: "dropbox", name: "Dropbox", description: "Cloud files and sharing", audience: "personal" },
@@ -229,6 +231,36 @@ async function upsertConnection(
  * register nothing and hold no client secret), and reuse it across users so we don't spawn
  * a fresh config per connect.
  */
+/**
+ * Toolkits that authenticate against OUR OWN registered OAuth app rather than a
+ * Composio-managed one (bring-your-own-credentials). Spotify and Canvas both require
+ * this: Composio does not host a managed OAuth app for them, so we pass our client
+ * id/secret from the environment. When the env vars are unset we fall back to managed
+ * auth (which then surfaces the usual "not supported in-app yet" 422).
+ *
+ * NOTE: the app's redirect/callback URL registered with Spotify/Canvas must include
+ * Composio's hosted callback — see doc/composio-setup.md.
+ */
+const BYOC_CREDENTIALS: Record<
+  string,
+  () => { authScheme: string; credentials: Record<string, string> } | null
+> = {
+  spotify: () => {
+    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+    return clientId && clientSecret
+      ? { authScheme: "OAUTH2", credentials: { client_id: clientId, client_secret: clientSecret } }
+      : null;
+  },
+  canvas: () => {
+    const clientId = process.env.CANVAS_CLIENT_ID;
+    const clientSecret = process.env.CANVAS_CLIENT_SECRET;
+    return clientId && clientSecret
+      ? { authScheme: "OAUTH2", credentials: { client_id: clientId, client_secret: clientSecret } }
+      : null;
+  },
+};
+
 async function getOrCreateAuthConfig(
   composio: Composio,
   toolkitSlug: string,
@@ -247,10 +279,20 @@ async function getOrCreateAuthConfig(
   }
 
   try {
-    const created = await composio.authConfigs.create(toolkitSlug, {
-      type: "use_composio_managed_auth",
-      name: `Interlink ${toolkitName(toolkitSlug)}`,
-    });
+    // Most toolkits use Composio's managed OAuth app; BYOC toolkits (Spotify, Canvas)
+    // authenticate against our own registered app, so we pass our client credentials.
+    const byoc = BYOC_CREDENTIALS[toolkitSlug]?.() ?? null;
+    const createOptions = byoc
+      ? {
+          type: "use_custom_auth",
+          authScheme: byoc.authScheme,
+          name: `Interlink ${toolkitName(toolkitSlug)}`,
+          credentials: byoc.credentials,
+        }
+      : { type: "use_composio_managed_auth", name: `Interlink ${toolkitName(toolkitSlug)}` };
+    // The SDK's create() options are a discriminated union; cast so the BYOC variant
+    // (custom-auth) type-checks against either SDK minor version.
+    const created = await composio.authConfigs.create(toolkitSlug, createOptions as never);
     if (!created?.id) {
       throw new Error(`Composio returned no auth config id for ${toolkitSlug}.`);
     }
