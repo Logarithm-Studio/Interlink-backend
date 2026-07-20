@@ -322,6 +322,36 @@ async function getOrCreateAuthConfig(
  * Composio's RETIRED legacy endpoint (the "Creating connections on this endpoint … is no
  * longer supported. Use POST /api/v3/connected_accounts/link" 400 the connect screen showed).
  */
+/**
+ * Delete every existing connected account for this user+toolkit. Best-effort, never throws.
+ *
+ * Repeated connect taps and abandoned OAuth flows otherwise leave a trail of EXPIRED/INITIATED
+ * connected accounts, and Composio then rejects a new link with "multiple connected accounts
+ * found for user … in auth config". Tapping Connect means "(re)connect from scratch", so we
+ * clear the slate first — link then always creates exactly one.
+ */
+async function purgeConnectedAccountsForToolkit(
+  composio: Composio,
+  userId: string,
+  toolkitSlug: string,
+): Promise<void> {
+  try {
+    const remote = await composio.connectedAccounts.list({ userIds: [userId] });
+    const matches = (remote.items ?? []).filter(
+      (a) => a.toolkit?.slug?.toLowerCase() === toolkitSlug,
+    );
+    for (const a of matches) {
+      try {
+        await composio.connectedAccounts.delete(a.id);
+      } catch (err) {
+        logger.warn("[composio] purge delete failed", { id: a.id, err: String(err) });
+      }
+    }
+  } catch (err) {
+    logger.warn("[composio] purge list failed", { toolkitSlug, err: String(err) });
+  }
+}
+
 export async function connectToolkit(
   userId: string,
   toolkitSlug: string,
@@ -331,6 +361,10 @@ export async function connectToolkit(
   if (!isKnownToolkit(toolkitSlug)) throw new Error(`Unknown toolkit "${toolkitSlug}".`);
 
   const authConfigId = await getOrCreateAuthConfig(composio, toolkitSlug);
+
+  // Clear any existing connected accounts for this user+toolkit so a retry can't accumulate
+  // duplicates and trip Composio's "multiple connected accounts" error.
+  await purgeConnectedAccountsForToolkit(composio, userId, toolkitSlug);
 
   const request = await composio.connectedAccounts.link(userId, authConfigId);
   const redirectUrl = request.redirectUrl;
@@ -357,13 +391,26 @@ export async function syncConnections(userId: string): Promise<ComposioConnectio
 
   try {
     const remote = await composio.connectedAccounts.list({ userIds: [userId] });
+    // A user can have several connected accounts per toolkit (abandoned OAuth attempts leave
+    // EXPIRED rows). Keep the BEST one per toolkit so a stale duplicate can never overwrite a
+    // live connection as "pending"/"failed": ACTIVE > pending > failed.
+    const rank = (s: ComposioConnection["status"]) => (s === "active" ? 3 : s === "pending" ? 2 : 1);
+    const best = new Map<string, { id: string | null; status: ComposioConnection["status"] }>();
     for (const account of remote.items ?? []) {
       const slug = account.toolkit?.slug?.toLowerCase();
       if (!slug || !isKnownToolkit(slug)) continue;
       // Composio statuses: INITIALIZING | INITIATED | ACTIVE | FAILED | EXPIRED | INACTIVE.
-      const status =
-        account.status === "ACTIVE" ? "active" : account.status === "FAILED" ? "failed" : "pending";
-      await upsertConnection(userId, slug, account.id, status);
+      const status: ComposioConnection["status"] =
+        account.status === "ACTIVE"
+          ? "active"
+          : account.status === "FAILED" || account.status === "EXPIRED" || account.status === "INACTIVE"
+            ? "failed"
+            : "pending";
+      const prev = best.get(slug);
+      if (!prev || rank(status) > rank(prev.status)) best.set(slug, { id: account.id, status });
+    }
+    for (const [slug, b] of best) {
+      await upsertConnection(userId, slug, b.id, b.status);
     }
   } catch (err) {
     // Never fail the caller — fall back to whatever we already have on record.

@@ -72,10 +72,18 @@ against **your own** registered app instead; for those, `getOrCreateAuthConfig()
 from client credentials in the environment (`BYOC_CREDENTIALS` map):
 
 - **Spotify** — reuses `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (the native Spotify integration
-  was removed; Spotify now runs entirely through Composio). In the Spotify Developer Dashboard, add
-  Composio's hosted callback as a redirect URI, and request **Extended Quota Mode** so accounts
-  beyond your dev allow-list can connect. **Playback control still requires the user to have Spotify
-  Premium and an active device** — a Spotify platform rule Composio cannot bypass.
+  was removed; Spotify now runs entirely through Composio). In the Spotify Developer Dashboard for
+  that app, **Settings → Redirect URIs → add exactly**:
+
+  ```
+  https://backend.composio.dev/api/v1/auth-apps/add
+  ```
+
+  Without it Spotify returns **"redirect_uri … not matching configuration"** on connect. Then, under
+  **Users and Access**, add each tester's Spotify email (the app starts in Development Mode, capped at
+  25 users) — or request **Extended Quota Mode** so any account can connect. **Playback control still
+  requires the user to have Spotify Premium and an active device** — a Spotify platform rule Composio
+  cannot bypass. (The exact callback lives on the Composio auth config as `credentials.oauth_redirect_uri`.)
 - **Canvas** — `CANVAS_CLIENT_ID` / `CANVAS_CLIENT_SECRET` from a Canvas **Developer Key** (Account →
   Developer Keys → + Developer Key → API Key), with Composio's callback as the redirect URI.
 
