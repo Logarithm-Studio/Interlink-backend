@@ -203,19 +203,30 @@ function buildGoogleAuthUrl(
 /**
  * Build the `connectedAccounts.google` payload for /me-style responses.
  * Returns a multi-account `accounts` array plus a back-compat scalar summary
- * (of the primary account) so older app builds keep working during rollout.
+ * so older app builds keep working during rollout.
+ *
+ * The scalar summary represents "does the user have a USABLE Google connection".
+ * It therefore prefers a non-reauth account over the primary: a user with a good
+ * Personal mailbox but a reauth-required Work mailbox (the primary) should not be
+ * told Google is disconnected. Only when EVERY account needs reauth does the scalar
+ * report `reauthRequired: true`. Per-account reauth is still surfaced in `accounts[]`.
  */
 async function buildGoogleConnectedAccountsPayload(
   userId: string,
   fallbackEmail: string,
 ) {
   const accounts = await listGoogleAccounts(userId);
-  const primary = accounts.find((a) => a.isPrimary) ?? accounts[0] ?? null;
+  const summary =
+    accounts.find((a) => a.isPrimary && !a.reauthRequired) ??
+    accounts.find((a) => !a.reauthRequired) ??
+    accounts.find((a) => a.isPrimary) ??
+    accounts[0] ??
+    null;
   return {
     connected: accounts.length > 0,
-    email: primary ? (primary.email ?? fallbackEmail) : undefined,
-    expiresAt: primary?.expiresAt ?? null,
-    reauthRequired: primary?.reauthRequired ?? false,
+    email: summary ? (summary.email ?? fallbackEmail) : undefined,
+    expiresAt: summary?.expiresAt ?? null,
+    reauthRequired: summary?.reauthRequired ?? false,
     accounts: accounts.map((a) => ({
       id: a.id,
       email: a.email ?? fallbackEmail,
