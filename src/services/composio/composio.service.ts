@@ -563,6 +563,69 @@ const MAX_COMPOSIO_TOOLS = 40;
 const MAX_TOOLS_PER_TOOLKIT = 12;
 const CACHE_TTL_MS = 5 * 60_000;
 
+/**
+ * For toolkits whose most-useful actions do NOT fall in the first `MAX_TOOLS_PER_TOOLKIT`
+ * tools Composio returns, list the important slugs here — they are pulled to the FRONT before
+ * the per-toolkit cap is applied. Without this, Spotify loaded 12 alphabetical playlist/check
+ * tools and NONE of play/pause/skip/search, so the agent invented `SPOTIFY_PLAY` and failed
+ * with "unable to retrieve tool with slug …". (Spotify has 88 tools; playback controls are ~#64-84.)
+ */
+const TOOLKIT_PRIORITY_TOOLS: Record<string, string[]> = {
+  spotify: [
+    "SPOTIFY_SEARCH_FOR_ITEM",
+    "SPOTIFY_START_RESUME_PLAYBACK",
+    "SPOTIFY_PAUSE_PLAYBACK",
+    "SPOTIFY_SKIP_TO_NEXT",
+    "SPOTIFY_SKIP_TO_PREVIOUS",
+    "SPOTIFY_GET_CURRENTLY_PLAYING_TRACK",
+    "SPOTIFY_GET_CURRENT_USER_S_PLAYLISTS",
+    "SPOTIFY_ADD_ITEM_TO_PLAYBACK_QUEUE",
+    "SPOTIFY_GET_PLAYBACK_STATE",
+    "SPOTIFY_TRANSFER_PLAYBACK",
+  ],
+  canvas: [
+    "CANVAS_LIST_YOUR_COURSES",
+    "CANVAS_LIST_ASSIGNMENTS",
+    "CANVAS_LIST_USERS_IN_COURSE",
+    "CANVAS_CREATE_AN_ASSIGNMENT",
+    "CANVAS_ENROLL_A_USER",
+  ],
+};
+
+/**
+ * Composio slugs the model commonly guesses wrong → the real slug. The agent (and the app's
+ * one-tap prompts) say "play/pause/skip on Spotify"; if it emits a shortened slug we map it so
+ * the action still runs instead of failing with "unable to retrieve tool with slug …".
+ */
+const COMPOSIO_TOOL_ALIASES: Record<string, string> = {
+  SPOTIFY_PLAY: "SPOTIFY_START_RESUME_PLAYBACK",
+  SPOTIFY_RESUME: "SPOTIFY_START_RESUME_PLAYBACK",
+  SPOTIFY_START_PLAYBACK: "SPOTIFY_START_RESUME_PLAYBACK",
+  SPOTIFY_PLAY_TRACK: "SPOTIFY_START_RESUME_PLAYBACK",
+  SPOTIFY_PAUSE: "SPOTIFY_PAUSE_PLAYBACK",
+  SPOTIFY_STOP: "SPOTIFY_PAUSE_PLAYBACK",
+  SPOTIFY_SKIP: "SPOTIFY_SKIP_TO_NEXT",
+  SPOTIFY_NEXT: "SPOTIFY_SKIP_TO_NEXT",
+  SPOTIFY_SKIP_NEXT: "SPOTIFY_SKIP_TO_NEXT",
+  SPOTIFY_SKIP_TRACK: "SPOTIFY_SKIP_TO_NEXT",
+  SPOTIFY_PREVIOUS: "SPOTIFY_SKIP_TO_PREVIOUS",
+  SPOTIFY_SEARCH: "SPOTIFY_SEARCH_FOR_ITEM",
+  SPOTIFY_SEARCH_TRACKS: "SPOTIFY_SEARCH_FOR_ITEM",
+  SPOTIFY_GET_PLAYLISTS: "SPOTIFY_GET_CURRENT_USER_S_PLAYLISTS",
+};
+
+/** Resolve a (possibly guessed) Composio slug to the real one. */
+export function resolveComposioSlug(slug: string): string {
+  return COMPOSIO_TOOL_ALIASES[slug] ?? slug;
+}
+
+/** Sort key that pulls a toolkit's priority slugs to the front (others keep their order). */
+function priorityRank(priority: string[], slug: string | undefined): number {
+  if (!slug) return priority.length + 1;
+  const i = priority.indexOf(slug);
+  return i === -1 ? priority.length : i;
+}
+
 const toolCache = new Map<string, { at: number; tools: GeminiToolFunction[] }>();
 
 export function invalidateToolCache(userId: string): void {
@@ -593,13 +656,20 @@ export async function getComposioToolsForUser(userId: string): Promise<GeminiToo
       if (tools.length >= MAX_COMPOSIO_TOOLS) break;
       // Per-toolkit rather than one bulk call, so the per-toolkit cap is enforceable and
       // one broken toolkit can't wipe out every other toolkit's tools.
+      const priority = TOOLKIT_PRIORITY_TOOLS[slug];
+      // When a toolkit has priority tools, pull a wider page so those slugs are actually in it,
+      // then reorder them to the front; otherwise just take the first N.
       const list = await composio.tools.getRawComposioTools({
         toolkits: [slug],
-        limit: MAX_TOOLS_PER_TOOLKIT,
+        limit: priority ? 100 : MAX_TOOLS_PER_TOOLKIT,
       });
+      const ordered = priority
+        ? [...list].sort((a, b) => priorityRank(priority, a.slug) - priorityRank(priority, b.slug))
+        : list;
 
-      for (const tool of list) {
-        if (tools.length >= MAX_COMPOSIO_TOOLS) break;
+      let perToolkit = 0;
+      for (const tool of ordered) {
+        if (tools.length >= MAX_COMPOSIO_TOOLS || perToolkit >= MAX_TOOLS_PER_TOOLKIT) break;
         if (!tool.slug || !isValidGeminiToolName(tool.slug)) continue;
 
         const parameters = toGeminiSchema(tool.inputParameters) ?? {
@@ -612,6 +682,7 @@ export async function getComposioToolsForUser(userId: string): Promise<GeminiToo
         const description = `[${label}] ${tool.description ?? tool.name ?? tool.slug}`.slice(0, 1000);
 
         tools.push({ name: tool.slug, description, parameters });
+        perToolkit += 1;
       }
     }
   } catch (err) {
@@ -654,13 +725,16 @@ function summarizeExecuteData(data: Record<string, unknown> | undefined): string
  */
 export async function executeComposioTool(
   userId: string,
-  slug: string,
+  requestedSlug: string,
   args: Record<string, unknown> = {},
 ): Promise<ExecuteResult> {
   const composio = await getClient();
   if (!composio) {
     return { ok: false, message: "That app isn't available — Composio is not configured on the server." };
   }
+
+  // Map a guessed slug (e.g. SPOTIFY_PLAY) to the real one before anything else.
+  const slug = resolveComposioSlug(requestedSlug);
 
   // Proactive connection check: a tool for a known toolkit that isn't ACTIVE (e.g. an OAuth
   // that was started but never finished — status 'pending') would otherwise fail with an
