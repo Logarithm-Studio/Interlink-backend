@@ -158,6 +158,39 @@ Internal: `POST /api/v1/workers/accountant-automations` (QStash-signed) runs the
 autonomy tick. Autonomy honors guardrails (daily send cap, business-hours, per-client opt-out,
 escalation capped at "final"); `suggest` queues approvals, `auto` acts directly.
 
+### `/api/v1/professional` — real-estate listing photos & public pages
+
+Marketing surface for the Real Estate persona. Syndicating to Zillow/an MLS needs broker
+credentials, so a listing is instead given photos (public Supabase Storage bucket
+`listing-photos`) and its own public page to email to buyers.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/listings` | The caller's listings, incl. `photos[]` + `shareSlug` |
+| POST | `/listings/:id/photos` | Upload one image — `{ base64, contentType? }`; `base64` may be a bare payload or a `data:image/…;base64,…` URL. Max 5 MB, jpeg/png/webp, 12 per listing → `{ photos, shareUrl }` |
+| DELETE | `/listings/:id/photos` | `{ url }` — drop a photo and delete the stored object |
+| POST | `/listings/:id/publish` | Idempotent: create (or return) the public page → `{ shareUrl, slug }` |
+| DELETE | `/listings/:id/publish` | Take the public page down (link starts 404ing) |
+
+Plus the **public, unauthenticated** page itself, deliberately mounted outside `/api/v1`
+because buyers open it in a browser from an emailed link:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/l/:slug` | Server-rendered listing page (photos, price, specs, mailto the agent). 404s once unpublished. |
+
+```bash
+# Upload a photo, publish, and open the public page
+curl -s -X POST "$API/api/v1/professional/listings/$LID/photos" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"base64":"<png-base64>","contentType":"image/png"}'
+curl -s -X POST "$API/api/v1/professional/listings/$LID/publish" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{}'   # → { "shareUrl": "https://…/l/<slug>", "slug": "…" }
+curl -s "$API/l/<slug>"                          # no auth
+```
+
+The agent tool `send_listing_to_buyer` (`POST /professional/action`) chains publish + Gmail:
+`{"name":"send_listing_to_buyer","args":{"name":"<lead>","address":"<listing>","note":"…"}}`.
+
 ### `/api/v1/pm` (Professional Mode — Product Manager: GitHub · Trello · Jira · Notion · Slack)
 
 OAuth + CRUD for GitHub/Trello plus the PM PRD workflow dashboard. All workflow actions are

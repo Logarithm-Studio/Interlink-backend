@@ -25,7 +25,13 @@ import {
 import { setActivityStatus } from "../services/accountant/activity.service";
 import { createContact, createDeal } from "../services/professional/sales/sales.service";
 import { createTicket } from "../services/professional/support/support.service";
-import { createListing, createLead, createShowing, createLease } from "../services/professional/realestate/realestate.service";
+import { createListing, createLead, createShowing, createLease, listListings } from "../services/professional/realestate/realestate.service";
+import {
+  publishListing,
+  removeListingPhoto,
+  unpublishListing,
+  uploadListingPhoto,
+} from "../services/professional/realestate/listingPhotos.service";
 import { createCandidate, createOpening } from "../services/professional/hr/hr.vertical";
 
 const router = Router();
@@ -98,6 +104,67 @@ router.post("/entities", async (req: Request, res: Response, next: NextFunction)
       case "hr_opening": entity = await createOpening(user.id, d); break;
     }
     res.json({ entity });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Real-estate listings: photos + public share page ───────────────────────
+// Marketing a property is the part no free listings API can do (syndication needs
+// broker/MLS credentials), so an agent hosts it here instead: photos land in Supabase
+// Storage and the listing gets a public page to email to buyers.
+
+router.get("/listings", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({ listings: await listListings(user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const PhotoBody = z.object({
+  base64: z.string().min(1),
+  contentType: z.string().optional(),
+});
+
+router.post("/listings/:id/photos", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const parsed = PhotoBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("base64 image data is required.");
+    const result = await uploadListingPhoto(user.id, req.params.id, parsed.data.base64, parsed.data.contentType);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/listings/:id/photos", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const url = z.string().min(1).safeParse((req.body ?? {}).url);
+    if (!url.success) throw new BadRequestError("url of the photo to remove is required.");
+    res.json(await removeListingPhoto(user.id, req.params.id, url.data));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/listings/:id/publish", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json(await publishListing(user.id, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/listings/:id/publish", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    await unpublishListing(user.id, req.params.id);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

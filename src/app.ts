@@ -38,6 +38,7 @@ import hrRoutes from "./routes/hr.routes";
 import professionalStubsRoutes from "./routes/professional-stubs.routes";
 import professionalRoutes from "./routes/professional.routes";
 import salesRoutes from "./routes/sales.routes";
+import publicListingRoutes from "./routes/publicListing.routes";
 
 const app: Express = express();
 
@@ -114,6 +115,10 @@ function setupRoutes(app: Express) {
   // the provider OAuth callbacks under /notion, /pm) and returns 401 before they
   // are reached.
   app.use("/api/v1", personaRoutes);
+
+  // Public, unauthenticated listing pages (`/l/:slug`) — deliberately outside /api/v1
+  // because buyers open these in a browser from an emailed link.
+  app.use(publicListingRoutes);
 }
 
 function setupErrorHandling(app: Express) {

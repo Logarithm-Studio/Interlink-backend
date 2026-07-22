@@ -14,6 +14,7 @@ import { getMarketStats, isRentCastConfigured, searchListings, type MarketListin
 import { getCensusMarketStats, isCensusConfigured } from "./census.service";
 import { searchRapidListings, isRapidListingsConfigured } from "./rapidListings.service";
 import { searchSimplyRets, isSimplyRetsLive } from "./simplyrets.service";
+import { publishListing } from "./listingPhotos.service";
 
 const PERSONA = "real_estate";
 
@@ -32,6 +33,10 @@ export interface Listing {
   id: string; address: string; priceCents: number; currency: string;
   beds: number | null; baths: number | null; sqft: number | null;
   status: ListingStatus; description: string | null; source: string; createdAt: Date;
+  /** Public Supabase Storage URLs; first is the cover. */
+  photos: string[];
+  /** Set once the listing has a public share page (see listingPhotos.service.ts). */
+  shareSlug: string | null;
 }
 export interface Lead {
   id: string; name: string; email: string | null; phone: string | null;
@@ -40,7 +45,7 @@ export interface Lead {
 
 export async function listListings(userId: string): Promise<Listing[]> {
   const res = await query(
-    `SELECT id, address, price_cents, currency, beds, baths, sqft, status, description, source, created_at
+    `SELECT id, address, price_cents, currency, beds, baths, sqft, status, description, source, created_at, photos, share_slug
        FROM re_listings WHERE user_id = $1 ORDER BY created_at DESC`, [userId]);
   return res.rows.map(mapListing as never);
 }
@@ -48,7 +53,7 @@ export async function createListing(userId: string, data: { address: string; pri
   const res = await query(
     `INSERT INTO re_listings (user_id, address, price_cents, beds, baths, sqft, status, description, source)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     RETURNING id, address, price_cents, currency, beds, baths, sqft, status, description, source, created_at`,
+     RETURNING id, address, price_cents, currency, beds, baths, sqft, status, description, source, created_at, photos, share_slug`,
     [userId, data.address, data.priceCents ?? 0, data.beds ?? null, data.baths ?? null, data.sqft ?? null, data.status ?? "active", data.description ?? null, data.source ?? "manual"]);
   return mapListing(res.rows[0] as never);
 }
@@ -174,6 +179,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "schedule_showing", description: "Record a property showing for a lead.", parameters: { type: "object", properties: { address: { type: "string" }, leadName: { type: "string" }, when: { type: "string", description: "ISO datetime." } }, required: ["address"] } },
   { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant. Optionally pass the property's ZIP to factor localized market pricing trends into the renewal terms.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." }, zipCode: { type: "string", description: "Property ZIP — pulls localized pricing trends (RentCast) to inform the renewal." } }, required: ["property"] } },
   { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
+  { name: "send_listing_to_buyer", description: "Email one of the agent's own listings to a buyer lead, including a link to the listing's public page (with photos). Publishes the page automatically if it isn't public yet. Use after match_buyers to actually put the property in front of the buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Buyer lead name from the snapshot." }, address: { type: "string", description: "Address of the agent's listing to send." }, note: { type: "string", description: "Optional personal line to include." } }, required: ["name", "address"] } },
   { name: "search_market", description: "Search LIVE for-sale market listings (real current listings from Realtor.com/RentCast). Provide a city+state or a ZIP code; optionally filter by beds and max price. Returns real properties on the market with address, price, beds/baths, and size.", parameters: { type: "object", properties: { city: { type: "string" }, state: { type: "string", description: "2-letter state code, e.g. TX." }, zipCode: { type: "string" }, beds: { type: "number", description: "Minimum bedrooms." }, maxPrice: { type: "number", description: "Max price in dollars." } } } },
   { name: "market_report", description: "Generate an area market report for a ZIP code — median home value, median rent, and owner-occupancy from free US Census data (or live sale stats if RentCast is configured).", parameters: { type: "object", properties: { zipCode: { type: "string", description: "The ZIP code to report on." } }, required: ["zipCode"] } },
   { name: "transaction_tasks", description: "Produce a standard purchase/closing task checklist for a property that's gone under contract, with milestone due dates counted back from the close date. Use when a deal is accepted and the agent needs to manage the transaction to closing.", parameters: { type: "object", properties: { property: { type: "string", description: "The property address or listing under contract." }, closeDate: { type: "string", description: "Target closing date (YYYY-MM-DD). Defaults to 30 days out." } }, required: ["property"] } },
@@ -188,6 +194,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "schedule_showing": return `Record a showing at ${args.address ?? "the property"}.`;
     case "lease_renewal": return `Draft & send a renewal for ${args.property ?? "the lease"}.`;
     case "match_buyers": return args.name ? `Match ${args.name} to your listings.` : "Match your buyer leads to your listings.";
+    case "send_listing_to_buyer": return `Email ${args.address ?? "the listing"} to ${args.name ?? "the buyer"}.`;
     case "search_market": return `Search the market${args.zipCode ? ` in ${args.zipCode}` : args.city ? ` in ${args.city}${args.state ? `, ${args.state}` : ""}` : ""}.`;
     case "market_report": return `Generate a market report for ${args.zipCode ?? "the area"}.`;
     case "transaction_tasks": return `Build a closing checklist for ${args.property ?? "the property"}.`;
@@ -195,7 +202,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
   }
 }
 
-async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string; data?: unknown }> {
   try {
     switch (name) {
       case "create_listing": {
@@ -228,6 +235,35 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         await sendProfessionalEmail({ user, to: ld.email, subject: draft.subject, body: draft.body, tag: "re_followup" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "lead_followup", title: `Follow-up sent to ${ld.name}`, detail: draft.subject, entityType: "re_lead", entityId: ld.id });
         return { ok: true, message: `Follow-up sent to ${ld.name}.` };
+      }
+      case "send_listing_to_buyer": {
+        const [leads, listings] = await Promise.all([listLeads(user.id), listListings(user.id)]);
+        const ld = leads.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
+        if (!ld) return { ok: false, message: "Couldn't find that buyer lead." };
+        if (!ld.email) return { ok: false, message: `No email on file for ${ld.name}.` };
+
+        const wanted = String(args.address ?? "").toLowerCase();
+        const l = listings.find((x) => x.address.toLowerCase().includes(wanted));
+        if (!l) return { ok: false, message: "Couldn't find that listing among yours." };
+
+        // Publishing is idempotent, so this both creates the page on first send and reuses
+        // the same URL afterwards — a buyer who gets two emails sees one stable link.
+        const { shareUrl } = await publishListing(user.id, l.id);
+
+        const draft = await draftEmail({
+          role: "real-estate agent",
+          purpose: "a short email presenting one property to an interested buyer, ending by inviting them to view the listing page",
+          context: `Buyer: ${ld.name}, looking for ${ld.interest ?? "a home"}${ld.budgetCents ? `, budget $${(ld.budgetCents / 100).toLocaleString("en-US")}` : ""}. Property: ${l.address}, ${usd(l.priceCents)}, ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? `, ${l.sqft} sqft` : ""}.${args.note ? ` Note from the agent: ${args.note}` : ""}`,
+        });
+        // Append the link ourselves rather than trusting the model to reproduce a URL verbatim.
+        const body = `${draft.body}\n\nView the listing: ${shareUrl}`;
+
+        await sendProfessionalEmail({ user, to: ld.email, subject: draft.subject, body, tag: "re_listing_share" });
+        await recordActivity({ userId: user.id, persona: PERSONA, kind: "listing_shared", title: `Sent ${l.address} to ${ld.name}`, detail: shareUrl, entityType: "re_listing", entityId: l.id });
+        return {
+          ok: true,
+          message: `Sent ${l.address} to ${ld.name} (${ld.email}) with the listing page: ${shareUrl}${l.photos.length === 0 ? "\n\nTip: this listing has no photos yet — add some under Listings → Photos & sharing so buyers see the property." : ""}`,
+        };
       }
       case "schedule_showing": {
         const address = String(args.address ?? "").trim();
@@ -298,6 +334,16 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           };
 
         const blocks: string[] = [];
+        // Structured mirror of the same result so the app can render cards instead of text.
+        const structured: {
+          buyerName: string;
+          email: string | null;
+          stage: string;
+          budgetCents: number | null;
+          wantBeds: number | null;
+          matches: { address: string; priceCents: number; beds: number | null; baths: number | null; sqft: number | null; status: string }[];
+        }[] = [];
+
         for (const b of buyers) {
           const wantBeds = bedsFromInterest(b.interest);
           const matches = inventory
@@ -309,9 +355,33 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
             ? matches.map((l) => `   • ${l.address} — ${usd(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba`).join("\n")
             : "   • (no current listing fits their budget/criteria)";
           blocks.push(`${b.name}${b.budgetCents ? ` (budget ${usd(b.budgetCents)}${wantBeds ? `, ${wantBeds}bd+` : ""})` : ""}:\n${lines}`);
+          structured.push({
+            buyerName: b.name,
+            email: b.email,
+            stage: b.stage,
+            budgetCents: b.budgetCents,
+            wantBeds,
+            matches: matches.map((l) => ({
+              address: l.address,
+              priceCents: l.priceCents,
+              beds: l.beds,
+              baths: l.baths,
+              sqft: l.sqft,
+              status: l.status,
+            })),
+          });
         }
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "buyers_matched", title: `Matched ${buyers.length} buyer(s) to listings` });
-        return { ok: true, message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}` };
+        return {
+          ok: true,
+          message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}`,
+          data: {
+            kind: "buyer_matches",
+            buyerCount: buyers.length,
+            listingCount: inventory.length,
+            buyers: structured,
+          },
+        };
       }
       case "search_market": {
         const searchArgs = {
@@ -433,8 +503,8 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
   }
 }
 
-function mapListing(r: { id: string; address: string; price_cents: string | number; currency: string; beds: number | null; baths: number | null; sqft: number | null; status: ListingStatus; description: string | null; source: string; created_at: Date }): Listing {
-  return { id: r.id, address: r.address, priceCents: typeof r.price_cents === "string" ? parseInt(r.price_cents, 10) : r.price_cents, currency: r.currency, beds: r.beds, baths: r.baths, sqft: r.sqft, status: r.status, description: r.description, source: r.source, createdAt: r.created_at };
+function mapListing(r: { id: string; address: string; price_cents: string | number; currency: string; beds: number | null; baths: number | null; sqft: number | null; status: ListingStatus; description: string | null; source: string; created_at: Date; photos?: string[] | null; share_slug?: string | null }): Listing {
+  return { id: r.id, address: r.address, priceCents: typeof r.price_cents === "string" ? parseInt(r.price_cents, 10) : r.price_cents, currency: r.currency, beds: r.beds, baths: r.baths, sqft: r.sqft, status: r.status, description: r.description, source: r.source, createdAt: r.created_at, photos: Array.isArray(r.photos) ? r.photos : [], shareSlug: r.share_slug ?? null };
 }
 function mapLead(r: { id: string; name: string; email: string | null; phone: string | null; budget_cents: string | number | null; interest: string | null; stage: LeadStage; source: string; created_at: Date }): Lead {
   return { id: r.id, name: r.name, email: r.email, phone: r.phone, budgetCents: r.budget_cents == null ? null : (typeof r.budget_cents === "string" ? parseInt(r.budget_cents, 10) : r.budget_cents), interest: r.interest, stage: r.stage, source: r.source, createdAt: r.created_at };

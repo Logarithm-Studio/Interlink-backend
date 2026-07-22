@@ -47,8 +47,18 @@ export interface PersonaVertical {
   systemPrompt: string;
   /** Compact grounding data for the agent. */
   buildSnapshot(userId: string): Promise<string>;
-  /** Execute a user-confirmed action. */
-  executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string }>;
+  /**
+   * Execute a user-confirmed action.
+   *
+   * `message` is the plain-text fallback (used by the assistant chat). `data` is optional
+   * STRUCTURED output so the app can render a real UI instead of dumping the message into a
+   * `<Text>` — e.g. buyer↔listing matches as cards rather than a wall of bullet characters.
+   */
+  executeTool(
+    user: AppUser,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ ok: boolean; message: string; data?: unknown }>;
   /** Human-readable summary for the confirm card. */
   summarizeAction(name: string, args: Record<string, unknown>): string;
   /** Optional one-tap demo data loader. */

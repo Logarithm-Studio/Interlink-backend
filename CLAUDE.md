@@ -176,7 +176,21 @@ Non-finance personas register a `PersonaVertical` in
 (`RAPIDAPI_KEY`) → **SimplyRETS** ([simplyrets.service.ts](src/services/professional/realestate/simplyrets.service.ts)),
 the keyless default that returns realistic demo MLS listings (Houston, TX) with no setup — so listing
 search works out of the box. `market_report` uses RentCast or free US Census; `match_buyers` matches
-the user's OWN leads (seeded/added, not from a listings API) to their listings locally. **Product Manager**
+the user's OWN leads (seeded/added, not from a listings API) to their listings locally.
+
+**Marketing a listing is hosting, not syndication.** Publishing to Zillow/an MLS requires broker
+licensing + MLS membership — no API key gets past that — so listings are marketed from our own
+infrastructure via
+[listingPhotos.service.ts](src/services/professional/realestate/listingPhotos.service.ts): photos in
+the public Supabase Storage bucket `listing-photos` (free tier; 5 MB, jpeg/png/webp enforced at the
+bucket) recorded on `re_listings.photos`, plus a **random** `share_slug` backing an unauthenticated
+page at `GET /l/:slug` ([publicListing.routes.ts](src/routes/publicListing.routes.ts), mounted
+outside `/api/v1`). The slug is random rather than the listing id because the page is public — ids
+must not be enumerable and `user_id` must not appear in an emailed link. That route sets its **own
+CSP**: helmet's default `img-src 'self' data:` blocks the Supabase photos, which is the entire point
+of the page. The `send_listing_to_buyer` tool publishes (idempotent) + emails the link. Share URLs
+resolve `PUBLIC_BASE_URL` → Vercel's `VERCEL_PROJECT_PRODUCTION_URL` → `API_BASE_URL`, deliberately
+**not** `API_BASE_URL` first: it is often an ngrok tunnel, and these links live in customers' inboxes. **Product Manager**
 [pm.vertical.ts](src/services/professional/pm/pm.vertical.ts) auto-syncs recent GitHub commits/merged PRs
 (`getRecentCommits`) + recently-updated Jira issues into its snapshot for contribution tracking
 (`contribution_summary`), reusing the already-wired GitHub/Jira OAuth (no new credentials).
