@@ -322,20 +322,24 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           maxPriceDollars: typeof args.maxPrice === "number" ? args.maxPrice : undefined,
           limit: 15,
         };
-        // Source preference: RentCast → RapidAPI Realtor.com → SimplyRETS. SimplyRETS is the
-        // keyless, unlimited default (demo MLS data), so listing search works out of the box;
-        // the paid/keyed feeds take over automatically when their env keys are present.
+        // Source preference: RentCast → RapidAPI Realtor.com → SimplyRETS, falling through on an
+        // EMPTY result, not just a missing key. A configured-but-exhausted RentCast free tier
+        // (50 calls/mo) returns [] and would otherwise dead-end the search with "no listings"
+        // even though the keyless SimplyRETS feed would have answered.
+        const sources: { name: string; run: () => Promise<MarketListing[]> }[] = [];
+        if (isRentCastConfigured()) sources.push({ name: "RentCast", run: () => searchListings(searchArgs) });
+        if (isRapidListingsConfigured()) sources.push({ name: "Realtor.com", run: () => searchRapidListings(searchArgs) });
+        sources.push({
+          name: isSimplyRetsLive() ? "SimplyRETS" : "SimplyRETS demo MLS (Houston, TX metro)",
+          run: () => searchSimplyRets(searchArgs),
+        });
+
         let results: MarketListing[] = [];
         let source = "";
-        if (isRentCastConfigured()) {
-          results = await searchListings(searchArgs);
-          source = "RentCast";
-        } else if (isRapidListingsConfigured()) {
-          results = await searchRapidListings(searchArgs);
-          source = "Realtor.com";
-        } else {
-          results = await searchSimplyRets(searchArgs);
-          source = isSimplyRetsLive() ? "SimplyRETS" : "SimplyRETS demo MLS (Houston, TX metro)";
+        for (const s of sources) {
+          results = await s.run();
+          source = s.name;
+          if (results.length > 0) break; // first source that actually returns inventory wins
         }
         if (results.length === 0) return { ok: true, message: "No active for-sale listings matched that search (or the area returned no data)." };
         const lines = results.map((l) => `- ${l.address}${l.city ? `, ${l.city}${l.state ? `, ${l.state}` : ""}` : ""} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);
