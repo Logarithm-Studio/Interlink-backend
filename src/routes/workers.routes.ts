@@ -20,6 +20,7 @@ import { processEmailJob } from "../workers/processors/email.processor";
 import { processDlqJob } from "../workers/processors/dlq.processor";
 import { runDueAutomations } from "../services/accountant/automationRunner.service";
 import { runDueProfessionalAutomations } from "../services/professional/automationRunner";
+import { runDailyDigestForAllUsers } from "../services/notifications/dailyDigest.service";
 
 const router = Router();
 
@@ -98,6 +99,20 @@ router.post("/professional-automations", (req, res) => {
     res,
     async () => {
       await runDueProfessionalAutomations();
+    },
+    req.body,
+    getJobId(req),
+  );
+});
+
+// Daily digest push — the "come back to Interlink" notification (QStash Schedule, daily).
+// Sends at most one push per user per day, and nothing at all when the user has nothing
+// pending. See services/notifications/dailyDigest.service.ts.
+router.post("/daily-digest", (req, res) => {
+  void runWorker(
+    res,
+    async () => {
+      await runDailyDigestForAllUsers();
     },
     req.body,
     getJobId(req),
