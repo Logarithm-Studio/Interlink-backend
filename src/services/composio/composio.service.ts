@@ -94,6 +94,14 @@ async function getClient(): Promise<Composio | null> {
   return clientPromise;
 }
 
+/**
+ * The shared Composio client (null when COMPOSIO_API_KEY is unset), for sibling modules
+ * like composioTriggers.service.ts that need the same lazily-imported ESM instance.
+ */
+export async function getComposioClient(): Promise<Composio | null> {
+  return getClient();
+}
+
 // ─── Catalog ──────────────────────────────────────────────────────────────────
 
 export interface ToolkitMeta {

@@ -23,8 +23,34 @@ import {
   listConnections,
   disconnectToolkit,
 } from "../services/composio/composio.service";
+import {
+  EVENT_ALERT_TRIGGERS,
+  enableEventAlerts,
+  disableEventAlerts,
+  listEnabledAlertToolkits,
+  handleTriggerEvent,
+  webhookSecret,
+} from "../services/composio/composioTriggers.service";
 
 const router = Router();
+
+// ─── Public trigger webhook (NO authMiddleware) ───────────────────────────────
+// Composio POSTs app events here (new Gmail message, Slack DM, deal moved, …). There's no
+// JWT on this request, so it's guarded by a shared secret embedded in the URL we register
+// with Composio — otherwise anyone who guessed the path could fabricate notifications.
+// Always 200s: a non-2xx makes Composio retry the event forever.
+router.post("/webhook", async (req: Request, res: Response) => {
+  try {
+    if (String(req.query.key ?? "") !== webhookSecret()) {
+      return res.status(401).json({ ok: false });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const notified = await handleTriggerEvent(body);
+    return res.json({ ok: true, notified });
+  } catch {
+    return res.json({ ok: true, notified: false });
+  }
+});
 
 // ─── Public return landing (NO authMiddleware) ────────────────────────────────
 // Composio can be configured to send the browser here after consent. There is no JWT on
@@ -97,6 +123,53 @@ router.delete("/connections/:toolkit", async (req: Request, res: Response, next:
 
     await disconnectToolkit(user.id, toolkit);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Per-app event alerts ─────────────────────────────────────────────────────
+// Opt-in push notifications when something happens in a connected app. Only toolkits in
+// EVENT_ALERT_TRIGGERS support this (a curated high-signal set, not a firehose).
+
+/** Which toolkits support alerts, and which the user has switched on. */
+router.get("/alerts", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json({
+      supported: Object.keys(EVENT_ALERT_TRIGGERS),
+      enabled: await listEnabledAlertToolkits(user.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/alerts/:toolkit", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const toolkit = String(req.params.toolkit).toLowerCase();
+    if (!EVENT_ALERT_TRIGGERS[toolkit]) {
+      throw new BadRequestError(`${toolkit} doesn't support event alerts yet.`);
+    }
+    const result = await enableEventAlerts(user.id, toolkit);
+    if (result.enabled.length === 0) {
+      throw new AppError(
+        `Couldn't turn on ${toolkit} alerts. Make sure ${toolkit} is connected, then try again.`,
+        422,
+      );
+    }
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/alerts/:toolkit", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const toolkit = String(req.params.toolkit).toLowerCase();
+    res.json({ ok: true, removed: await disableEventAlerts(user.id, toolkit) });
   } catch (err) {
     next(err);
   }
