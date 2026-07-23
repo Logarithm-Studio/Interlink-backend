@@ -10,8 +10,16 @@
 
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
+import { prepareAssistantAttachment } from "./attachment.service";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
-import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES, ATTACHMENT_DIRECTIVE } from "../professional/spreadsheet.service";
+import {
+  ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME,
+  ATTACHMENT_DIRECTIVE,
+  DRIVE_SHEET_TOOL_NAMES,
+  materializeSpreadsheetEmail,
+  requestsSpreadsheetRecipientEmail,
+  type ParsedSpreadsheet,
+} from "../professional/spreadsheet.service";
 import {
   buildFallbackReceiptExtract,
   RECEIPT_EXTRACT_SYSTEM,
@@ -166,6 +174,9 @@ export async function planAgentActions(params: {
   system?: string;
   /** Optional attached file (image/PDF/spreadsheet/…) the user sent with the message. */
   attachment?: { data: string; mimeType: string; name?: string };
+  /** Client clock/timezone so relative dates behave the same as Personal Mode. */
+  clientNow?: string;
+  tz?: string;
   /** Prior conversation turns (oldest-first) so the agent has memory. */
   history?: { role: "user" | "assistant"; content: string }[];
   /**
@@ -185,29 +196,42 @@ export async function planAgentActions(params: {
     };
   }
 
-  // A spreadsheet attachment (.xlsx/.xls/.csv) can't be read by the model as inlineData — parse it
-  // to a text table so the agent can analyze the rows and act on them (enlist, email each row,
-  // summarize). Detection does NOT trust the mime/name (Android sends octet-stream), it tries to
-  // parse the bytes. When it IS a sheet, we also strip the Google-Drive sheet tools for this turn
-  // so the agent can't fall back to "find a Google Sheet named …". Images/PDFs stay inline.
+  // Use the same attachment preparation in both assistant modes. It extracts spreadsheets,
+  // text and office documents locally, inlines supported media/PDFs, and fails closed for
+  // unreadable binary formats so the model never has to guess what a file contains.
   let toolsForTurn = params.tools ?? AGENT_TOOLS;
   const attachmentParts: GeminiPart[] = [];
+  let attachedSheet: ParsedSpreadsheet | undefined;
   if (params.attachment) {
     // Any attachment: make it the subject of the turn (the model must not ignore it).
     attachmentParts.push({ text: ATTACHMENT_DIRECTIVE });
-    const sheet = tryParseSpreadsheetAttachment(params.attachment.data, params.attachment.mimeType, params.attachment.name);
-    if (sheet) {
-      attachmentParts.push({ text: spreadsheetContextText(sheet, params.attachment.name) });
-      toolsForTurn = toolsForTurn.filter((t) => !DRIVE_SHEET_TOOL_NAMES.includes(t.name));
+    const prepared = prepareAssistantAttachment(params.attachment);
+    if (!prepared.ok) return { answer: prepared.message, isLive: true };
+    attachmentParts.push(...prepared.value.parts);
+    attachedSheet = prepared.value.spreadsheet;
+    if (attachedSheet) {
+      const attachmentSuppliesRecipients = requestsSpreadsheetRecipientEmail(params.message);
+      toolsForTurn = toolsForTurn.filter(
+        (tool) =>
+          ![...DRIVE_SHEET_TOOL_NAMES, "send_bulk_email"].includes(tool.name) &&
+          (!attachmentSuppliesRecipients || !["send_gmail", "send_outlook_mail"].includes(tool.name)) &&
+          (attachmentSuppliesRecipients || tool.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME),
+      );
     } else {
-      attachmentParts.push({ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } });
+      toolsForTurn = toolsForTurn.filter((tool) => tool.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME);
     }
+  } else {
+    toolsForTurn = toolsForTurn.filter((tool) => tool.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME);
   }
 
   const userParts: GeminiPart[] = [
     {
       text:
-        `CONTEXT — the current date and time is ${new Date().toISOString()} (UTC). ` +
+        `CONTEXT — the current date and time is ${
+          params.clientNow && !Number.isNaN(Date.parse(params.clientNow))
+            ? params.clientNow
+            : new Date().toISOString()
+        }${params.tz ? ` in timezone ${params.tz}` : " (UTC fallback)"}. ` +
         `Resolve relative dates against this and never schedule or create anything in the past. ` +
         `When scheduling, emit the user's intended time as a plain local wall-clock datetime WITHOUT a "Z" or UTC offset ` +
         `(e.g. 2026-07-11T15:00:00) — the calendar applies the user's own timezone. Do not convert to UTC yourself.`,
@@ -227,9 +251,20 @@ export async function planAgentActions(params: {
       execReadOnly: params.execReadOnly ?? (async () => ({ message: "" })),
       looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
-    return outcome.kind === "action"
-      ? { action: { name: outcome.name, args: outcome.args }, isLive: true }
-      : { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
+    if (outcome.kind === "action") {
+      if (attachedSheet && outcome.name === ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME) {
+        const materialized = materializeSpreadsheetEmail(
+          attachedSheet,
+          params.message,
+          outcome.args,
+          params.attachment?.name,
+        );
+        if (!materialized.ok) return { answer: materialized.message, isLive: true };
+        return { action: { name: "send_bulk_email", args: materialized.args }, isLive: true };
+      }
+      return { action: { name: outcome.name, args: outcome.args }, isLive: true };
+    }
+    return { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
   } catch (err) {
     console.error("[multimodal] agent planning failed:", err);
     return { answer: "Sorry, I couldn't process that just now.", isLive: true };

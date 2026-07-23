@@ -119,6 +119,14 @@ see `src/services/email/templates.service.ts`.
 `src/services/ai/` wraps OpenAI (`openai` SDK) with Zod-validated outputs and prompt modules
 (e.g. `prompts/emailConflict.ts`). AI is a supporting feature, not the required MVP path.
 
+Both command centers share `src/services/ai/attachment.service.ts`. It parses spreadsheets and
+UTF-8/office documents locally, sends Gemini-supported PDF/image/audio/video formats inline, enforces
+a 15 MB raw-file limit, and fails closed for unreadable binary formats. Attached-spreadsheet email
+workflows do **not** trust the model to select addresses: the model describes the filter, then
+`professional/spreadsheet.service.ts` reapplies date/row filters deterministically and rebuilds the
+recipient list exclusively from parsed rows before returning the confirmation action. Ambiguous dates,
+invalid date cells, truncated sheets, and sends above the 100-recipient safety cap block before send.
+
 ### Composio — the brokered long tail of integrations
 [composio.service.ts](src/services/composio/composio.service.ts) + `/api/v1/composio/*`
 ([composio.routes.ts](src/routes/composio.routes.ts)). One `COMPOSIO_API_KEY` unlocks HubSpot,

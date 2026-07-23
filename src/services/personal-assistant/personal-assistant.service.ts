@@ -16,13 +16,22 @@ import {
   type GeminiToolFunction,
 } from "../ai/geminiClient";
 import { runAgentTurn } from "../ai/agentLoop";
+import { prepareAssistantAttachment } from "../ai/attachment.service";
 
 // Integration services used by executeAction (function dispatch).
 // Music runs on YouTube Music (search + open a link); the YouTube Data API has no
 // playback-control endpoints, so the assistant returns a link the app opens.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
-import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES, ATTACHMENT_DIRECTIVE } from "../professional/spreadsheet.service";
+import {
+  ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME,
+  ATTACHMENT_DIRECTIVE,
+  DRIVE_SHEET_TOOL_NAMES,
+  materializeSpreadsheetEmail,
+  parseCalendarDay,
+  requestsSpreadsheetRecipientEmail,
+  type ParsedSpreadsheet,
+} from "../professional/spreadsheet.service";
 import {
   listDriveFiles,
   createDriveDoc,
@@ -520,6 +529,46 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
         body: { type: "string", description: "Email body; use {{name}} to personalize per recipient." },
       },
       required: ["recipients", "subject", "body"],
+    },
+  },
+  {
+    name: ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME,
+    description:
+      "Prepare an email workflow from the spreadsheet ATTACHED TO THIS MESSAGE. Use only when an attachment is present. " +
+      "Do NOT choose or copy recipient addresses yourself. Provide the subject/body and describe the requested row filters; " +
+      "the server deterministically applies them to the parsed file, validates every address against the file, and produces " +
+      "the recipient list. For dates, preserve strict wording: after/before are exclusive; on_or_after/on_or_before are inclusive.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheetName: { type: "string", description: "Worksheet/tab name when the file has multiple sheets." },
+        emailColumn: { type: "string", description: "Email header or column letter. Omit to auto-detect." },
+        nameColumn: { type: "string", description: "Name header or column letter. Omit to auto-detect." },
+        dateColumn: { type: "string", description: "Date/timestamp header when a date filter is requested." },
+        filters: {
+          type: "array",
+          description: "Requested row filters. Copy values from the user's wording; never invent a filter.",
+          items: {
+            type: "object",
+            properties: {
+              column: { type: "string", description: "Exact header (preferred) or column letter." },
+              operator: {
+                type: "string",
+                enum: [
+                  "equals", "not_equals", "contains", "starts_with", "ends_with",
+                  "after", "on_or_after", "before", "on_or_before",
+                  "greater_than", "at_least", "less_than", "at_most", "is_empty", "is_not_empty",
+                ],
+              },
+              value: { type: "string", description: "Literal comparison value from the request." },
+            },
+            required: ["column", "operator"],
+          },
+        },
+        subject: { type: "string", description: "Email subject; may contain {{name}}." },
+        body: { type: "string", description: "Email body; may contain {{name}}." },
+      },
+      required: ["subject", "body"],
     },
   },
   {
@@ -1322,13 +1371,19 @@ async function sendBulkEmailFromSheet(userId: string, args: Record<string, unkno
   const nameIdx = resolveColumnIndex(headers, args.nameColumn ? String(args.nameColumn) : undefined, ["name", "employee", "full name"]);
   const dateIdx = resolveColumnIndex(headers, args.dateColumn ? String(args.dateColumn) : undefined, ["join", "start", "hired", "date", "created", "timestamp"]);
 
-  const fromDate = args.fromDate ? new Date(`${String(args.fromDate)}T00:00:00`) : null;
-  const toDate = args.toDate ? new Date(`${String(args.toDate)}T23:59:59`) : null;
+  const fromDate = args.fromDate ? parseCalendarDay(String(args.fromDate)) : null;
+  const toDate = args.toDate ? parseCalendarDay(String(args.toDate)) : null;
+  if (args.fromDate && fromDate == null) {
+    return { ok: false, message: `The start date "${args.fromDate}" is invalid or ambiguous. Use YYYY-MM-DD.` };
+  }
+  if (args.toDate && toDate == null) {
+    return { ok: false, message: `The end date "${args.toDate}" is invalid or ambiguous. Use YYYY-MM-DD.` };
+  }
   const inRange = (v: string): boolean => {
     if (!fromDate && !toDate) return true;
-    if (dateIdx < 0) return true; // no date column to filter on → include the row
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return false;
+    if (dateIdx < 0) return false;
+    const d = parseCalendarDay(v);
+    if (d == null) return false;
     if (fromDate && d < fromDate) return false;
     if (toDate && d > toDate) return false;
     return true;
@@ -1673,6 +1728,11 @@ export async function executeAction(
         return sendBulkEmailFromSheet(userId, args);
       case "send_bulk_email":
         return sendBulkEmail(userId, args);
+      case ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME:
+        return {
+          ok: false,
+          message: "That workflow must be prepared while the spreadsheet is attached. Attach it again and retry.",
+        };
       case "search_contacts": {
         const contacts = await searchContacts(userId, String(args.query ?? ""));
         const message = linesOrNone(contacts, (c) => `- ${c.name} <${c.email}>`, "No matching contacts found.", 10);
@@ -2058,8 +2118,30 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
       }${args.fromDate || args.toDate ? ` (joined ${args.fromDate ?? "any"} → ${args.toDate ?? "any"})` : ""}`;
     case "send_bulk_email": {
       const n = Array.isArray(args.recipients) ? args.recipients.length : 0;
-      return `Send "${args.subject ?? "an email"}" to ${n} recipient${n === 1 ? "" : "s"}`;
+      const selection =
+        args.attachmentSelection && typeof args.attachmentSelection === "object"
+          ? (args.attachmentSelection as Record<string, unknown>)
+          : null;
+      const fileName = selection ? String(selection.fileName ?? "").trim() : "";
+      const filters = selection && Array.isArray(selection.filters)
+        ? selection.filters
+            .map((item) => {
+              if (!item || typeof item !== "object") return "";
+              const filter = item as Record<string, unknown>;
+              return `${filter.column ?? "column"} ${String(filter.operator ?? "").replace(/_/g, " ")} "${filter.value ?? ""}"`;
+            })
+            .filter(Boolean)
+        : [];
+      const invalidEmails = selection ? Number(selection.invalidEmailRows ?? 0) : 0;
+      const duplicates = selection ? Number(selection.duplicateEmailRows ?? 0) : 0;
+      const source = fileName ? ` selected from "${fileName}"${filters.length ? ` where ${filters.join(" and ")}` : ""}` : "";
+      const excluded = invalidEmails || duplicates
+        ? ` (${invalidEmails} invalid email row${invalidEmails === 1 ? "" : "s"} and ${duplicates} duplicate${duplicates === 1 ? "" : "s"} excluded)`
+        : "";
+      return `Send "${args.subject ?? "an email"}" to ${n} recipient${n === 1 ? "" : "s"}${source}${excluded}`;
     }
+    case ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME:
+      return `Prepare "${args.subject ?? "an email"}" from the attached spreadsheet`;
     case "search_contacts": return `Look up contact "${args.query ?? ""}"`;
     case "list_contacts": return "List contacts";
     case "list_slack_users": return "List Slack members";
@@ -2194,27 +2276,34 @@ export async function command(
   const systemPrompt = buildSystemPrompt(persona);
   const appsSummary = await connectedAppsSummary(userId);
 
-  // Multimodal: an attached image is inlined so Gemini can reason about it (receipts,
-  // screenshots…). A spreadsheet (.xlsx/.xls/.csv) is parsed to a text table so the agent
-  // can analyze the rows and act on them (email each person, build a list, summarize). Any
-  // other non-image attachment is not inlined — we just tell the model its name so it can
-  // offer to upload it to Drive.
+  // Prepare attachments through the same parser used by Professional Mode. Spreadsheets,
+  // office documents and text are extracted locally; supported media/PDFs are inlined.
+  // Unknown binary formats fail closed instead of being reduced to a filename and guessed.
   const nowContext = buildNowContext(opts.clientNow, opts.tz);
   const parts: GeminiPart[] = [{ text: nowContext }, { text: appsSummary }];
   // Any attachment (file or image): make it the subject of the turn so the model can't ignore it.
   if (opts.attachment || opts.image) parts.push({ text: ATTACHMENT_DIRECTIVE });
   let sheetAttached = false;
+  let attachedSheet: ParsedSpreadsheet | undefined;
   if (opts.attachment) {
-    const sheet = tryParseSpreadsheetAttachment(opts.attachment.base64, opts.attachment.mimeType, opts.attachment.name);
-    if (sheet) {
-      parts.push({ text: spreadsheetContextText(sheet, opts.attachment.name) });
-      sheetAttached = true;
-    } else {
-      parts.push({ text: `The user attached a file named "${opts.attachment.name}" (${opts.attachment.mimeType}). If they want it saved, use upload_to_drive.` });
+    const prepared = prepareAssistantAttachment({
+      data: opts.attachment.base64,
+      mimeType: opts.attachment.mimeType,
+      name: opts.attachment.name,
+    });
+    if (!prepared.ok) {
+      await persistMessage(userId, "user", message, convId);
+      await persistMessage(userId, "assistant", prepared.message, convId);
+      return { answer: prepared.message, action: null, isLive: true, conversationId: convId };
     }
+    parts.push(...prepared.value.parts);
+    attachedSheet = prepared.value.spreadsheet;
+    sheetAttached = Boolean(attachedSheet);
   }
   parts.push({ text: message });
-  if (opts.image) {
+  // Legacy clients may send an image without the generic attachment fields. Current
+  // clients send one attachment payload, so do not inline the same image twice.
+  if (opts.image && !opts.attachment) {
     parts.push({ inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } });
   }
 
@@ -2230,7 +2319,15 @@ export async function command(
   // When a spreadsheet is attached, strip the Google-Drive sheet tools so the agent acts on the
   // attached rows (via send_bulk_email) instead of hunting for a Drive sheet that doesn't exist.
   const baseTools = [...PERSONAL_TOOLS, ...composioTools];
-  const turnTools = sheetAttached ? baseTools.filter((t) => !DRIVE_SHEET_TOOL_NAMES.includes(t.name)) : baseTools;
+  const attachmentSuppliesRecipients = sheetAttached && requestsSpreadsheetRecipientEmail(message);
+  const turnTools = sheetAttached
+    ? baseTools.filter(
+        (tool) =>
+          ![...DRIVE_SHEET_TOOL_NAMES, "send_bulk_email"].includes(tool.name) &&
+          (!attachmentSuppliesRecipients || !["send_gmail", "send_outlook_mail"].includes(tool.name)) &&
+          (attachmentSuppliesRecipients || tool.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME),
+      )
+    : baseTools.filter((t) => t.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME);
 
   try {
     const outcome = await runAgentTurn({
@@ -2245,6 +2342,25 @@ export async function command(
     });
 
     if (outcome.kind === "action") {
+      if (attachedSheet && outcome.name === ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME) {
+        const materialized = materializeSpreadsheetEmail(
+          attachedSheet,
+          message,
+          outcome.args,
+          opts.attachment?.name,
+        );
+        if (!materialized.ok) {
+          await persistMessage(userId, "assistant", materialized.message, convId);
+          return {
+            answer: materialized.message,
+            action: null,
+            isLive: true,
+            conversationId: convId,
+          };
+        }
+        outcome.name = "send_bulk_email";
+        outcome.args = materialized.args;
+      }
       // Write action — return it for user confirmation before executing.
       const summary = summarizeAction(outcome.name, outcome.args);
       await persistMessage(userId, "assistant", summary, convId);

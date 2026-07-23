@@ -412,6 +412,7 @@ export async function command(
   message: string,
   conversationId?: string,
   attachment?: { data: string; mimeType: string; name?: string },
+  temporalContext: { clientNow?: string; tz?: string } = {},
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
 
@@ -444,6 +445,8 @@ export async function command(
         tools: await professionalToolsWithPersonal(userId, vertical.tools),
         system: `${vertical.systemPrompt}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
         attachment,
+        clientNow: temporalContext.clientNow,
+        tz: temporalContext.tz,
         history,
         isReadOnly: isReadOnlyPersonalAction,
         execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
@@ -509,6 +512,8 @@ export async function command(
     tools: await professionalToolsWithPersonal(userId, AGENT_TOOLS),
     system: `${AGENT_SYSTEM}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
     attachment,
+    clientNow: temporalContext.clientNow,
+    tz: temporalContext.tz,
     history: financeHistory,
     isReadOnly: isReadOnlyPersonalAction,
     execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
@@ -556,6 +561,8 @@ export async function executeAction(
   user: AppUser,
   name: string,
   args: Record<string, unknown>,
+  attachment?: { base64: string; mimeType: string; name: string },
+  tz?: string,
 ): Promise<{ ok: boolean; message: string }> {
   // Composio-brokered tools are persona-agnostic — a connected HubSpot works the same for
   // finance and every vertical — so dispatch them before the persona branch.
@@ -564,13 +571,13 @@ export async function executeAction(
   // Non-finance personas dispatch to their vertical's tool executor.
   const persona = await getProfessionalPersona(user.id);
   if (persona !== "finance") {
-    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args);
+    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args, { attachment, tz });
     const vertical = getVertical(persona);
     if (vertical) return vertical.executeTool(user, name, args);
     return { ok: false, message: `No actions available for this role.` };
   }
   try {
-    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args);
+    if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args, { attachment, tz });
     switch (name) {
       case "create_invoice": {
         const clientName = String(args.clientName ?? "").trim();

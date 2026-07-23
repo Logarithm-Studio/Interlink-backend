@@ -481,6 +481,8 @@ const CommandBody = z.object({
   attachmentBase64: z.string().min(1).optional(),
   attachmentMimeType: z.string().min(1).optional(),
   attachmentName: z.string().max(255).optional(),
+  clientNow: z.string().optional(),
+  tz: z.string().optional(),
 });
 router.post("/assistant/command", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -494,7 +496,12 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
           name: parsed.data.attachmentName,
         }
       : undefined;
-    res.json(await command(user.id, parsed.data.message, parsed.data.conversationId, attachment));
+    res.json(
+      await command(user.id, parsed.data.message, parsed.data.conversationId, attachment, {
+        clientNow: parsed.data.clientNow,
+        tz: parsed.data.tz,
+      }),
+    );
   } catch (err) {
     next(err);
   }
@@ -504,13 +511,24 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
 const ExecuteBody = z.object({
   name: z.string().min(1),
   args: z.record(z.unknown()).optional(),
+  tz: z.string().optional(),
+  attachmentBase64: z.string().min(1).optional(),
+  attachmentMimeType: z.string().min(1).optional(),
+  attachmentName: z.string().max(255).optional(),
 });
 router.post("/assistant/execute", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = ExecuteBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("name is required.");
-    res.json(await executeAction(user, parsed.data.name, parsed.data.args ?? {}));
+    const attachment = parsed.data.attachmentBase64
+      ? {
+          base64: parsed.data.attachmentBase64,
+          mimeType: parsed.data.attachmentMimeType ?? "application/octet-stream",
+          name: parsed.data.attachmentName ?? "Upload",
+        }
+      : undefined;
+    res.json(await executeAction(user, parsed.data.name, parsed.data.args ?? {}, attachment, parsed.data.tz));
   } catch (err) {
     mapSendError(err, next);
   }
