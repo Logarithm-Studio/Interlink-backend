@@ -30,6 +30,13 @@ export interface ParsedSpreadsheet {
 /** Hard cap so a huge upload can't blow the request/body limits or the model's context. */
 const MAX_ROWS = 1000;
 
+/**
+ * Tools that read a spreadsheet from Google Drive. When a sheet is ATTACHED to the message it is
+ * NOT in Drive, so these are stripped from the agent's tool list for that turn — the agent then
+ * physically cannot fall back to "find a Google Sheet named …" and must act on the attached rows.
+ */
+export const DRIVE_SHEET_TOOL_NAMES = ["send_bulk_email_from_sheet", "read_sheet", "list_spreadsheets"];
+
 /** Does this attachment look like a spreadsheet we can parse (by mime OR extension)? */
 export function isSpreadsheetAttachment(mimeType?: string | null, fileName?: string | null): boolean {
   const mt = (mimeType ?? "").toLowerCase();
@@ -77,6 +84,34 @@ export function parseSpreadsheet(base64: string, fileName?: string | null): Pars
   const truncated = nonEmpty.length > MAX_ROWS + 1;
   const rows = truncated ? nonEmpty.slice(0, MAX_ROWS + 1) : nonEmpty;
   return { sheetName, rows, rowCount: Math.max(0, rows.length - 1), truncated };
+}
+
+/**
+ * Best-effort detection that does NOT trust the mime type or filename — Android's picker often
+ * reports `application/octet-stream` and the name can lack an extension, which is exactly why the
+ * "email from an attached sheet" flow kept failing. We skip images/audio/video/PDF (those go to the
+ * model as inlineData) and then actually TRY to parse the bytes: if it yields a table, it's a
+ * spreadsheet. Returns the parsed sheet, or null to fall back to the normal attachment handling.
+ */
+export function tryParseSpreadsheetAttachment(
+  base64: string,
+  mimeType?: string | null,
+  fileName?: string | null,
+): ParsedSpreadsheet | null {
+  const mt = (mimeType ?? "").toLowerCase();
+  if (mt.startsWith("image/") || mt.startsWith("audio/") || mt.startsWith("video/") || mt === "application/pdf") {
+    return null;
+  }
+  const labelled = isSpreadsheetAttachment(mimeType, fileName);
+  try {
+    const parsed = parseSpreadsheet(base64, fileName);
+    if (parsed.rows.length === 0) return null;
+    // If mime/name already says spreadsheet, accept any non-empty parse. Otherwise require a
+    // header + at least one data row so an arbitrary text blob isn't mistaken for a sheet.
+    return labelled || parsed.rows.length >= 2 ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

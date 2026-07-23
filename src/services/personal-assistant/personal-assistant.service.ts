@@ -22,7 +22,7 @@ import { runAgentTurn } from "../ai/agentLoop";
 // playback-control endpoints, so the assistant returns a link the app opens.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
-import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetContextText } from "../professional/spreadsheet.service";
+import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES } from "../professional/spreadsheet.service";
 import {
   listDriveFiles,
   createDriveDoc,
@@ -2174,14 +2174,12 @@ export async function command(
   // offer to upload it to Drive.
   const nowContext = buildNowContext(opts.clientNow, opts.tz);
   const parts: GeminiPart[] = [{ text: nowContext }, { text: appsSummary }];
+  let sheetAttached = false;
   if (opts.attachment) {
-    if (isSpreadsheetAttachment(opts.attachment.mimeType, opts.attachment.name)) {
-      try {
-        const parsed = parseSpreadsheet(opts.attachment.base64, opts.attachment.name);
-        parts.push({ text: spreadsheetContextText(parsed, opts.attachment.name) });
-      } catch {
-        parts.push({ text: `The user attached "${opts.attachment.name}" but it couldn't be parsed as a spreadsheet — ask them to re-attach a valid .xlsx, .xls, or .csv.` });
-      }
+    const sheet = tryParseSpreadsheetAttachment(opts.attachment.base64, opts.attachment.mimeType, opts.attachment.name);
+    if (sheet) {
+      parts.push({ text: spreadsheetContextText(sheet, opts.attachment.name) });
+      sheetAttached = true;
     } else {
       parts.push({ text: `The user attached a file named "${opts.attachment.name}" (${opts.attachment.mimeType}). If they want it saved, use upload_to_drive.` });
     }
@@ -2200,10 +2198,15 @@ export async function command(
   // Empty when Composio is off or nothing is connected, so the native surface is unchanged.
   const composioTools = await getComposioToolsForUser(userId);
 
+  // When a spreadsheet is attached, strip the Google-Drive sheet tools so the agent acts on the
+  // attached rows (via send_bulk_email) instead of hunting for a Drive sheet that doesn't exist.
+  const baseTools = [...PERSONAL_TOOLS, ...composioTools];
+  const turnTools = sheetAttached ? baseTools.filter((t) => !DRIVE_SHEET_TOOL_NAMES.includes(t.name)) : baseTools;
+
   try {
     const outcome = await runAgentTurn({
       system: systemPrompt,
-      tools: [...PERSONAL_TOOLS, ...composioTools],
+      tools: turnTools,
       userParts: parts,
       history,
       isReadOnly: isReadOnlyAction,

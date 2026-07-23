@@ -11,7 +11,7 @@
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
-import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetContextText } from "../professional/spreadsheet.service";
+import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES } from "../professional/spreadsheet.service";
 import {
   buildFallbackReceiptExtract,
   RECEIPT_EXTRACT_SYSTEM,
@@ -183,18 +183,18 @@ export async function planAgentActions(params: {
     };
   }
 
-  // A spreadsheet attachment (.xlsx/.xls/.csv) can't be read by the model as inlineData —
-  // parse it to a text table so the agent can analyze the rows and act on them (enlist,
-  // email each row, summarize). Other attachments (image/PDF) stay inline for vision.
+  // A spreadsheet attachment (.xlsx/.xls/.csv) can't be read by the model as inlineData — parse it
+  // to a text table so the agent can analyze the rows and act on them (enlist, email each row,
+  // summarize). Detection does NOT trust the mime/name (Android sends octet-stream), it tries to
+  // parse the bytes. When it IS a sheet, we also strip the Google-Drive sheet tools for this turn
+  // so the agent can't fall back to "find a Google Sheet named …". Images/PDFs stay inline.
+  let toolsForTurn = params.tools ?? AGENT_TOOLS;
   const attachmentParts: GeminiPart[] = [];
   if (params.attachment) {
-    if (isSpreadsheetAttachment(params.attachment.mimeType, params.attachment.name)) {
-      try {
-        const parsed = parseSpreadsheet(params.attachment.data, params.attachment.name);
-        attachmentParts.push({ text: spreadsheetContextText(parsed, params.attachment.name) });
-      } catch {
-        attachmentParts.push({ text: "An attached spreadsheet couldn't be parsed — ask the user to re-attach a valid .xlsx, .xls, or .csv." });
-      }
+    const sheet = tryParseSpreadsheetAttachment(params.attachment.data, params.attachment.mimeType, params.attachment.name);
+    if (sheet) {
+      attachmentParts.push({ text: spreadsheetContextText(sheet, params.attachment.name) });
+      toolsForTurn = toolsForTurn.filter((t) => !DRIVE_SHEET_TOOL_NAMES.includes(t.name));
     } else {
       attachmentParts.push({ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } });
     }
@@ -216,7 +216,7 @@ export async function planAgentActions(params: {
   try {
     const outcome = await runAgentTurn({
       system: params.system ?? AGENT_SYSTEM,
-      tools: params.tools ?? AGENT_TOOLS,
+      tools: toolsForTurn,
       userParts,
       history: params.history,
       isReadOnly: params.isReadOnly ?? (() => false),
