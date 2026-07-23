@@ -18,11 +18,13 @@ import {
   CONNECTED_APP_ORCHESTRATION_PROMPT,
   GLOBAL_AGENT_RULES,
   connectedAppsSummary,
+  deriveOpenLinks,
   executeAction as executePersonalAction,
   isReadOnlyAction as isReadOnlyPersonalAction,
   mentionsMissingAttachment,
   PERSONAL_TOOLS,
   summarizeAction as summarizePersonalAction,
+  type OpenLink,
 } from "../personal-assistant/personal-assistant.service";
 import {
   getComposioToolsForUser,
@@ -229,6 +231,8 @@ export interface CommandResult {
   action: PendingAction | null;
   isLive: boolean;
   conversationId: string;
+  /** Openable deep-links derived from the answer (e.g. a YouTube Music play card). */
+  links?: OpenLink[];
 }
 
 export interface ConversationSummary {
@@ -465,13 +469,14 @@ export async function command(
         };
       }
       const vText = vAction ? vAction.summary : (plan.answer ?? "");
+      const vLinks = !vAction && plan.via ? deriveOpenLinks(plan.via.name, plan.via.args, plan.via.data) : [];
       await query(
         `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
          VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
         [userId, message, vText, convId],
       ).catch(() => {});
       await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
-      return { answer: plan.answer ?? null, action: vAction, isLive: plan.isLive, conversationId: convId };
+      return { answer: plan.answer ?? null, action: vAction, isLive: plan.isLive, conversationId: convId, links: vLinks.length ? vLinks : undefined };
     }
 
     const histRes = await query<{ role: "user" | "assistant"; content: string }>(
@@ -532,6 +537,7 @@ export async function command(
 
   // Persist the turn + bump conversation recency (best-effort).
   const assistantText = action ? action.summary : (plan.answer ?? "");
+  const links = !action && plan.via ? deriveOpenLinks(plan.via.name, plan.via.args, plan.via.data) : [];
   await query(
     `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
      VALUES ($1, 'user', $2, $4), ($1, 'assistant', $3, $4)`,
@@ -542,7 +548,7 @@ export async function command(
     [convId],
   ).catch(() => {});
 
-  return { answer: plan.answer ?? null, action, isLive: plan.isLive, conversationId: convId };
+  return { answer: plan.answer ?? null, action, isLive: plan.isLive, conversationId: convId, links: links.length ? links : undefined };
 }
 
 /** Execute a user-confirmed agent action via the existing services. */

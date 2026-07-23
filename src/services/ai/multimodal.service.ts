@@ -91,6 +91,8 @@ export interface AgentPlan {
   answer?: string;
   /** A proposed action the user must confirm before execution. */
   action?: { name: string; args: Record<string, unknown> };
+  /** The last discovery tool that produced data, so callers can derive openable deep-links. */
+  via?: { name: string; args: Record<string, unknown>; data?: unknown };
   isLive: boolean;
 }
 
@@ -227,7 +229,7 @@ export async function planAgentActions(params: {
     });
     return outcome.kind === "action"
       ? { action: { name: outcome.name, args: outcome.args }, isLive: true }
-      : { answer: outcome.text || "Done.", isLive: true };
+      : { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
   } catch (err) {
     console.error("[multimodal] agent planning failed:", err);
     return { answer: "Sorry, I couldn't process that just now.", isLive: true };
