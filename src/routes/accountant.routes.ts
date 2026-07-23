@@ -480,6 +480,7 @@ const CommandBody = z.object({
   conversationId: z.string().uuid().optional(),
   attachmentBase64: z.string().min(1).optional(),
   attachmentMimeType: z.string().min(1).optional(),
+  attachmentName: z.string().max(255).optional(),
 });
 router.post("/assistant/command", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -487,7 +488,11 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
     const parsed = CommandBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("message is required.");
     const attachment = parsed.data.attachmentBase64
-      ? { data: parsed.data.attachmentBase64, mimeType: parsed.data.attachmentMimeType ?? "application/octet-stream" }
+      ? {
+          data: parsed.data.attachmentBase64,
+          mimeType: parsed.data.attachmentMimeType ?? "application/octet-stream",
+          name: parsed.data.attachmentName,
+        }
       : undefined;
     res.json(await command(user.id, parsed.data.message, parsed.data.conversationId, attachment));
   } catch (err) {

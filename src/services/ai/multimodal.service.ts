@@ -11,7 +11,7 @@
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
-import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetToText } from "../professional/spreadsheet.service";
+import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetContextText } from "../professional/spreadsheet.service";
 import {
   buildFallbackReceiptExtract,
   RECEIPT_EXTRACT_SYSTEM,
@@ -162,8 +162,8 @@ export async function planAgentActions(params: {
   tools?: GeminiToolFunction[];
   /** Persona-specific system prompt (defaults to the finance/accountant agent). */
   system?: string;
-  /** Optional attached file (image/PDF/…) the user sent with the message. */
-  attachment?: { data: string; mimeType: string };
+  /** Optional attached file (image/PDF/spreadsheet/…) the user sent with the message. */
+  attachment?: { data: string; mimeType: string; name?: string };
   /** Prior conversation turns (oldest-first) so the agent has memory. */
   history?: { role: "user" | "assistant"; content: string }[];
   /**
@@ -188,12 +188,10 @@ export async function planAgentActions(params: {
   // email each row, summarize). Other attachments (image/PDF) stay inline for vision.
   const attachmentParts: GeminiPart[] = [];
   if (params.attachment) {
-    if (isSpreadsheetAttachment(params.attachment.mimeType)) {
+    if (isSpreadsheetAttachment(params.attachment.mimeType, params.attachment.name)) {
       try {
-        const parsed = parseSpreadsheet(params.attachment.data);
-        attachmentParts.push({
-          text: `ATTACHED SPREADSHEET (parsed to text — the first row is the header; reason over these rows and act on them when asked):\n${spreadsheetToText(parsed)}`,
-        });
+        const parsed = parseSpreadsheet(params.attachment.data, params.attachment.name);
+        attachmentParts.push({ text: spreadsheetContextText(parsed, params.attachment.name) });
       } catch {
         attachmentParts.push({ text: "An attached spreadsheet couldn't be parsed — ask the user to re-attach a valid .xlsx, .xls, or .csv." });
       }

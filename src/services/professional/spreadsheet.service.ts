@@ -80,6 +80,26 @@ export function parseSpreadsheet(base64: string, fileName?: string | null): Pars
 }
 
 /**
+ * The full context block injected into the agent's prompt for an ATTACHED spreadsheet: the parsed
+ * table PLUS explicit steering so the model acts on THESE rows and never routes to a Google-Sheet /
+ * Drive tool (the attachment is not a Drive file, and Drive tools would fail to find it). This is the
+ * one message that turns "attach a sheet → email these people" into a working flow.
+ */
+export function spreadsheetContextText(parsed: ParsedSpreadsheet, fileName?: string | null): string {
+  return [
+    `ATTACHED SPREADSHEET "${fileName ?? (parsed.sheetName || "file")}" — parsed below (row 1 is the header).`,
+    `This is the file the user attached to THIS message. It is NOT a Google Sheet in Google Drive, so you`,
+    `MUST NOT call send_bulk_email_from_sheet, list_spreadsheets, or read_sheet on it — those look in Drive`,
+    `and will fail. Work directly from the rows below:`,
+    `• To email people from it: read the matching rows, then call send_bulk_email with those recipients`,
+    `  (email + name) baked in — do the date/criteria filtering yourself from the rows here.`,
+    `• To add them to the book: use the relevant create tool per row.`,
+    ``,
+    spreadsheetToText(parsed),
+  ].join("\n");
+}
+
+/**
  * Render parsed rows as a compact pipe-delimited text table for injecting into an AI prompt
  * (Gemini can't parse xlsx bytes, so the assistant reasons over this text instead of inlineData).
  */

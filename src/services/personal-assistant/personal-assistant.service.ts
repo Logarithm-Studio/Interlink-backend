@@ -22,7 +22,7 @@ import { runAgentTurn } from "../ai/agentLoop";
 // playback-control endpoints, so the assistant returns a link the app opens.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
-import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetToText } from "../professional/spreadsheet.service";
+import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetContextText } from "../professional/spreadsheet.service";
 import {
   listDriveFiles,
   createDriveDoc,
@@ -495,6 +495,31 @@ export const PERSONAL_TOOLS: GeminiToolFunction[] = [
         bodyTemplate: { type: "string", description: "Email body; use {{name}}, {{email}}, or any {{ColumnName}} placeholder to personalize per row." },
       },
       required: ["subject", "bodyTemplate"],
+    },
+  },
+  {
+    name: "send_bulk_email",
+    description:
+      "Send the SAME email individually to a specific list of recipients you ALREADY have in hand — e.g. people you read from an ATTACHED spreadsheet/CSV, or a list the user pasted. Each recipient gets their OWN separate email (they don't see each other). ALWAYS use this — NEVER send_bulk_email_from_sheet / list_spreadsheets / read_sheet — when the recipients come from a file ATTACHED to the message: an attached file is NOT a Google Sheet in Drive. Read the matching rows yourself, then put every recipient in the recipients array. The subject/body may contain {{name}} which is replaced per recipient. WRITE/bulk action — the app confirms before anything is sent.",
+    parameters: {
+      type: "object",
+      properties: {
+        recipients: {
+          type: "array",
+          description: "Everyone to email. Include each person's email; add their name for {{name}} personalization.",
+          items: {
+            type: "object",
+            properties: {
+              email: { type: "string", description: "Recipient email address." },
+              name: { type: "string", description: "Recipient name (optional; used for {{name}})." },
+            },
+            required: ["email"],
+          },
+        },
+        subject: { type: "string", description: "Email subject; may include {{name}}." },
+        body: { type: "string", description: "Email body; use {{name}} to personalize per recipient." },
+      },
+      required: ["recipients", "subject", "body"],
     },
   },
   {
@@ -1326,6 +1351,65 @@ async function sendBulkEmailFromSheet(userId: string, args: Record<string, unkno
 }
 
 /**
+ * Send the same email individually to an explicit recipient list (baked into the args by the
+ * agent — e.g. read from an attached spreadsheet). Unlike sendBulkEmailFromSheet this needs no
+ * Google Sheet / Drive, so it works from a file attached to the message and survives the
+ * confirm→execute round-trip (the recipients travel in the args, not the attachment).
+ */
+async function sendBulkEmail(userId: string, args: Record<string, unknown>): Promise<ExecuteResult> {
+  const subject = String(args.subject ?? "").trim();
+  const body = String(args.body ?? "").trim();
+  if (!subject || !body) return { ok: false, message: "I need a subject and a body to send." };
+
+  // Accept recipients as [{email,name}] OR a plain ["a@b.com", …] list.
+  const raw = Array.isArray(args.recipients) ? args.recipients : [];
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const recipients: { email: string; name: string }[] = [];
+  for (const r of raw) {
+    if (typeof r === "string") {
+      const e = r.trim();
+      if (emailRe.test(e)) recipients.push({ email: e, name: "" });
+    } else if (r && typeof r === "object") {
+      const rec = r as Record<string, unknown>;
+      const e = String(rec.email ?? "").trim();
+      if (emailRe.test(e)) recipients.push({ email: e, name: String(rec.name ?? "").trim() });
+    }
+  }
+  if (recipients.length === 0) {
+    return { ok: false, message: "I didn't get any valid email addresses to send to." };
+  }
+
+  const fromEmail = await getPrimaryGoogleEmail(userId);
+  if (!fromEmail) return { ok: false, message: "I couldn't resolve your Gmail address. Reconnect Google in Connected Accounts." };
+
+  const sent: string[] = [];
+  let skipped = 0;
+  for (const r of recipients) {
+    if (sent.length >= MAX_BULK_EMAILS) break;
+    const record: Record<string, string> = { name: r.name, email: r.email };
+    try {
+      await sendAutomatedGmailMessage({
+        userId,
+        fromEmail,
+        toEmail: r.email,
+        subject: renderTemplate(subject, record),
+        body: renderTemplate(body, record),
+      });
+      sent.push(r.name || r.email);
+    } catch {
+      skipped++;
+    }
+  }
+  if (sent.length === 0) {
+    return { ok: false, message: `No emails were sent${skipped ? ` (${skipped} failed)` : ""}.` };
+  }
+  return {
+    ok: true,
+    message: `Sent to ${sent.length} recipient(s): ${sent.slice(0, 15).join(", ")}${sent.length > 15 ? "…" : ""}.${skipped ? ` ${skipped} failed.` : ""}`,
+  };
+}
+
+/**
  * Execute a single personal-assistant action. Used both for confirmed write
  * actions (via /execute) and for auto-running read-only actions inside command().
  * Always resolves (never throws) so the assistant can report failures cleanly.
@@ -1560,6 +1644,8 @@ export async function executeAction(
       }
       case "send_bulk_email_from_sheet":
         return sendBulkEmailFromSheet(userId, args);
+      case "send_bulk_email":
+        return sendBulkEmail(userId, args);
       case "search_contacts": {
         const contacts = await searchContacts(userId, String(args.query ?? ""));
         const message = linesOrNone(contacts, (c) => `- ${c.name} <${c.email}>`, "No matching contacts found.", 10);
@@ -1943,6 +2029,10 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
       return `Send "${args.subject ?? "an email"}" to people in ${
         args.spreadsheetName ? `"${args.spreadsheetName}"` : "a Google Sheet"
       }${args.fromDate || args.toDate ? ` (joined ${args.fromDate ?? "any"} → ${args.toDate ?? "any"})` : ""}`;
+    case "send_bulk_email": {
+      const n = Array.isArray(args.recipients) ? args.recipients.length : 0;
+      return `Send "${args.subject ?? "an email"}" to ${n} recipient${n === 1 ? "" : "s"}`;
+    }
     case "search_contacts": return `Look up contact "${args.query ?? ""}"`;
     case "list_contacts": return "List contacts";
     case "list_slack_users": return "List Slack members";
@@ -2088,9 +2178,7 @@ export async function command(
     if (isSpreadsheetAttachment(opts.attachment.mimeType, opts.attachment.name)) {
       try {
         const parsed = parseSpreadsheet(opts.attachment.base64, opts.attachment.name);
-        parts.push({
-          text: `The user attached a spreadsheet "${opts.attachment.name}", parsed to text below (the first row is the header). Reason over these rows and act on them when asked — e.g. email each person (send_gmail per row), build a list, or summarize. To also save the raw file, use upload_to_drive.\n${spreadsheetToText(parsed)}`,
-        });
+        parts.push({ text: spreadsheetContextText(parsed, opts.attachment.name) });
       } catch {
         parts.push({ text: `The user attached "${opts.attachment.name}" but it couldn't be parsed as a spreadsheet — ask them to re-attach a valid .xlsx, .xls, or .csv.` });
       }

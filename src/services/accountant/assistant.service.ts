@@ -407,7 +407,7 @@ export async function command(
   userId: string,
   message: string,
   conversationId?: string,
-  attachment?: { data: string; mimeType: string },
+  attachment?: { data: string; mimeType: string; name?: string },
 ): Promise<CommandResult> {
   const convId = await ensureConversation(userId, conversationId, message);
 
