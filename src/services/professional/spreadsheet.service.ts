@@ -37,6 +37,19 @@ const MAX_ROWS = 1000;
  */
 export const DRIVE_SHEET_TOOL_NAMES = ["send_bulk_email_from_sheet", "read_sheet", "list_spreadsheets"];
 
+/**
+ * Injected FIRST, for ANY attachment (spreadsheet, image, PDF, …). Makes the attached file the
+ * subject of the turn so the agent never ignores it or hunts for the data elsewhere (the exact
+ * failure behind "couldn't find a Google Sheet named …" when a file was in fact attached).
+ */
+export const ATTACHMENT_DIRECTIVE =
+  "ATTACHMENT PRESENT — the user attached a file to THIS message and it IS the subject of their request. " +
+  "Use the attached file (parsed/shown below, or provided inline) as the authoritative source and act on it directly. " +
+  "Do NOT search Google Drive / Google Sheets or any other source for this data, do NOT guess or ask for a file/sheet name, " +
+  "and do NOT ask the user to upload it somewhere first. If it is a spreadsheet, work from the rows shown and — to email " +
+  "people from it — call send_bulk_email with those recipients baked in (filter the rows yourself). If you genuinely cannot " +
+  "read the file, say so and ask them to re-attach it; never invent its contents.";
+
 /** Does this attachment look like a spreadsheet we can parse (by mime OR extension)? */
 export function isSpreadsheetAttachment(mimeType?: string | null, fileName?: string | null): boolean {
   const mt = (mimeType ?? "").toLowerCase();

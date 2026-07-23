@@ -11,7 +11,7 @@
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
-import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES } from "../professional/spreadsheet.service";
+import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES, ATTACHMENT_DIRECTIVE } from "../professional/spreadsheet.service";
 import {
   buildFallbackReceiptExtract,
   RECEIPT_EXTRACT_SYSTEM,
@@ -191,6 +191,8 @@ export async function planAgentActions(params: {
   let toolsForTurn = params.tools ?? AGENT_TOOLS;
   const attachmentParts: GeminiPart[] = [];
   if (params.attachment) {
+    // Any attachment: make it the subject of the turn (the model must not ignore it).
+    attachmentParts.push({ text: ATTACHMENT_DIRECTIVE });
     const sheet = tryParseSpreadsheetAttachment(params.attachment.data, params.attachment.mimeType, params.attachment.name);
     if (sheet) {
       attachmentParts.push({ text: spreadsheetContextText(sheet, params.attachment.name) });

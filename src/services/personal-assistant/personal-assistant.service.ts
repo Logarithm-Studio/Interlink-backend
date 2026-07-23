@@ -22,7 +22,7 @@ import { runAgentTurn } from "../ai/agentLoop";
 // playback-control endpoints, so the assistant returns a link the app opens.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
-import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES } from "../professional/spreadsheet.service";
+import { tryParseSpreadsheetAttachment, spreadsheetContextText, DRIVE_SHEET_TOOL_NAMES, ATTACHMENT_DIRECTIVE } from "../professional/spreadsheet.service";
 import {
   listDriveFiles,
   createDriveDoc,
@@ -2174,6 +2174,8 @@ export async function command(
   // offer to upload it to Drive.
   const nowContext = buildNowContext(opts.clientNow, opts.tz);
   const parts: GeminiPart[] = [{ text: nowContext }, { text: appsSummary }];
+  // Any attachment (file or image): make it the subject of the turn so the model can't ignore it.
+  if (opts.attachment || opts.image) parts.push({ text: ATTACHMENT_DIRECTIVE });
   let sheetAttached = false;
   if (opts.attachment) {
     const sheet = tryParseSpreadsheetAttachment(opts.attachment.base64, opts.attachment.mimeType, opts.attachment.name);
