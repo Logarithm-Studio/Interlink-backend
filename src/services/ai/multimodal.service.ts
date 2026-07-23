@@ -11,6 +11,7 @@
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
+import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetToText } from "../professional/spreadsheet.service";
 import {
   buildFallbackReceiptExtract,
   RECEIPT_EXTRACT_SYSTEM,
@@ -182,6 +183,25 @@ export async function planAgentActions(params: {
     };
   }
 
+  // A spreadsheet attachment (.xlsx/.xls/.csv) can't be read by the model as inlineData —
+  // parse it to a text table so the agent can analyze the rows and act on them (enlist,
+  // email each row, summarize). Other attachments (image/PDF) stay inline for vision.
+  const attachmentParts: GeminiPart[] = [];
+  if (params.attachment) {
+    if (isSpreadsheetAttachment(params.attachment.mimeType)) {
+      try {
+        const parsed = parseSpreadsheet(params.attachment.data);
+        attachmentParts.push({
+          text: `ATTACHED SPREADSHEET (parsed to text — the first row is the header; reason over these rows and act on them when asked):\n${spreadsheetToText(parsed)}`,
+        });
+      } catch {
+        attachmentParts.push({ text: "An attached spreadsheet couldn't be parsed — ask the user to re-attach a valid .xlsx, .xls, or .csv." });
+      }
+    } else {
+      attachmentParts.push({ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } });
+    }
+  }
+
   const userParts: GeminiPart[] = [
     {
       text:
@@ -191,9 +211,7 @@ export async function planAgentActions(params: {
         `(e.g. 2026-07-11T15:00:00) — the calendar applies the user's own timezone. Do not convert to UTC yourself.`,
     },
     { text: `DATA SNAPSHOT:\n${params.snapshot}` },
-    ...(params.attachment
-      ? [{ inlineData: { mimeType: params.attachment.mimeType, data: params.attachment.data } } as GeminiPart]
-      : []),
+    ...attachmentParts,
     { text: `USER: ${params.message}` },
   ];
 

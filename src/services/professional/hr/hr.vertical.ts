@@ -63,8 +63,9 @@ export async function createOpening(userId: string, data: { title: string; depar
 }
 
 export async function seedDemo(userId: string): Promise<{ count: number }> {
-  const existing = await query<{ n: string }>(`SELECT COUNT(*) n FROM hr_candidates WHERE user_id = $1`, [userId]);
-  if (parseInt(existing.rows[0]?.n ?? "0", 10) > 0) return { count: 0 };
+  // Reset-and-reseed for a clean demo.
+  await query(`DELETE FROM hr_candidates WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM hr_openings WHERE user_id = $1`, [userId]);
   await createOpening(userId, { title: "Senior Frontend Engineer", department: "Engineering", location: "Remote", source: "demo" });
   await createOpening(userId, { title: "Product Designer", department: "Design", location: "NYC", source: "demo" });
   const cands: { name: string; email: string; role: string; stage: CandidateStage; resumeText: string }[] = [

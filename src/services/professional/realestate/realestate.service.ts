@@ -122,27 +122,63 @@ export async function createLease(userId: string, data: { property: string; tena
   return mapLease(res.rows[0]);
 }
 
-export async function seedDemo(userId: string): Promise<{ count: number }> {
-  const existing = await query<{ n: string }>(`SELECT COUNT(*) n FROM re_listings WHERE user_id = $1`, [userId]);
-  if (parseInt(existing.rows[0]?.n ?? "0", 10) > 0) return { count: 0 };
+/**
+ * Load a rich, curated Real-Estate demo book. **Reset-and-reseed**: wipes this user's existing
+ * listings/leads/showings/leases first, then inserts a full dataset whose budgets + interests are
+ * deliberately arranged so `match_buyers` produces strong, varied buyer↔listing shortlists (every
+ * buyer matches at least one listing). Idempotent — tap "Load demo" any time for a clean book.
+ */
+export async function seedDemo(userId: string): Promise<{ count: number; listings: number; leads: number }> {
+  // Reset (the user explicitly asked to load a clean demo book).
+  await query(`DELETE FROM re_showings WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM re_leases   WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM re_leads    WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM re_listings WHERE user_id = $1`, [userId]);
+
+  // Inventory — varied price / beds / baths, realistic addresses, a mix of active & pending.
   const listings: { address: string; priceCents: number; beds: number; baths: number; sqft: number; status: ListingStatus }[] = [
     { address: "128 Maple Ave", priceCents: 42500000, beds: 3, baths: 2, sqft: 1850, status: "active" },
     { address: "9 Lakeview Ct", priceCents: 78900000, beds: 4, baths: 3, sqft: 2900, status: "pending" },
     { address: "540 Birch St #12", priceCents: 31000000, beds: 2, baths: 1, sqft: 1100, status: "active" },
+    { address: "77 Oakmont Dr", priceCents: 52500000, beds: 4, baths: 3, sqft: 2400, status: "active" },
+    { address: "210 Cedar Ln", priceCents: 99900000, beds: 5, baths: 4, sqft: 3800, status: "active" },
+    { address: "34 Willow Way", priceCents: 36500000, beds: 3, baths: 2, sqft: 1600, status: "active" },
+    { address: "1450 Sunset Blvd #8", priceCents: 27500000, beds: 2, baths: 2, sqft: 1200, status: "active" },
+    { address: "88 Highland Park", priceCents: 67500000, beds: 4, baths: 3, sqft: 2700, status: "pending" },
+    { address: "5 Riverside Ter", priceCents: 125000000, beds: 5, baths: 5, sqft: 4500, status: "active" },
+    { address: "302 Elm St", priceCents: 45000000, beds: 3, baths: 2, sqft: 1900, status: "active" },
+    { address: "19 Meadowbrook Rd", priceCents: 58500000, beds: 4, baths: 3, sqft: 2500, status: "active" },
+    { address: "640 Park Ave #3", priceCents: 34000000, beds: 2, baths: 2, sqft: 1300, status: "active" },
   ];
   for (const l of listings) await createListing(userId, { ...l, source: "demo" });
-  const leads: { name: string; email: string; budgetCents: number; interest: string; stage: LeadStage }[] = [
-    { name: "Nora Adams", email: "nora@example.com", budgetCents: 45000000, interest: "3bd near downtown", stage: "qualified" },
-    { name: "Victor Ruiz", email: "victor@example.com", budgetCents: 80000000, interest: "lakefront", stage: "touring" },
-    { name: "Emma Cole", email: "emma@example.com", budgetCents: 33000000, interest: "starter condo", stage: "new" },
+
+  // Buyer leads — budgets bracket the inventory and each interest names a bedroom count
+  // (parsed by bedsFromInterest), so match_buyers returns a real shortlist for everyone.
+  const leads: { name: string; email: string; phone: string; budgetCents: number; interest: string; stage: LeadStage }[] = [
+    { name: "Nora Adams", email: "nora@example.com", phone: "+1 512 555 0110", budgetCents: 45000000, interest: "3bd near downtown, walkable", stage: "qualified" },
+    { name: "Victor Ruiz", email: "victor@example.com", phone: "+1 512 555 0111", budgetCents: 85000000, interest: "4 bedroom lakefront with a view", stage: "touring" },
+    { name: "Emma Cole", email: "emma@example.com", phone: "+1 512 555 0112", budgetCents: 32000000, interest: "2bd starter condo, low maintenance", stage: "new" },
+    { name: "Liam Patel", email: "liam@example.com", phone: "+1 512 555 0113", budgetCents: 130000000, interest: "5 bedroom luxury home, home office", stage: "qualified" },
+    { name: "Sophia Nguyen", email: "sophia@example.com", phone: "+1 512 555 0114", budgetCents: 60000000, interest: "4bd family home, good schools", stage: "touring" },
+    { name: "Marcus Bell", email: "marcus@example.com", phone: "+1 512 555 0115", budgetCents: 50000000, interest: "3bd with a yard for the dog", stage: "new" },
+    { name: "Olivia Grant", email: "olivia@example.com", phone: "+1 512 555 0116", budgetCents: 30000000, interest: "2 bedroom near transit", stage: "qualified" },
+    { name: "Ethan Brooks", email: "ethan@example.com", phone: "+1 512 555 0117", budgetCents: 70000000, interest: "4bd modern, open floor plan", stage: "touring" },
+    { name: "Ava Morales", email: "ava@example.com", phone: "+1 512 555 0118", budgetCents: 40000000, interest: "3bd, fixer-upper is fine", stage: "new" },
+    { name: "Noah Kim", email: "noah@example.com", phone: "+1 512 555 0119", budgetCents: 100000000, interest: "5bd with a pool", stage: "qualified" },
   ];
   for (const ld of leads) await createLead(userId, { ...ld, source: "demo" });
 
-  await createShowing(userId, { address: "128 Maple Ave", leadName: "Nora Adams", scheduledAt: new Date(Date.now() + 2 * 86400000).toISOString(), source: "demo" });
-  const soon = new Date(Date.now() + 45 * 86400000).toISOString().slice(0, 10);
-  await createLease(userId, { property: "540 Birch St #12", tenantName: "Owen Diaz", tenantEmail: "owen@example.com", endDate: soon, rentCents: 210000, source: "demo" });
+  // A few upcoming showings + two active leases (one expiring soon → drives lease-renewal).
+  const inDays = (n: number) => new Date(Date.now() + n * 86400000).toISOString();
+  await createShowing(userId, { address: "128 Maple Ave", leadName: "Nora Adams", scheduledAt: inDays(2), source: "demo" });
+  await createShowing(userId, { address: "9 Lakeview Ct", leadName: "Victor Ruiz", scheduledAt: inDays(3), source: "demo" });
+  await createShowing(userId, { address: "77 Oakmont Dr", leadName: "Sophia Nguyen", scheduledAt: inDays(5), source: "demo" });
 
-  return { count: listings.length + leads.length };
+  const dateInDays = (n: number) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  await createLease(userId, { property: "540 Birch St #12", tenantName: "Owen Diaz", tenantEmail: "owen@example.com", endDate: dateInDays(45), rentCents: 210000, source: "demo" });
+  await createLease(userId, { property: "640 Park Ave #3", tenantName: "Mia Chen", tenantEmail: "mia@example.com", endDate: dateInDays(30), rentCents: 185000, source: "demo" });
+
+  return { count: listings.length + leads.length, listings: listings.length, leads: leads.length };
 }
 
 async function buildSnapshot(userId: string): Promise<string> {

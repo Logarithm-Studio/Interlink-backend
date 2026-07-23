@@ -12,7 +12,7 @@ import { BadRequestError } from "../utils/errors";
 import { query } from "../config/db";
 import { getVertical } from "../services/professional/registry";
 import { buildDashboard } from "../services/professional/dashboard.service";
-import { importSheet } from "../services/professional/import.service";
+import { importSheet, importFile, isImportablePersona } from "../services/professional/import.service";
 import {
   getProfessionalAutomations,
   updateProfessionalAutomation,
@@ -259,6 +259,31 @@ router.post("/import/sheet", async (req: Request, res: Response, next: NextFunct
     const parsed = ImportBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("spreadsheetId is required.");
     res.json(await importSheet(user.id, persona, parsed.data.spreadsheetId, parsed.data.range));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Direct file import (attached .xlsx/.xls/.csv, base64 — no Google Drive) ──
+// Same base64-in-JSON convention as the accountant/personal attachment routes.
+const ImportFileBody = z.object({
+  fileBase64: z.string().min(1),
+  fileName: z.string().optional(),
+  mimeType: z.string().optional(),
+});
+
+router.post("/import/file", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const persona = await currentPersona(user.id);
+    if (!isImportablePersona(persona)) {
+      throw new BadRequestError(
+        "Importing a file into the book isn't supported for this role yet. Switch to Sales, Support, Real Estate, or HR — or attach the file to the assistant to analyze it.",
+      );
+    }
+    const parsed = ImportFileBody.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("fileBase64 is required.");
+    res.json(await importFile(user.id, persona, parsed.data.fileBase64, parsed.data.fileName));
   } catch (err) {
     next(err);
   }

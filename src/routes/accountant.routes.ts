@@ -720,6 +720,17 @@ router.get("/advisor/clients", async (req: Request, res: Response, next: NextFun
   }
 });
 
+// Advisory-book-only demo seed (reset + reseed) — lets the advisory screen populate itself
+// without touching invoices/expenses (the full /seed-demo also seeds the advisory book).
+router.post("/advisor/seed-demo", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    res.json(await seedDemoAdvisor(user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/advisor/clients/:id/portfolio", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;

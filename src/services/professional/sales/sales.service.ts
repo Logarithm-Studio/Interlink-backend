@@ -409,8 +409,12 @@ async function planPipelineCleaning(userId: string): Promise<AutomationProposal[
 
 // ─── Demo seed ──────────────────────────────────────────────────────────────
 export async function seedDemo(userId: string): Promise<{ count: number }> {
-  const existing = await query<{ n: string }>(`SELECT COUNT(*) n FROM sales_deals WHERE user_id = $1`, [userId]);
-  if (parseInt(existing.rows[0]?.n ?? "0", 10) > 0) return { count: 0 };
+  // Reset-and-reseed for a clean demo (children first for FK safety).
+  await query(`DELETE FROM sales_activities WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM sales_contracts WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM sales_deals WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM sales_contacts WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM sales_reps WHERE user_id = $1`, [userId]);
   const contacts = [
     { name: "Dana Lee", email: "dana@acme.io", company: "Acme Corp", title: "VP Sales", territory: "West" },
     { name: "Sam Rivera", email: "sam@globex.com", company: "Globex LLC", title: "Head of Ops", territory: "East" },

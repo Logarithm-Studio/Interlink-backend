@@ -18,10 +18,11 @@ import {
 import { runAgentTurn } from "../ai/agentLoop";
 
 // Integration services used by executeAction (function dispatch).
-// Spotify is no longer a native integration — it's brokered through Composio
-// (SPOTIFY_* tools), so the native spotify.service and its tools were removed here.
+// Music runs on YouTube Music (search + open a link); the YouTube Data API has no
+// playback-control endpoints, so the assistant returns a link the app opens.
 import { getCurrentWeather } from "../weather/weather.service";
 import { getDailySummary } from "../fitness/fitness.service";
+import { isSpreadsheetAttachment, parseSpreadsheet, spreadsheetToText } from "../professional/spreadsheet.service";
 import {
   listDriveFiles,
   createDriveDoc,
@@ -139,7 +140,7 @@ export const CONNECTED_APP_ORCHESTRATION_PROMPT = [
   "- Treat broad or vague requests as workflow requests. Infer the user's likely goal from the current prompt, conversation history, persona, and connected apps.",
   "- You can chain tools to finish a workflow in one turn. When an ID is missing (channel, board, list, repo, project, page), CALL the relevant discovery tool FIRST — its result is fed back to you in the same turn — then call the action tool with the resolved ID. Never ask the user for an ID you can look up.",
   "- Read/list/search tools run automatically as you chain. Only the final WRITE action (create/send/post/play) is shown to the user to confirm before it executes — so keep chaining until you reach that write, then emit it.",
-  "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to YouTube Music (or Spotify if the user connected it via Composio), email questions to Gmail.",
+  "- Pick the most appropriate connected app automatically: code work maps to GitHub/Jira/Slack, planning notes to Notion/Trello/Jira, tasks to Google Tasks/Todoist/Trello/Jira, team updates to Slack, music to YouTube Music, email questions to Gmail.",
   "- People by name: when a request names a person (invite, email, DM) but not their address, call search_contacts FIRST to resolve their email/handle, then act. Do this for EACH person named.",
   "- Act on MULTIPLES in one turn: an invite/email can go to several recipients at once (pass them all as a list), and Drive delete/share can take several files (via `names` or a `query`). Never make the user repeat themselves per person or per file.",
   "- To reach a person's Slack inbox use send_slack_dm (resolves them by name); use post_slack_message only for channels.",
@@ -174,12 +175,11 @@ YouTube Music, Outlook (mail + calendar), Microsoft Teams, OneDrive, WhatsApp (s
 Notion, Slack, GitHub, Jira, Trello, and weather. The "Connected apps" line each turn tells you which are
 already authorized. If a task needs one that ISN'T connected, name it, offer to connect it, and still do
 everything you can right now — do NOT refuse the whole request.
-The user can also connect apps through Composio (Spotify, Zoom, Calendly, Dropbox, Airtable, Telegram,
+The user can also connect apps through Composio (Zoom, Calendly, Dropbox, Airtable, Telegram,
 Discord, HubSpot, Stripe, Linear, and more). Those tools appear as UPPER_SNAKE names prefixed with the app
-(e.g. SPOTIFY_PAUSE_PLAYBACK, CALENDLY_LIST_EVENTS) and are only usable when the app is named on the
+(e.g. CALENDLY_LIST_EVENTS) and are only usable when the app is named on the
 "Connected apps" line — if it isn't there, tell the user to connect it in Settings → Connected accounts.
-For music requests, prefer YouTube Music (search_youtube_music) — it returns a link to open. If the user
-connected Spotify via Composio, you can also control their playback with the SPOTIFY_* tools.
+For music requests, use YouTube Music (search_youtube_music) — it returns a link the app opens in YouTube Music.
 
 How to think each turn:
 1. Infer the real goal. Use the conversation history to resolve references like "it", "the other one", "that deal", "there".
@@ -204,7 +204,7 @@ Signature "life agent" behaviors — handle these proactively and thoroughly:
 - Life admin → surface tasks due, reminders, and anything time-sensitive, and offer to act on them.
 
 Mapping examples (natural phrasing → tool):
-- "play see you again" → search_youtube_music(query="see you again"); if Spotify is connected via Composio, use SPOTIFY_* tools to actually start playback.
+- "play see you again" → search_youtube_music(query="see you again") — returns a YouTube Music link the app opens.
 - "add milk to my todoist" → create_todoist_task(content="milk")
 - "post to the team that the build is green" → list_slack_channels → post_slack_message(channel=<resolved id>, text=…)
 - "what's on my calendar tomorrow" → get_calendar_events(days=1)
@@ -814,7 +814,6 @@ export interface OpenLink {
     | "google-drive"
     | "youtube"
     | "youtube-music"
-    | "spotify"
     | "outlook"
     | "onedrive"
     | "web";
@@ -1040,11 +1039,16 @@ export function deriveOpenLinks(
 
   const ytList = (app: "youtube" | "youtube-music"): OpenLink[] => {
     if (!Array.isArray(data)) return [];
+    const fallback = app === "youtube-music" ? "Play in YouTube Music" : "Open video";
     return data
       .slice(0, 3)
       .map((v) => {
         const item = (v ?? {}) as Record<string, unknown>;
-        return { label: str(item.title) || "Open video", url: str(item.url), app };
+        const title = str(item.title);
+        // Music chips read "Play <title>" so it's obvious the chip starts playback in
+        // YouTube Music; plain-YouTube chips keep the bare video title.
+        const label = title ? (app === "youtube-music" ? `Play ${title}` : title) : fallback;
+        return { label, url: str(item.url), app };
       })
       .filter((l) => l.url);
   };
@@ -2019,7 +2023,7 @@ export interface CommandOptions {
 // Verbs and app names that signal the user wants an action, not a chat answer.
 // Used to decide whether a prose-only Gemini reply deserves a forced-tool retry.
 const ACTION_INTENT_PATTERN =
-  /\b(play|pause|skip|resume|next|previous|create|add|make|new|list|show|get|find|search|read|post|send|open|schedule|remind|check|draft|write|log|update|assign|move)\b|\b(spotify|todoist|notion|slack|github|jira|trello|gmail|calendar|weather|fitness|task|song|track|playlist|issue|pull request|pr|card|board|channel|note|page|email)\b/i;
+  /\b(play|pause|skip|resume|next|previous|create|add|make|new|list|show|get|find|search|read|post|send|open|schedule|remind|check|draft|write|log|update|assign|move)\b|\b(youtube|todoist|notion|slack|github|jira|trello|gmail|calendar|weather|fitness|task|song|track|playlist|issue|pull request|pr|card|board|channel|note|page|email)\b/i;
 
 function looksLikeActionRequest(message: string): boolean {
   return ACTION_INTENT_PATTERN.test(message);
@@ -2074,12 +2078,25 @@ export async function command(
   const appsSummary = await connectedAppsSummary(userId);
 
   // Multimodal: an attached image is inlined so Gemini can reason about it (receipts,
-  // screenshots…). A non-image attachment is not inlined (could be large / binary) —
-  // we just tell the model its name so it can offer to upload it to Drive.
+  // screenshots…). A spreadsheet (.xlsx/.xls/.csv) is parsed to a text table so the agent
+  // can analyze the rows and act on them (email each person, build a list, summarize). Any
+  // other non-image attachment is not inlined — we just tell the model its name so it can
+  // offer to upload it to Drive.
   const nowContext = buildNowContext(opts.clientNow, opts.tz);
   const parts: GeminiPart[] = [{ text: nowContext }, { text: appsSummary }];
   if (opts.attachment) {
-    parts.push({ text: `The user attached a file named "${opts.attachment.name}" (${opts.attachment.mimeType}). If they want it saved, use upload_to_drive.` });
+    if (isSpreadsheetAttachment(opts.attachment.mimeType, opts.attachment.name)) {
+      try {
+        const parsed = parseSpreadsheet(opts.attachment.base64, opts.attachment.name);
+        parts.push({
+          text: `The user attached a spreadsheet "${opts.attachment.name}", parsed to text below (the first row is the header). Reason over these rows and act on them when asked — e.g. email each person (send_gmail per row), build a list, or summarize. To also save the raw file, use upload_to_drive.\n${spreadsheetToText(parsed)}`,
+        });
+      } catch {
+        parts.push({ text: `The user attached "${opts.attachment.name}" but it couldn't be parsed as a spreadsheet — ask them to re-attach a valid .xlsx, .xls, or .csv.` });
+      }
+    } else {
+      parts.push({ text: `The user attached a file named "${opts.attachment.name}" (${opts.attachment.mimeType}). If they want it saved, use upload_to_drive.` });
+    }
   }
   parts.push({ text: message });
   if (opts.image) {

@@ -2,7 +2,7 @@
  * Composio — brokered access to the long tail of third-party apps.
  *
  * WHY THIS EXISTS. Every native integration in this repo (Google, Slack, Notion, Jira,
- * GitHub, Trello, Todoist, Spotify, Microsoft) costs an OAuth app registration, a
+ * GitHub, Trello, Todoist, Microsoft) costs an OAuth app registration, a
  * client id/secret, a review process, and a bespoke service module. That per-vendor
  * setup tax is why the PRD's remaining ~25 vendors (HubSpot, Salesforce, Stripe,
  * Zendesk, Zoom, Linear, Asana, Calendly, Greenhouse, DocuSign…) were never wired.
@@ -138,7 +138,6 @@ export const COMPOSIO_CATALOG: ToolkitMeta[] = [
   { slug: "mailchimp", name: "Mailchimp", description: "Email campaigns and audience lists", audience: "professional" },
 
   // Personal — the PRD catalog rows still marked "not built".
-  { slug: "spotify", name: "Spotify", description: "Play, pause, search music and manage playlists", audience: "personal" },
   { slug: "canvas", name: "Canvas", description: "Courses, assignments, grades, people & enrollments (LMS)", audience: "personal" },
   { slug: "zoom", name: "Zoom", description: "Meetings, recordings, and transcripts", audience: "personal" },
   { slug: "calendly", name: "Calendly", description: "Scheduling links and booked events", audience: "personal" },
@@ -241,25 +240,18 @@ async function upsertConnection(
  */
 /**
  * Toolkits that authenticate against OUR OWN registered OAuth app rather than a
- * Composio-managed one (bring-your-own-credentials). Spotify and Canvas both require
- * this: Composio does not host a managed OAuth app for them, so we pass our client
- * id/secret from the environment. When the env vars are unset we fall back to managed
- * auth (which then surfaces the usual "not supported in-app yet" 422).
+ * Composio-managed one (bring-your-own-credentials). Canvas requires this: Composio
+ * does not host a managed OAuth app for it, so we pass our client id/secret from the
+ * environment. When the env vars are unset we fall back to managed auth (which then
+ * surfaces the usual "not supported in-app yet" 422).
  *
- * NOTE: the app's redirect/callback URL registered with Spotify/Canvas must include
+ * NOTE: the app's redirect/callback URL registered with Canvas must include
  * Composio's hosted callback — see doc/composio-setup.md.
  */
 const BYOC_CREDENTIALS: Record<
   string,
   () => { authScheme: string; credentials: Record<string, string> } | null
 > = {
-  spotify: () => {
-    const clientId = process.env.SPOTIFY_CLIENT_ID;
-    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-    return clientId && clientSecret
-      ? { authScheme: "OAUTH2", credentials: { client_id: clientId, client_secret: clientSecret } }
-      : null;
-  },
   canvas: () => {
     const clientId = process.env.CANVAS_CLIENT_ID;
     const clientSecret = process.env.CANVAS_CLIENT_SECRET;
@@ -287,7 +279,7 @@ async function getOrCreateAuthConfig(
   }
 
   try {
-    // Most toolkits use Composio's managed OAuth app; BYOC toolkits (Spotify, Canvas)
+    // Most toolkits use Composio's managed OAuth app; BYOC toolkits (Canvas)
     // authenticate against our own registered app, so we pass our client credentials.
     const byoc = BYOC_CREDENTIALS[toolkitSlug]?.() ?? null;
     const createOptions = byoc
@@ -574,23 +566,9 @@ const CACHE_TTL_MS = 5 * 60_000;
 /**
  * For toolkits whose most-useful actions do NOT fall in the first `MAX_TOOLS_PER_TOOLKIT`
  * tools Composio returns, list the important slugs here — they are pulled to the FRONT before
- * the per-toolkit cap is applied. Without this, Spotify loaded 12 alphabetical playlist/check
- * tools and NONE of play/pause/skip/search, so the agent invented `SPOTIFY_PLAY` and failed
- * with "unable to retrieve tool with slug …". (Spotify has 88 tools; playback controls are ~#64-84.)
+ * the per-toolkit cap is applied.
  */
 const TOOLKIT_PRIORITY_TOOLS: Record<string, string[]> = {
-  spotify: [
-    "SPOTIFY_SEARCH_FOR_ITEM",
-    "SPOTIFY_START_RESUME_PLAYBACK",
-    "SPOTIFY_PAUSE_PLAYBACK",
-    "SPOTIFY_SKIP_TO_NEXT",
-    "SPOTIFY_SKIP_TO_PREVIOUS",
-    "SPOTIFY_GET_CURRENTLY_PLAYING_TRACK",
-    "SPOTIFY_GET_CURRENT_USER_S_PLAYLISTS",
-    "SPOTIFY_ADD_ITEM_TO_PLAYBACK_QUEUE",
-    "SPOTIFY_GET_PLAYBACK_STATE",
-    "SPOTIFY_TRANSFER_PLAYBACK",
-  ],
   canvas: [
     "CANVAS_LIST_YOUR_COURSES",
     "CANVAS_LIST_ASSIGNMENTS",
@@ -601,26 +579,11 @@ const TOOLKIT_PRIORITY_TOOLS: Record<string, string[]> = {
 };
 
 /**
- * Composio slugs the model commonly guesses wrong → the real slug. The agent (and the app's
- * one-tap prompts) say "play/pause/skip on Spotify"; if it emits a shortened slug we map it so
- * the action still runs instead of failing with "unable to retrieve tool with slug …".
+ * Composio slugs the model commonly guesses wrong → the real slug. If the agent emits a
+ * shortened slug we map it so the action still runs instead of failing with "unable to
+ * retrieve tool with slug …".
  */
-const COMPOSIO_TOOL_ALIASES: Record<string, string> = {
-  SPOTIFY_PLAY: "SPOTIFY_START_RESUME_PLAYBACK",
-  SPOTIFY_RESUME: "SPOTIFY_START_RESUME_PLAYBACK",
-  SPOTIFY_START_PLAYBACK: "SPOTIFY_START_RESUME_PLAYBACK",
-  SPOTIFY_PLAY_TRACK: "SPOTIFY_START_RESUME_PLAYBACK",
-  SPOTIFY_PAUSE: "SPOTIFY_PAUSE_PLAYBACK",
-  SPOTIFY_STOP: "SPOTIFY_PAUSE_PLAYBACK",
-  SPOTIFY_SKIP: "SPOTIFY_SKIP_TO_NEXT",
-  SPOTIFY_NEXT: "SPOTIFY_SKIP_TO_NEXT",
-  SPOTIFY_SKIP_NEXT: "SPOTIFY_SKIP_TO_NEXT",
-  SPOTIFY_SKIP_TRACK: "SPOTIFY_SKIP_TO_NEXT",
-  SPOTIFY_PREVIOUS: "SPOTIFY_SKIP_TO_PREVIOUS",
-  SPOTIFY_SEARCH: "SPOTIFY_SEARCH_FOR_ITEM",
-  SPOTIFY_SEARCH_TRACKS: "SPOTIFY_SEARCH_FOR_ITEM",
-  SPOTIFY_GET_PLAYLISTS: "SPOTIFY_GET_CURRENT_USER_S_PLAYLISTS",
-};
+const COMPOSIO_TOOL_ALIASES: Record<string, string> = {};
 
 /** Resolve a (possibly guessed) Composio slug to the real one. */
 export function resolveComposioSlug(slug: string): string {
@@ -741,7 +704,7 @@ export async function executeComposioTool(
     return { ok: false, message: "That app isn't available — Composio is not configured on the server." };
   }
 
-  // Map a guessed slug (e.g. SPOTIFY_PLAY) to the real one before anything else.
+  // Map a guessed slug to the real one before anything else.
   const slug = resolveComposioSlug(requestedSlug);
 
   // Proactive connection check: a tool for a known toolkit that isn't ACTIVE (e.g. an OAuth

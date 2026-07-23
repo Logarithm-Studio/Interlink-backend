@@ -7,7 +7,6 @@ import { query } from "../../config/db";
 import { encrypt, decrypt } from "../../security/crypto";
 
 export type IntegrationProvider =
-  | "spotify"
   | "todoist"
   | "notion"
   | "trello"

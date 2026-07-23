@@ -4,9 +4,9 @@
  * routes/auth.routes.ts) — existing users must reconnect Google to grant it.
  *
  * NOTE ON PLAYBACK: neither YouTube nor YouTube Music exposes an official
- * playback-control API (unlike Spotify's Web API). We therefore support search +
- * playlist automation and return tappable links (music.youtube.com / youtube.com)
- * the user opens to play — we cannot start playback on a device from the server.
+ * playback-control API. We therefore support search + playlist automation and
+ * return tappable links (music.youtube.com / youtube.com) the user opens to play —
+ * we cannot start playback on a device from the server.
  */
 
 import { google, youtube_v3 } from "googleapis";

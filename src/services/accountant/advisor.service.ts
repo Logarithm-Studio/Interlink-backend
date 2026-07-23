@@ -431,15 +431,27 @@ export function complianceTypeLabel(type: ComplianceType): string {
 
 // ─── Demo seed ──────────────────────────────────────────────────────────────
 
+/**
+ * Load a rich advisory book demo. **Reset-and-reseed**: clears this user's advisor clients,
+ * holdings, and compliance items first, then inserts a full book. Resetting also fixes the
+ * old duplicate-compliance bug (compliance rows had no uniqueness guard). Idempotent — tap
+ * "Load demo" any time for a clean book. Holdings are arranged so several clients show real
+ * allocation drift (a "Rebalance" badge) against their risk-profile target.
+ */
 export async function seedDemoAdvisor(userId: string): Promise<{ clients: number; compliance: number }> {
+  // Reset first (holdings/compliance reference clients; delete children then parents).
+  await query(`DELETE FROM advisor_compliance_items WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM advisor_holdings WHERE user_id = $1`, [userId]);
+  await query(`DELETE FROM advisor_clients WHERE user_id = $1`, [userId]);
+
   // (name, risk, [ [symbol, class, dollars], ... ])
   const demo: { name: string; risk: RiskProfile; email: string; holdings: [string, AssetClass, number][]; notes?: string }[] = [
     {
       name: "Eleanor Whitfield",
       risk: "conservative",
       email: "eleanor@example.com",
-      notes: "Retiring in 3 years; prioritize capital preservation.",
-      holdings: [["VTI", "equity", 180_000], ["BND", "bond", 420_000], ["Cash", "cash", 60_000], ["GLD", "alt", 40_000]],
+      notes: "Retiring in 3 years; prioritize capital preservation. Allocation on target.",
+      holdings: [["VTI", "equity", 210_000], ["BND", "bond", 385_000], ["Cash", "cash", 70_000], ["GLD", "alt", 35_000]],
     },
     {
       name: "Marcus Trent",
@@ -452,13 +464,27 @@ export async function seedDemoAdvisor(userId: string): Promise<{ clients: number
       risk: "balanced",
       email: "okafor@example.com",
       notes: "Two beneficiaries; review designations annually.",
-      holdings: [["VOO", "equity", 300_000], ["AGG", "bond", 260_000], ["Cash", "cash", 30_000], ["VNQ", "alt", 50_000]],
+      holdings: [["VOO", "equity", 350_000], ["AGG", "bond", 225_000], ["Cash", "cash", 32_000], ["VNQ", "alt", 33_000]],
     },
     {
       name: "Dr. Priya Anand",
       risk: "aggressive",
       email: "priya@example.com",
       holdings: [["ARKK", "equity", 240_000], ["VUG", "equity", 300_000], ["BTC", "alt", 90_000], ["Cash", "cash", 10_000]],
+    },
+    {
+      name: "Grace Sullivan",
+      risk: "growth",
+      email: "grace@example.com",
+      notes: "Equity-heavy; drifted above target — flag for rebalance.",
+      holdings: [["VTI", "equity", 480_000], ["SCHD", "equity", 90_000], ["BND", "bond", 70_000], ["Cash", "cash", 25_000]],
+    },
+    {
+      name: "The Harrison Trust",
+      risk: "conservative",
+      email: "harrison@example.com",
+      notes: "Endowment; quarterly distributions to beneficiaries.",
+      holdings: [["BND", "bond", 300_000], ["VTI", "equity", 250_000], ["Cash", "cash", 120_000], ["VNQ", "alt", 30_000]],
     },
   ];
 
@@ -473,7 +499,7 @@ export async function seedDemoAdvisor(userId: string): Promise<{ clients: number
       [userId, d.name, d.email, d.risk, d.notes ?? null],
     );
     const clientId = inserted.rows[0]?.id;
-    if (!clientId) continue; // already seeded
+    if (!clientId) continue;
     clientCount += 1;
     for (const [symbol, cls, dollars] of d.holdings) {
       await query(
@@ -484,14 +510,18 @@ export async function seedDemoAdvisor(userId: string): Promise<{ clients: number
     }
   }
 
-  // A few compliance actions, tied to seeded clients where relevant.
+  // Compliance actions, tied to seeded clients where relevant. Due dates are relative to
+  // now so the demo always looks current (a couple due soon, one just overdue).
+  const dueInDays = (n: number) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
   const clients = await listClients(userId);
   const byName = (n: string) => clients.find((c) => c.name === n)?.id ?? null;
-  const complianceSeed: [ComplianceType, string, string | null, string | null][] = [
-    ["kyc_refresh", "Annual KYC refresh", byName("Eleanor Whitfield"), "2026-07-31"],
-    ["suitability_review", "Suitability review after risk-profile change", byName("Marcus Trent"), "2026-07-20"],
-    ["beneficiary", "Confirm beneficiary designations", byName("The Okafor Family Trust"), "2026-08-15"],
-    ["adv_disclosure", "Deliver updated Form ADV Part 2", null, "2026-07-18"],
+  const complianceSeed: [ComplianceType, string, string | null, string][] = [
+    ["kyc_refresh", "Annual KYC refresh", byName("Eleanor Whitfield"), dueInDays(8)],
+    ["suitability_review", "Suitability review after risk-profile change", byName("Marcus Trent"), dueInDays(-3)],
+    ["beneficiary", "Confirm beneficiary designations", byName("The Okafor Family Trust"), dueInDays(23)],
+    ["rmd", "Confirm required minimum distribution", byName("The Harrison Trust"), dueInDays(14)],
+    ["kyc_refresh", "KYC refresh — new account", byName("Grace Sullivan"), dueInDays(5)],
+    ["adv_disclosure", "Deliver updated Form ADV Part 2", null, dueInDays(-5)],
   ];
   for (const [type, title, clientId, due] of complianceSeed) {
     const res = await query(

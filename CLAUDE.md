@@ -123,18 +123,20 @@ see `src/services/email/templates.service.ts`.
 [composio.service.ts](src/services/composio/composio.service.ts) + `/api/v1/composio/*`
 ([composio.routes.ts](src/routes/composio.routes.ts)). One `COMPOSIO_API_KEY` unlocks HubSpot,
 Salesforce, Stripe, Zendesk, Intercom, QuickBooks, Linear, Asana, Greenhouse, DocuSign, Mailchimp,
-Zoom, Calendly, Dropbox, Airtable, Telegram, Discord, Spotify, Canvas — Composio owns the OAuth apps
+Zoom, Calendly, Dropbox, Airtable, Telegram, Discord, Canvas — Composio owns the OAuth apps
 for most, so **we register no OAuth app and store no tokens** (`composio_connections`, migration
 `060`, holds only a pointer). Setup + costs: [doc/composio-setup.md](doc/composio-setup.md).
 
-**Bring-your-own-credentials.** A few toolkits authenticate against *our own* registered app rather
-than a Composio-managed one — **Spotify** (`SPOTIFY_CLIENT_ID/SECRET`) and **Canvas**
-(`CANVAS_CLIENT_ID/SECRET`). `getOrCreateAuthConfig()` creates a custom-auth config from those env
-vars (`BYOC_CREDENTIALS` map); unset → the toolkit degrades to a "not supported yet" notice.
+**Bring-your-own-credentials.** A toolkit can authenticate against *our own* registered app rather
+than a Composio-managed one — **Canvas** (`CANVAS_CLIENT_ID/SECRET`). `getOrCreateAuthConfig()`
+creates a custom-auth config from those env vars (`BYOC_CREDENTIALS` map); unset → the toolkit
+degrades to a "not supported yet" notice.
 
-**Spotify moved fully onto Composio** — the old native `spotify.service.ts` + `/api/v1/spotify/*`
-routes and the `play_spotify`/`search_and_play_spotify`/… tools were removed. Music now runs through
-the `SPOTIFY_*` Composio tools (playback still needs the user's Spotify Premium).
+**Music = YouTube Music, not Spotify.** Spotify was removed entirely (it needed the user's Spotify
+Premium + Extended Quota Mode, so it never worked in the demo). Music now runs on the native
+**YouTube Music** integration ([google/youtube.service.ts](src/services/google/youtube.service.ts)),
+which rides the shared Google OAuth `youtube` scope — search + playlists work; the app opens a
+`music.youtube.com` link to play (the YouTube API has no server-side playback control).
 
 **Otherwise strictly additive.** The remaining native integrations (Google, Slack, Notion, Jira,
 GitHub, Trello, Todoist, Microsoft) are untouched: they are deeper than a generic connector and cost

@@ -77,8 +77,8 @@ export async function updateTicket(
 }
 
 export async function seedDemo(userId: string): Promise<{ count: number }> {
-  const existing = await query<{ n: string }>(`SELECT COUNT(*) n FROM support_tickets WHERE user_id = $1`, [userId]);
-  if (parseInt(existing.rows[0]?.n ?? "0", 10) > 0) return { count: 0 };
+  // Reset-and-reseed for a clean demo.
+  await query(`DELETE FROM support_tickets WHERE user_id = $1`, [userId]);
   const tickets: { subject: string; body: string; customerName: string; customerEmail: string; priority: TicketPriority }[] = [
     { subject: "Can't log in after password reset", body: "I reset my password but still get 'invalid credentials'.", customerName: "Jordan Blake", customerEmail: "jordan@example.com", priority: "high" },
     { subject: "Refund for duplicate charge", body: "I was billed twice this month, please refund one.", customerName: "Mia Chen", customerEmail: "mia@example.com", priority: "urgent" },

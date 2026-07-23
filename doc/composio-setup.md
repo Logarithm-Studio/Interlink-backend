@@ -2,10 +2,10 @@
 
 Composio brokers OAuth + API access to the long tail of third-party apps (HubSpot, Salesforce,
 Stripe, Zendesk, Intercom, QuickBooks, Linear, Asana, Greenhouse, DocuSign, Mailchimp, Zoom,
-Calendly, Dropbox, Airtable, Telegram, Discord, **Spotify**, **Canvas**).
+Calendly, Dropbox, Airtable, Telegram, Discord, **Canvas**).
 
 **The point:** every native integration in this repo (Google, Slack, Notion, Jira, GitHub, Trello,
-Todoist, Spotify, Microsoft) required registering an OAuth app, holding a client secret, and
+Todoist, Microsoft) required registering an OAuth app, holding a client secret, and
 writing a bespoke service. Composio owns the OAuth apps, so a toolkit connects with
 `composio.toolkits.authorize(userId, slug)` and **we register nothing and store no tokens**.
 
@@ -37,7 +37,7 @@ metered — the native integrations (Google, Slack, Notion, …) stay free, whic
 were deliberately **not** migrated onto Composio.
 
 Composio also does not pay for the underlying services: Stripe, Twilio, RentCast etc. still bill
-you directly, and it cannot bypass vendor-side account rules (e.g. Spotify's Dev-Mode allow-list).
+you directly, and it cannot bypass vendor-side account rules (e.g. a vendor's Dev-Mode allow-list).
 
 ## How it's wired
 
@@ -64,28 +64,18 @@ write**, so it goes through the app's existing confirm-before-execute sheet. Thi
 deliberate — silently auto-running an unknown connector write (say `STRIPE_CREATE_REFUND`) is not
 an acceptable failure mode.
 
-## Bring-your-own-credentials toolkits (Spotify, Canvas)
+## Bring-your-own-credentials toolkits (Canvas)
 
 Most toolkits use Composio's **managed** OAuth app — you register nothing. A few authenticate
 against **your own** registered app instead; for those, `getOrCreateAuthConfig()` in
 [composio.service.ts](../src/services/composio/composio.service.ts) creates a *custom-auth* config
 from client credentials in the environment (`BYOC_CREDENTIALS` map):
 
-- **Spotify** — reuses `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (the native Spotify integration
-  was removed; Spotify now runs entirely through Composio). In the Spotify Developer Dashboard for
-  that app, **Settings → Redirect URIs → add exactly**:
-
-  ```
-  https://backend.composio.dev/api/v1/auth-apps/add
-  ```
-
-  Without it Spotify returns **"redirect_uri … not matching configuration"** on connect. Then, under
-  **Users and Access**, add each tester's Spotify email (the app starts in Development Mode, capped at
-  25 users) — or request **Extended Quota Mode** so any account can connect. **Playback control still
-  requires the user to have Spotify Premium and an active device** — a Spotify platform rule Composio
-  cannot bypass. (The exact callback lives on the Composio auth config as `credentials.oauth_redirect_uri`.)
 - **Canvas** — `CANVAS_CLIENT_ID` / `CANVAS_CLIENT_SECRET` from a Canvas **Developer Key** (Account →
   Developer Keys → + Developer Key → API Key), with Composio's callback as the redirect URI.
+
+> Note: music does **not** go through Composio. Spotify was removed; music runs on the native
+> YouTube Music integration (Google `youtube` scope). See the backend `CLAUDE.md`.
 
 When a BYOC toolkit's env vars are unset, connecting it degrades to the usual "not supported in-app
 yet" notice rather than erroring.

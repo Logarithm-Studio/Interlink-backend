@@ -31,7 +31,6 @@ export const EVENT_ALERT_TRIGGERS: Record<string, string[]> = {
   slack: ["SLACK_DIRECT_MESSAGE_RECEIVED"],
   hubspot: ["HUBSPOT_DEAL_STAGE_UPDATED_TRIGGER", "HUBSPOT_CONTACT_CREATED_TRIGGER"],
   googlecalendar: ["GOOGLECALENDAR_EVENT_STARTING_SOON_TRIGGER"],
-  spotify: ["SPOTIFY_PLAYLIST_TRIGGER"],
 };
 
 export function alertableToolkits(): string[] {
@@ -131,7 +130,7 @@ export async function enableEventAlerts(
     } catch (err) {
       failed.push(slug);
       // A 422 TriggerInstance_AuthRefreshRequired means the upstream app rejected the account
-      // (e.g. Spotify dev-mode allow-list) — surfaced to the caller as a failed slug.
+      // (e.g. a vendor dev-mode allow-list) — surfaced to the caller as a failed slug.
       logger.warn("[composio-triggers] enable failed", { slug, err: String(err).slice(0, 200) });
     }
   }
