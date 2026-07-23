@@ -842,6 +842,11 @@ export interface OpenLink {
     | "outlook"
     | "onedrive"
     | "web";
+  /** Rich-card fields (used for music results): artwork + a secondary line (artist/channel). */
+  thumbnail?: string;
+  subtitle?: string;
+  /** "music" tells the app to render an album-art play card instead of a plain link chip. */
+  kind?: "music";
 }
 
 export interface PersonalCommandResult {
@@ -1062,18 +1067,40 @@ export function deriveOpenLinks(
   const d = (data ?? {}) as Record<string, unknown>;
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
+  const decodeEntities = (s: string): string =>
+    s
+      .replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  // Tidy a raw YouTube video title into a track name (drop "(Official Video)" etc.).
+  const cleanTrackTitle = (raw: string): string =>
+    decodeEntities(raw)
+      .replace(/\s*[([](?:official|lyric|audio|visuali[sz]er|music|4k|hd)[^)\]]*[)\]]/gi, "")
+      .replace(/\s+-\s+topic$/i, "")
+      .trim() || decodeEntities(raw).trim();
+  const cleanArtist = (raw: string): string =>
+    decodeEntities(raw).replace(/\s*-\s*topic$/i, "").replace(/VEVO$/i, "").trim();
+
   const ytList = (app: "youtube" | "youtube-music"): OpenLink[] => {
     if (!Array.isArray(data)) return [];
     const fallback = app === "youtube-music" ? "Play in YouTube Music" : "Open video";
     return data
       .slice(0, 3)
-      .map((v) => {
+      .map((v): OpenLink => {
         const item = (v ?? {}) as Record<string, unknown>;
-        const title = str(item.title);
-        // Music chips read "Play <title>" so it's obvious the chip starts playback in
-        // YouTube Music; plain-YouTube chips keep the bare video title.
-        const label = title ? (app === "youtube-music" ? `Play ${title}` : title) : fallback;
-        return { label, url: str(item.url), app };
+        const rawTitle = str(item.title);
+        // Music results render as an album-art play CARD (kind: "music"): the label is the clean
+        // track name, plus artwork + artist. Plain YouTube keeps the bare video title as a chip.
+        if (app === "youtube-music") {
+          return {
+            label: rawTitle ? cleanTrackTitle(rawTitle) : fallback,
+            url: str(item.url),
+            app,
+            kind: "music",
+            thumbnail: str(item.thumbnail) || undefined,
+            subtitle: cleanArtist(str(item.channel)) || undefined,
+          };
+        }
+        return { label: rawTitle ? decodeEntities(rawTitle) : fallback, url: str(item.url), app };
       })
       .filter((l) => l.url);
   };

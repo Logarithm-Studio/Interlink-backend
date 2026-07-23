@@ -24,6 +24,13 @@ export interface YouTubeVideo {
   title: string;
   channel: string;
   url: string;
+  /** Best-available thumbnail URL (used as album art in the app). */
+  thumbnail: string;
+}
+
+/** Pick the largest available thumbnail from a snippet. */
+function pickThumb(thumbs?: youtube_v3.Schema$ThumbnailDetails | null): string {
+  return thumbs?.high?.url ?? thumbs?.medium?.url ?? thumbs?.default?.url ?? "";
 }
 
 /**
@@ -50,6 +57,7 @@ export async function searchYouTube(
       title: i.snippet?.title ?? "",
       channel: i.snippet?.channelTitle ?? "",
       url: `${base}${i.id!.videoId!}`,
+      thumbnail: pickThumb(i.snippet?.thumbnails),
     }));
 }
 
@@ -109,5 +117,6 @@ export async function getLikedVideos(userId: string): Promise<YouTubeVideo[]> {
       title: v.snippet?.title ?? "",
       channel: v.snippet?.channelTitle ?? "",
       url: `https://www.youtube.com/watch?v=${v.id!}`,
+      thumbnail: pickThumb(v.snippet?.thumbnails),
     }));
 }
