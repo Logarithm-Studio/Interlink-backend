@@ -58,24 +58,30 @@ function firstLine(text: string): string {
 }
 
 export async function runSlackAdapter(userId: string): Promise<number> {
-  const integration = await getIntegration(userId, "slack");
-  if (!integration) return 0;
-
-  if (!(await hasHubScopes(userId))) {
-    await setSourceHealth(
-      userId,
-      "slack",
-      "reauth_required",
-      "Reconnect Slack to bring your DMs and mentions here.",
-    );
-    return 0;
-  }
-
-  const me = await getAuthedUserId(userId);
-  const since = Math.floor(Date.now() / 1000) - WINDOW_DAYS * 86_400;
-
   let written = 0;
   try {
+    // Credential lookup, scope check and identity call all live inside the try on purpose.
+    // `getIntegration` decrypts a stored token (a rotated keyring key throws) and
+    // `getAuthedUserId` is a network call to Slack. Outside, either exception escaped the
+    // adapter — the QStash job failed and `notification_source_health` was never written, so the
+    // user's banner never learned the source had stopped. A source that stalls silently is the
+    // exact failure the hub exists to prevent, so this must be RECORDED, not thrown.
+    const integration = await getIntegration(userId, "slack");
+    if (!integration) return 0;
+
+    if (!(await hasHubScopes(userId))) {
+      await setSourceHealth(
+        userId,
+        "slack",
+        "reauth_required",
+        "Reconnect Slack to bring your DMs and mentions here.",
+      );
+      return 0;
+    }
+
+    const me = await getAuthedUserId(userId);
+    const since = Math.floor(Date.now() / 1000) - WINDOW_DAYS * 86_400;
+
     written += await directMessages(userId, me, since);
     written += await mentions(userId, me);
     await setSourceHealth(userId, "slack", "ok");

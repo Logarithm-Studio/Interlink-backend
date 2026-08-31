@@ -36,10 +36,15 @@ const URGENT_PRIORITIES = new Set(["Highest", "High", "Critical", "Blocker"]);
 const JIRA_MODE = "professional" as const;
 
 export async function runJiraAdapter(userId: string): Promise<number> {
-  const integration = await getIntegration(userId, "jira");
-  if (!integration || integration.status === "revoked") return 0;
-
   try {
+    // Inside the try on purpose: this decrypts a stored token, so a rotated/missing keyring key
+    // throws here. Outside, that exception escaped the adapter — the QStash job failed and
+    // `notification_source_health` was never written, so the user's banner never learned the
+    // source had stopped. A source that stalls silently is the exact failure the hub exists to
+    // prevent, so a credential failure must be RECORDED, not thrown.
+    const integration = await getIntegration(userId, "jira");
+    if (!integration || integration.status === "revoked") return 0;
+
     const issues = await searchIssues(userId, HUB_JQL);
     const seen = new Set<string>();
 

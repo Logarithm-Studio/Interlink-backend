@@ -43,6 +43,7 @@ export type HubSource =
   | "slack"
   | "github"
   | "jira"
+  | "todoist"
   | "composio";
 
 export type HubState = "open" | "resolved" | "dismissed";

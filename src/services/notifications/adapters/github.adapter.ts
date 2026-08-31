@@ -49,10 +49,15 @@ const REASON_LABEL: Record<string, string> = {
 const GITHUB_MODE = "professional" as const;
 
 export async function runGithubAdapter(userId: string): Promise<number> {
-  const integration = await getIntegration(userId, "github");
-  if (!integration || integration.status === "revoked") return 0;
-
   try {
+    // Inside the try on purpose: this decrypts a stored token, so a rotated/missing keyring key
+    // throws here. Outside, that exception escaped the adapter — the QStash job failed and
+    // `notification_source_health` was never written, so the user's banner never learned the
+    // source had stopped. A source that stalls silently is the exact failure the hub exists to
+    // prevent, so a credential failure must be RECORDED, not thrown.
+    const integration = await getIntegration(userId, "github");
+    if (!integration || integration.status === "revoked") return 0;
+
     // `since` keeps the response small on every run after the first; the 7-day floor matches
     // the retention window so a long gap cannot pull in items the hub would immediately purge.
     const stored = await getCursor(userId, "github");

@@ -16,6 +16,7 @@ import { runGmailAdapter } from "../../services/notifications/adapters/gmail.ada
 import { runSlackAdapter } from "../../services/notifications/adapters/slack.adapter";
 import { runGithubAdapter } from "../../services/notifications/adapters/github.adapter";
 import { runJiraAdapter } from "../../services/notifications/adapters/jira.adapter";
+import { runTodoistAdapter } from "../../services/notifications/adapters/todoist.adapter";
 
 export async function processHubJob(body: unknown, jobId: string): Promise<void> {
   const parsed = JobEnvelopeSchema.safeParse(body);
@@ -33,6 +34,7 @@ export async function processHubJob(body: unknown, jobId: string): Promise<void>
     slack: runSlackAdapter,
     github: runGithubAdapter,
     jira: runJiraAdapter,
+    todoist: runTodoistAdapter,
   };
 
   const run = source ? adapters[source] : undefined;

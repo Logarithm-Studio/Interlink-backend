@@ -20,7 +20,7 @@ import { runInternalAdapter } from "./adapters/internal.adapter";
 import { runCalendarAdapter } from "./adapters/calendar.adapter";
 
 /** Sources that need a per-user job because they call an external API. */
-const EXTERNAL_SOURCES = ["gmail", "slack", "github", "jira"] as const;
+const EXTERNAL_SOURCES = ["gmail", "slack", "github", "jira", "todoist"] as const;
 export type ExternalSource = (typeof EXTERNAL_SOURCES)[number];
 
 /**
@@ -87,18 +87,56 @@ export async function runInternalAdapterForAllUsers(): Promise<number> {
 }
 
 /**
- * Enqueue one job per user per external source.
+ * Which users actually hold a credential for each external source.
+ *
+ * The fan-out used to be `every active user × every external source`, so a source was polled for
+ * people who had never connected it. Each of those jobs did nothing but a token lookup and an
+ * early return — but it still cost a real QStash message, and QStash is billed per message on a
+ * daily quota. At 14 users that was 70 messages an hour (~1.7k/day) to do the work of about 20.
+ *
+ * `revoked` is excluded because the adapters themselves early-return on it. `reauth_required`
+ * and `expired` are deliberately KEPT: the adapter is what writes `notification_source_health`,
+ * and that row is what renders the "Reconnect" banner. Skipping lapsed users to save a message
+ * would freeze the banner that tells them to fix the lapse.
+ */
+async function credentialHoldersBySource(): Promise<Record<ExternalSource, string[]>> {
+  const holders = Object.fromEntries(
+    EXTERNAL_SOURCES.map((src) => [src, [] as string[]]),
+  ) as Record<ExternalSource, string[]>;
+
+  // Gmail rides on Google OAuth, which has its own table rather than connected_integrations.
+  const google = await query<{ user_id: string }>(
+    `SELECT DISTINCT user_id FROM google_accounts`,
+  );
+  holders.gmail = google.rows.map((r) => r.user_id);
+
+  const integrations = await query<{ provider: string; user_id: string }>(
+    `SELECT DISTINCT provider, user_id
+       FROM connected_integrations
+      WHERE provider = ANY($1) AND status <> 'revoked'`,
+    [EXTERNAL_SOURCES.filter((s) => s !== "gmail")],
+  );
+  for (const row of integrations.rows) {
+    const source = row.provider as ExternalSource;
+    if (holders[source]) holders[source].push(row.user_id);
+  }
+
+  return holders;
+}
+
+/**
+ * Enqueue one job per external source per user who actually holds that credential.
  *
  * `jobId` is deterministic and bucketed by the hour, so a retried or double-fired schedule
  * within the same hour is deduplicated by QStash rather than double-polling Gmail.
  */
 export async function dispatchExternalAdapters(): Promise<number> {
-  const users = await activeUserIds();
+  const holders = await credentialHoldersBySource();
   const bucket = new Date().toISOString().slice(0, 13); // yyyy-mm-ddThh
 
   let enqueued = 0;
-  for (const userId of users) {
-    for (const source of EXTERNAL_SOURCES) {
+  for (const source of EXTERNAL_SOURCES) {
+    for (const userId of holders[source]) {
       try {
         await enqueueJob(
           "hub",
@@ -122,8 +160,10 @@ export async function dispatchExternalAdapters(): Promise<number> {
   }
 
   logger.info("[hub:dispatch] external adapter jobs enqueued", {
-    users: users.length,
     enqueued,
+    bySource: Object.fromEntries(
+      EXTERNAL_SOURCES.map((src) => [src, holders[src].length]),
+    ),
   });
   return enqueued;
 }
