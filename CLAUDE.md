@@ -174,13 +174,24 @@ and the full notification screen all read from it. Wave 1 shipped 2026-08-31.
   meant to keep holding — age alone was the wrong rule.
 - **Preview text is encrypted at rest** via the keyring (`encryptToken`/`decryptToken`), truncated
   to 140 chars. A decrypt failure degrades that one row to no-preview rather than failing the feed.
-- **Fan-out rule:** external adapters must enqueue **one QStash job per user per source**.
+- **Fan-out rule:** external adapters must enqueue **one QStash job per source per user who
+  actually holds that credential** (`credentialHoldersBySource()`), never per active user.
+  Fanning out to everyone made most jobs a token lookup and an early return that still cost a
+  QStash message: measured live, 50 jobs/hour vs 18: ~1,200/day vs ~432/day. Users whose
+  credential is `expired`/`reauth_required` ARE still polled — the adapter is what writes
+  `notification_source_health`, and that row renders the Reconnect banner, so skipping them
+  would freeze the banner telling them to fix the lapse. Only `revoked` is skipped.
   `/workers/hub-refresh` runs the internal adapter across all users in a single tick only because
   it is pure SQL over tables we already own. Do not copy that shape for API-backed adapters.
+- **Every adapter must RECORD a credential failure, never throw it.** Look up and decrypt the
+  token *inside* the `try`. `getIntegration` decrypts, so a rotated or missing keyring key throws;
+  outside the `try` that escaped the adapter, failed the QStash job, and left
+  `notification_source_health` unwritten — the source stalls while the user sees a clean feed,
+  which is the exact failure the hub exists to prevent.
 
 - **Sources.** Local adapters (`internal`, `calendar`) read only our own tables and run inline for
-  all users. External adapters (`gmail`, `slack`, `github`, `jira`) fan out one job per user per
-  source onto the `hub` queue → `hub.processor.ts`. Composio webhooks write to the hub too
+  all users. External adapters (`gmail`, `slack`, `github`, `jira`, `todoist`) fan out one job per
+  credential-holding user per source onto the `hub` queue → `hub.processor.ts`. Composio webhooks write to the hub too
   (`composioTriggers` no longer pushes — same event, same behaviour, whichever way the account was
   connected).
   - **Gmail** is a *pull* adapter using a search query, not `history.list`: the query
@@ -189,6 +200,12 @@ and the full notification screen all read from it. Wave 1 shipped 2026-08-31.
   - **GitHub** uses `GET /notifications` and filters on the `reason` field — only
     `review_requested`/`assign`/`mention`/`team_mention` are things a person is blocked on.
     Honour the `X-Poll-Interval` it returns.
+  - **Todoist** includes only tasks due **today or earlier**; an undated task is a personal
+    backlog, not something waiting on the user, and letting them in would drown real items.
+    `selectActionableTasks()` is pure and unit-tested because the one live token is encrypted
+    under a production-only keyring key, so the adapter cannot be run end to end locally. Note
+    Todoist returns `2026-08-31T09:00:00` for timed tasks — compare the date part, or a task due
+    at 09:00 today reads as future and is silently dropped.
   - **Slack** needs `im:read`/`im:history`/`search:read`, which tokens granted before 2026-08-31
     lack; `hasHubScopes()` detects that and reports `reauth_required` instead of an empty feed.
   - **Listing views** (`re_listing_views`, migration `063`) are the Real Estate persona's own
