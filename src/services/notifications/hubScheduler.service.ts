@@ -26,10 +26,12 @@ export type ExternalSource = (typeof EXTERNAL_SOURCES)[number];
 /**
  * Users we refresh: anyone with something the hub could produce a notification from.
  *
- * NOT `push_tokens`. `runDailyDigestForAllUsers` uses that as its "active install" proxy, and
- * copying it here was a bug worth recording: **`push_tokens` is empty in this deployment**, so
- * the fan-out silently did nothing for every user while every adapter passed its own tests.
- * (It also means the daily digest currently reaches nobody — worth fixing separately.)
+ * NOT `SELECT ... FROM push_tokens`. `runDailyDigestForAllUsers` used that as its "active
+ * install" proxy, and copying it here was a bug worth recording: **`push_tokens` is empty in
+ * this deployment**, so the fan-out silently did nothing for every user while every adapter
+ * passed its own tests. The digest had been reaching nobody for the same reason; it now selects
+ * the same population this function does. `push_tokens` appears below only as one more widening
+ * `OR`, never as the source of the list.
  *
  * A registered device is evidence someone can be *pushed to*. It is not evidence there is
  * anything to tell them, and the hub is a pull surface anyway: items must be waiting in the feed
