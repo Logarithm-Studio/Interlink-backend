@@ -41,6 +41,9 @@ export const JobType = {
 
   // Email
   EMAIL_DRAFT_CREATE: "email.draft.create",
+
+  // Notification hub — one job per user per source (never one tick looping users).
+  HUB_SOURCE_REFRESH: "hub.source.refresh",
 } as const;
 
 export type JobTypeValue = (typeof JobType)[keyof typeof JobType];

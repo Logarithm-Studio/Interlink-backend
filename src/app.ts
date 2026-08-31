@@ -39,6 +39,7 @@ import professionalStubsRoutes from "./routes/professional-stubs.routes";
 import professionalRoutes from "./routes/professional.routes";
 import salesRoutes from "./routes/sales.routes";
 import publicListingRoutes from "./routes/publicListing.routes";
+import notificationsRoutes from "./routes/notifications.routes";
 
 const app: Express = express();
 
@@ -102,6 +103,7 @@ function setupRoutes(app: Express) {
   app.use("/api/v1/fitness", fitnessRoutes);
   app.use("/api/v1/composio", composioRoutes);
   app.use("/api/v1/personal-assistant", personalAssistantRoutes);
+  app.use("/api/v1/notifications", notificationsRoutes);
   // Professional mode
   app.use("/api/v1/pm", pmRoutes);
   app.use("/api/v1/hr", hrRoutes);

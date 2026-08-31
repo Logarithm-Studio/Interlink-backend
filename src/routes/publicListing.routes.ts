@@ -9,7 +9,11 @@
  */
 
 import { Router, Request, Response, NextFunction } from "express";
-import { getPublicListing, type PublicListing } from "../services/professional/realestate/listingPhotos.service";
+import {
+  getPublicListing,
+  recordListingView,
+  type PublicListing,
+} from "../services/professional/realestate/listingPhotos.service";
 
 const router = Router();
 
@@ -130,8 +134,16 @@ router.get("/l/:slug", async (req: Request, res: Response, next: NextFunction) =
       "Content-Security-Policy",
       "default-src 'none'; img-src 'self' https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     );
+    // Record the view for the agent's Notification Hub. Fire-and-forget and un-awaited: a buyer
+    // must never wait on our analytics, and a tracking failure must never cost them the page.
+    void recordListingView(req.params.slug);
+
     // Short cache: photos/price can change, but a listing shared to many buyers at once
     // shouldn't hit the DB for every open.
+    //
+    // NOTE: this cache means repeat opens by the SAME buyer within 5 minutes may not reach us,
+    // so view counts read as "distinct-ish interest" rather than raw hits. That is the honest
+    // interpretation and it is the one the hub copy uses.
     res.setHeader("Cache-Control", "public, max-age=300");
     res.type("html").send(renderPage(listing));
   } catch (err) {

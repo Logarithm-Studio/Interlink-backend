@@ -16,9 +16,12 @@ npm start            # node dist/server.js — run compiled build
 npm run lint         # tsc --noEmit — typecheck only; there is no ESLint here
 npm run migrate      # tsx src/db/migrations/runner.ts — apply SQL migrations in order
 npm run worker:dev   # NO-OP. Jobs run as QStash HTTP callbacks, not a standalone worker.
+npm test             # tsx --test — two files: professional/spreadsheet + notifications/hubSummary
 ```
 
-There is **no test runner configured** — do not assume `npm test` exists.
+`npm test` runs an explicit **file list**, not a discovered suite (15 tests across two files).
+Adding a `*.test.ts` anywhere does nothing until you append it to the `test` script in
+`package.json` — that is the single easiest way to write a test that silently never runs.
 
 `src/worker.ts` / `npm run worker:start` are intentional no-ops kept only so the Railway
 deploy command doesn't crash. All async work is handled by the `/api/v1/workers/*` HTTP
@@ -55,8 +58,9 @@ and sets `req.user = { id, email }`. `src/security/supabaseJwt.ts` exists for of
 verification paths.
 
 ### Database & migrations
-Plain numbered SQL files in [src/db/migrations/](src/db/migrations/) (`001_*.sql` … `034_*.sql`)
-applied in filename order by [runner.ts](src/db/migrations/runner.ts) via `npm run migrate`.
+Plain numbered SQL files in [src/db/migrations/](src/db/migrations/) (`001_*.sql` … `061_*.sql`
+as of 2026-08-31) applied in filename order by [runner.ts](src/db/migrations/runner.ts) via
+`npm run migrate`.
 **To change schema, add the next numbered migration file — never edit an applied one.** Note
 the history shows a deliberate move off Redis (`034_remove_redis.sql`) toward QStash.
 
@@ -116,8 +120,22 @@ user's primary account), so a Work-calendar event declines from the Work mailbox
 see `src/services/email/templates.service.ts`.
 
 ### AI
-`src/services/ai/` wraps OpenAI (`openai` SDK) with Zod-validated outputs and prompt modules
-(e.g. `prompts/emailConflict.ts`). AI is a supporting feature, not the required MVP path.
+**Two systems live under `src/services/ai/` — know which one your path uses.**
+
+1. **`geminiClient.ts` — the agent brain, used by BOTH modes.** Gemini REST (no SDK) with
+   multimodal `inline_data` + `functionDeclarations`. Everything agentic imports it directly and
+   gates on `isGeminiLive()`: `personal-assistant.service.ts`, every professional vertical,
+   `agentLoop.ts`, `attachment.service.ts`, `composio.service.ts`. Env: `GEMINI_API_KEY` /
+   `GEMINI_MODEL` (default `gemini-2.5-flash`).
+2. **`provider.ts` (`getProvider({ mode })`) — the older JSON-text abstraction**, used at only
+   three call sites in `ai.service.ts`. Professional mode → Gemini. Personal mode →
+   `AI_PROVIDER ?? "openai"`, so **the no-arg `getProvider()` resolves to OpenAI unless
+   `AI_PROVIDER=gemini` is set**. Every call site wraps it in try/catch with a deterministic
+   template fallback, so a missing `AI_API_KEY` degrades silently rather than erroring — check
+   your `.env` before concluding the AI draft feature is broken.
+
+All outputs are JSON-only, temperature 0, Zod-validated, 30s timeout, with deterministic fallbacks.
+AI is a supporting feature, not the required MVP path.
 
 Both command centers share `src/services/ai/attachment.service.ts`. It parses spreadsheets and
 UTF-8/office documents locally, sends Gemini-supported PDF/image/audio/video formats inline, enforces
@@ -126,6 +144,84 @@ workflows do **not** trust the model to select addresses: the model describes th
 `professional/spreadsheet.service.ts` reapplies date/row filters deterministically and rebuilds the
 recipient list exclusively from parsed rows before returning the confirmation action. Ambiguous dates,
 invalid date cells, truncated sheets, and sends above the 100-recipient safety cap block before send.
+
+### Notification Hub (`/api/v1/notifications`)
+One cross-app queue of things **waiting on the user** — the bell, the "Waiting on you" widget,
+and the full notification screen all read from it. Wave 1 shipped 2026-08-31.
+
+- **Tables** (migration `062`): `notification_items` (the feed), `notification_source_cursors`
+  (pull-adapter resume points, e.g. Gmail `historyId`), `notification_source_health` (drives the
+  staleness warning shown *in the widget* — a hub that has silently stopped ingesting is worse
+  than no hub, because the user has stopped checking the real apps).
+  This is **not** `notification_deliveries` (migration 017), which is a per-channel delivery audit
+  trail keyed to `workflow_executions`.
+- **Inclusion bar:** *if the user does nothing, does something bad or slow happen?* If no, it is
+  activity, not a notification. Do not relax this — a mirror of nine apps' firehoses is the hassle
+  relocated, not removed.
+- **`hub.service.ts`** is the core: `upsertItem` (upsert on `(user_id, dedup_key)`; **never
+  resurrects a dismissed row**, or every poll would undo every dismissal), `getFeed`,
+  `getUnreadCounts`, `recordAction`, plus cursor and health helpers.
+- **Dedup keys are provider-scoped, not adapter-scoped** — native and Composio delivery of one
+  Gmail message both write `gmail:<threadId>` and collapse into a single row. Where a source table
+  itself contains duplicates (it happens — `advisor_compliance_items` had 30 rows for 4 distinct
+  items from repeated demo seeding), key on **semantic identity** rather than row id.
+- **Ordering is deterministic**: `weight DESC, occurred_at DESC`, no time sections. Weights share
+  `dailyDigest.service.ts`'s `DigestLine.weight` vocabulary so the two surfaces can never disagree
+  about what matters. AI narrates the list once a day; it never ranks or routes it.
+- **Retention is state-based, not age-based** (`hubRetention.service.ts`): resolved/dismissed
+  purge at 7d; still-open rows have their encrypted preview stripped at 7d and survive as
+  ~300-byte pointers; hard ceiling 30d. An invoice overdue 30 days is exactly what the hub is
+  meant to keep holding — age alone was the wrong rule.
+- **Preview text is encrypted at rest** via the keyring (`encryptToken`/`decryptToken`), truncated
+  to 140 chars. A decrypt failure degrades that one row to no-preview rather than failing the feed.
+- **Fan-out rule:** external adapters must enqueue **one QStash job per user per source**.
+  `/workers/hub-refresh` runs the internal adapter across all users in a single tick only because
+  it is pure SQL over tables we already own. Do not copy that shape for API-backed adapters.
+
+- **Sources.** Local adapters (`internal`, `calendar`) read only our own tables and run inline for
+  all users. External adapters (`gmail`, `slack`, `github`, `jira`) fan out one job per user per
+  source onto the `hub` queue → `hub.processor.ts`. Composio webhooks write to the hub too
+  (`composioTriggers` no longer pushes — same event, same behaviour, whichever way the account was
+  connected).
+  - **Gmail** is a *pull* adapter using a search query, not `history.list`: the query
+    `is:unread in:inbox newer_than:7d -category:promotions/social/updates` expresses the actionable
+    bar AND doubles as inferred resolution (anything that stops coming back was handled elsewhere).
+  - **GitHub** uses `GET /notifications` and filters on the `reason` field — only
+    `review_requested`/`assign`/`mention`/`team_mention` are things a person is blocked on.
+    Honour the `X-Poll-Interval` it returns.
+  - **Slack** needs `im:read`/`im:history`/`search:read`, which tokens granted before 2026-08-31
+    lack; `hasHubScopes()` detects that and reports `reauth_required` instead of an empty feed.
+  - **Listing views** (`re_listing_views`, migration `063`) are the Real Estate persona's own
+    signal — Composio has no Zillow/AppFolio toolkit, but we host the page. Coarse by design:
+    listing + day + count, nothing identifying, because that page's viewers agreed to nothing.
+- **The daily summary** (`hubSummary.service.ts`) is generated once per user per day, cached in
+  `ai_outputs`, and shared with the digest. The model **narrates a computed tally** — it is handed
+  exact counts and told not to count, because asking it to tally a 15-line list produced "five
+  compliance reviews" against four actual items. Same trust boundary as the spreadsheet email
+  flow: the model phrases, the code counts. `thinkingBudget: 0` and a response schema are both
+  load-bearing (2.5 thinking models draw thinking tokens from `maxOutputTokens`, and at 200 the
+  model thought itself out of room and returned a truncated preamble).
+- **Active users** for the scheduler are those with a connected account or professional data —
+  **not** `push_tokens`, which is empty in this deployment. `runDailyDigestForAllUsers` uses
+  push_tokens and therefore currently reaches nobody; do not copy that proxy.
+
+- **Inline reply** (`hubReply.service.ts`, `POST /:id/draft-reply` + `POST /:id/send-reply`) is
+  two steps on purpose: the model proposes, the user edits, and `sendReply` sends the body the
+  client passes back — it never regenerates. One-tap send of model-written text to a real
+  colleague is what gets a feature switched off after a single bad send. Sending resolves the
+  item (an inline action for the metric); the client must NOT also call dismiss, or it overwrites
+  `resolved` and corrupts the ratio.
+- **Composio alert triggers are verified, and most toolkits cannot be wired.** `quickbooks`,
+  `xero` and `docusign` expose **no triggers at all**; `linear` and `asana` have only
+  workspace-wide created/updated events with no "assigned to me". See
+  `DELIBERATELY_UNWIRED_TOOLKITS` in `composioTriggers.service.ts` — a toolkit having *tools*
+  does not mean it has *triggers*, and `enableEventAlerts` tolerates a bad slug, so a wrong name
+  fails silently.
+
+QStash Schedules are **registered** (2026-08-31): `hub-refresh` hourly (`0 * * * *`) and
+`hub-retention` daily (`45 3 * * *`), both against `https://interlink-backend.vercel.app` —
+matching the existing three. Note `API_BASE_URL` in `.env` is an ngrok tunnel for local dev and
+must never be used as a schedule destination.
 
 ### Composio — the brokered long tail of integrations
 [composio.service.ts](src/services/composio/composio.service.ts) + `/api/v1/composio/*`

@@ -22,7 +22,7 @@ import { createHash } from "crypto";
 import type { Composio } from "@composio/core";
 import { query } from "../../config/db";
 import { logger } from "../../observability/logger";
-import { deliverNotification } from "../notifications/notification.service";
+import { upsertItem, HUB_WEIGHTS } from "../notifications/hub.service";
 import { getComposioClient, toolkitName, isKnownToolkit } from "./composio.service";
 
 /** High-signal triggers per toolkit. Keys are Composio toolkit slugs. */
@@ -31,7 +31,39 @@ export const EVENT_ALERT_TRIGGERS: Record<string, string[]> = {
   slack: ["SLACK_DIRECT_MESSAGE_RECEIVED"],
   hubspot: ["HUBSPOT_DEAL_STAGE_UPDATED_TRIGGER", "HUBSPOT_CONTACT_CREATED_TRIGGER"],
   googlecalendar: ["GOOGLECALENDAR_EVENT_STARTING_SOON_TRIGGER"],
+
+  // Notification Hub focus personas — VERIFIED against Composio's live catalogue 2026-08-31.
+  //
+  // Finance: a failed payment is money that stops arriving unless someone acts, which is exactly
+  // the bar. (Note the slugs: an earlier guess used STRIPE_INVOICE_PAYMENT_FAILED, which does not
+  // exist. Verify slugs before adding a toolkit — `enableEventAlerts` tolerates a bad one, so a
+  // wrong name fails silently rather than loudly.)
+  stripe: ["STRIPE_PAYMENT_FAILED_TRIGGER", "STRIPE_CHARGE_FAILED_TRIGGER"],
 };
+
+/**
+ * Toolkits deliberately NOT wired for alerts, and why. Checked against Composio 2026-08-31 —
+ * do not re-add without re-checking, and do not assume a toolkit having *tools* means it has
+ * *triggers*.
+ *
+ * NO TRIGGERS EXIST AT ALL (Composio exposes tools for these, but nothing to subscribe to):
+ *   - quickbooks
+ *   - xero
+ *   - docusign   ← this was to be the Real Estate persona's Composio source. It cannot be.
+ *                  Real Estate therefore has no third-party notification source at all, which
+ *                  is precisely why listing-view tracking on our own public page matters.
+ *
+ * TRIGGERS EXIST BUT NONE MEET THE ACTIONABLE BAR:
+ *   - linear: only ISSUE_CREATED / ISSUE_UPDATED / COMMENT_EVENT — workspace-wide. There is no
+ *     "assigned to me" trigger, and subscribing to every issue in a workspace rebuilds the
+ *     firehose this hub exists to replace. Product Manager is served by the native GitHub and
+ *     Jira adapters instead, which CAN filter to "waiting on you".
+ *   - asana: same shape — TASK_CREATED / TASK_UPDATED / TASK_COMMENT_ADDED, no assignment event.
+ */
+export const DELIBERATELY_UNWIRED_TOOLKITS = {
+  noTriggersAvailable: ["quickbooks", "xero", "docusign"],
+  tooNoisyToQualify: ["linear", "asana"],
+} as const;
 
 export function alertableToolkits(): string[] {
   return Object.keys(EVENT_ALERT_TRIGGERS);
@@ -219,6 +251,41 @@ export function describeTriggerEvent(
  * Handle one inbound Composio trigger webhook. Always resolves; a bad payload must never
  * 500 back to Composio (it would retry forever).
  */
+
+/**
+ * A stable identity for a webhook event.
+ *
+ * Prefers whatever id the provider sent (message id, thread id, invoice id, envelope id) so a
+ * Composio retry — or the native adapter seeing the same thing — updates one row instead of
+ * creating a second. Falls back to a per-minute bucket, which preserves the old idempotency
+ * behaviour when the payload carries nothing identifying.
+ */
+function composioDedupKey(
+  triggerSlug: string,
+  payload: Record<string, unknown>,
+): string {
+  const idFields = [
+    "thread_id", "threadId",
+    "message_id", "messageId",
+    "id", "invoice_id", "envelope_id", "issue_id", "task_id",
+  ];
+
+  for (const field of idFields) {
+    const value = payload[field];
+    if (typeof value === "string" && value.trim()) {
+      // Gmail arriving via Composio must land on the SAME key the native adapter writes,
+      // or the user sees the message twice.
+      if (triggerSlug.startsWith("GMAIL") && (field.startsWith("thread") || field === "id")) {
+        return `gmail:${value}`;
+      }
+      return `composio:${triggerSlug}:${value}`;
+    }
+  }
+
+  const minute = new Date().toISOString().slice(0, 16);
+  return `composio:${triggerSlug}:${minute}`;
+}
+
 export async function handleTriggerEvent(raw: Record<string, unknown>): Promise<boolean> {
   try {
     const triggerSlug = str(raw.triggerSlug) || str(raw.triggerName) || str(raw.type) || "UNKNOWN";
@@ -238,15 +305,30 @@ export async function handleTriggerEvent(raw: Record<string, unknown>): Promise<
     const payload = ((raw.payload ?? raw.data ?? {}) as Record<string, unknown>) || {};
     const { title, body } = describeTriggerEvent(triggerSlug, payload);
 
-    // Idempotent per (trigger, user, minute) so a Composio retry can't double-notify.
-    const minute = new Date().toISOString().slice(0, 16);
-    await deliverNotification({
-      executionId: `composio-trigger:${triggerSlug}:${minute}`,
-      stepId: userId,
+    // Write to the Notification Hub instead of pushing.
+    //
+    // This used to call `deliverNotification` and fire an immediate FCM push. That made the SAME
+    // event behave differently depending on a detail the user never thinks about: a Gmail account
+    // connected through Composio interrupted them, while one connected natively landed silently
+    // in the hub. Items land silently now; the daily digest remains the once-a-day interruption.
+    //
+    // The dedup key is PROVIDER-scoped, not adapter-scoped, so a message arriving from both the
+    // native adapter and this webhook collapses into one row rather than two.
+    const dedupKey = composioDedupKey(triggerSlug, payload);
+
+    await upsertItem({
       userId,
+      // Composio toolkits are work tools; there is one connection per user with no per-mode role.
+      mode: "professional",
+      source: "composio",
+      kind: `composio_${triggerSlug.toLowerCase()}`,
+      dedupKey,
       title,
-      body: body.slice(0, 180),
-      actions: [],
+      preview: body.slice(0, 180),
+      actor: toolkitName(triggerSlug.split("_")[0]?.toLowerCase() ?? "") || "Connected app",
+      weight: HUB_WEIGHTS.mail,
+      externalRef: { triggerSlug },
+      occurredAt: new Date(),
     });
     return true;
   } catch (err) {

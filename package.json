@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "worker:dev": "tsx watch src/worker.ts",
     "build": "tsc",
-    "test": "tsx --test src/services/professional/spreadsheet.service.test.ts",
+    "test": "tsx --test src/services/professional/spreadsheet.service.test.ts src/services/notifications/hubSummary.service.test.ts",
     "start": "node dist/server.js",
     "worker:start": "node dist/worker.js",
     "lint": "tsc --noEmit",

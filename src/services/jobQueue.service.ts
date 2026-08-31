@@ -25,6 +25,7 @@ export type QueueName =
   | "conflicts"
   | "notifications"
   | "email"
+  | "hub"
   | "dlq";
 
 export interface EnqueueOptions {

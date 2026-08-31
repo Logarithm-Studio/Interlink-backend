@@ -185,8 +185,23 @@ export async function runDailyDigestForAllUsers(): Promise<{ considered: number;
   let considered = 0;
   let sent = 0;
   try {
+    // NOT `SELECT DISTINCT user_id FROM push_tokens`, which is what this used to be.
+    //
+    // That table is EMPTY in this deployment (verified 2026-08-31), so the digest was considering
+    // zero users and silently sending nothing — for months, with no error anywhere. A registered
+    // device proves someone *can* be pushed to; it is not evidence there is anything to tell them,
+    // and `deliverNotification` already falls back to email when no token exists.
+    //
+    // The right population is "someone we could have something to say to". Same definition the
+    // notification hub's scheduler uses — keep the two in step.
     const res = await query<{ user_id: string }>(
-      `SELECT DISTINCT user_id FROM push_tokens`,
+      `SELECT DISTINCT u.id AS user_id
+         FROM users u
+        WHERE EXISTS (SELECT 1 FROM google_accounts g WHERE g.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM connected_integrations c WHERE c.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM invoices i WHERE i.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM re_leads r WHERE r.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM push_tokens p WHERE p.user_id = u.id)`,
     );
     considered = res.rows.length;
     for (const row of res.rows) {

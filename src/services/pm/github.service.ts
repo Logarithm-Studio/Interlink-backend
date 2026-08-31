@@ -269,3 +269,69 @@ export async function createIssue(
     assignees: [],
   };
 }
+
+// ─── Notifications (Notification Hub) ─────────────────────────────────────────
+
+export interface GitHubNotification {
+  id: string;
+  reason: string;
+  title: string;
+  repoFullName: string;
+  type: string;
+  updatedAt: string;
+  url: string | null;
+}
+
+/**
+ * The user's unread GitHub notifications.
+ *
+ * Uses `GET /notifications`, which GitHub built for exactly this: one call for everything
+ * awaiting the user across every repo. The alternative — iterating repos and calling
+ * `getPullRequests` per repo — costs one request per repo and scales with how much code the
+ * user touches rather than how much needs them.
+ *
+ * `X-Poll-Interval` is GitHub's own guidance on how soon to come back; callers should honour it
+ * rather than inventing a cadence.
+ */
+export async function getNotifications(
+  userId: string,
+  since?: string,
+): Promise<{ items: GitHubNotification[]; pollIntervalSeconds: number | null }> {
+  const params = new URLSearchParams({ all: "false", per_page: "30" });
+  if (since) params.set("since", since);
+
+  const res = await ghFetch(userId, `/notifications?${params}`);
+  if (!res.ok) {
+    return { items: [], pollIntervalSeconds: null };
+  }
+
+  const pollHeader = res.headers.get("x-poll-interval");
+  const pollIntervalSeconds = pollHeader ? Number(pollHeader) : null;
+
+  const raw = (await res.json()) as {
+    id?: string;
+    reason?: string;
+    updated_at?: string;
+    subject?: { title?: string; url?: string | null; type?: string };
+    repository?: { full_name?: string };
+  }[];
+
+  const items = raw
+    .filter((n) => n.id)
+    .map((n) => ({
+      id: n.id!,
+      reason: n.reason ?? "subscribed",
+      title: n.subject?.title ?? "(untitled)",
+      repoFullName: n.repository?.full_name ?? "",
+      type: n.subject?.type ?? "Unknown",
+      updatedAt: n.updated_at ?? new Date().toISOString(),
+      // The API returns an api.github.com URL; convert to the web URL a human can open.
+      url: n.subject?.url
+        ? n.subject.url
+            .replace("https://api.github.com/repos/", "https://github.com/")
+            .replace("/pulls/", "/pull/")
+        : null,
+    }));
+
+  return { items, pollIntervalSeconds };
+}

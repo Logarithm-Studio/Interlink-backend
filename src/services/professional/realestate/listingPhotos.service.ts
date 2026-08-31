@@ -229,3 +229,66 @@ export async function getPublicListing(slug: string): Promise<PublicListing | nu
     agentEmail: r.agent_email,
   };
 }
+
+
+// ─── View tracking (Notification Hub) ─────────────────────────────────────────
+
+/**
+ * Record one view of a public listing page.
+ *
+ * Coarse on purpose: slug + day + count, nothing identifying. The page is public and its viewer
+ * agreed to nothing, so this records that a listing is getting attention — not who is looking.
+ *
+ * Fire-and-forget: a tracking failure must never stop a buyer seeing the property.
+ */
+export async function recordListingView(slug: string): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO re_listing_views (listing_id, view_date, view_count)
+       SELECT l.id, CURRENT_DATE, 1 FROM re_listings l WHERE l.share_slug = $1
+       ON CONFLICT (listing_id, view_date) DO UPDATE
+         SET view_count = re_listing_views.view_count + 1,
+             updated_at = now()`,
+      [slug],
+    );
+  } catch {
+    // Intentionally silent — see above.
+  }
+}
+
+export interface ListingViewActivity {
+  listingId: string;
+  address: string;
+  views: number;
+  lastViewedAt: Date;
+}
+
+/** Listings with view activity in the last `days` days, busiest first. */
+export async function getRecentListingViews(
+  userId: string,
+  days = 3,
+): Promise<ListingViewActivity[]> {
+  const res = await query<{
+    listing_id: string;
+    address: string;
+    views: string;
+    last_viewed: Date;
+  }>(
+    `SELECT v.listing_id, l.address, SUM(v.view_count) views, MAX(v.updated_at) last_viewed
+       FROM re_listing_views v
+       JOIN re_listings l ON l.id = v.listing_id
+      WHERE l.user_id = $1
+        AND v.view_date >= CURRENT_DATE - ($2::int)
+      GROUP BY v.listing_id, l.address
+      ORDER BY views DESC
+      LIMIT 25`,
+    [userId, days],
+  );
+
+  return res.rows.map((r) => ({
+    listingId: r.listing_id,
+    address: r.address,
+    views: parseInt(r.views, 10),
+    lastViewedAt: new Date(r.last_viewed),
+  }));
+}

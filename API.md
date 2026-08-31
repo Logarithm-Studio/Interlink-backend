@@ -24,7 +24,13 @@ curl -X POST '<SUPABASE_URL>/auth/v1/token?grant_type=password' \
 the only non-JWT routes — they authenticate via Google channel headers and the
 `Upstash-Signature` header respectively.
 
-## Endpoint map (current, from `src/app.ts` + route files)
+## Endpoint map (PARTIAL — from `src/app.ts` + route files)
+
+> ⚠️ This map documents roughly a third of the mounted route groups. `src/app.ts` mounts ~28
+> (including `/settings`, `/tasks`, `/weather`, `/fitness`, `/notion`, `/todoist`, `/microsoft`,
+> `/slack`, `/jira`, `/hr`, `/sales`, `/personal-assistant`, `/preferences`, `/push-tokens`).
+> **Absence from this file does not mean an endpoint doesn't exist** — check `src/app.ts` and the
+> matching `*.routes.ts`.
 
 ### `/api/v1/auth`
 | Method | Path | Purpose |
@@ -232,6 +238,23 @@ per-vendor client id/secret and no app-side code exchange**. See [doc/composio-s
 
 Connected toolkits' tools are merged into **both** command centers automatically (`UPPER_SNAKE`
 slugs like `HUBSPOT_CREATE_CONTACT`), scoped to connected toolkits and capped at 40 tools.
+
+### `/api/v1/notifications` (Notification Hub)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/notifications` | Feed for the active mode (`X-Interlink-Mode`). `?includeCalendar=true` for the full screen; the Events widget omits it so calendar items do not duplicate the event list below. `?limit=` (max 100). Returns `{ items, mode, summary, summaryIsFallback }` — `summary` is the once-daily narration, `summaryIsFallback` true when the deterministic sentence was used. |
+| GET | `/api/v1/notifications/unread-count` | Both modes at once — the bell dots one, the mode toggle signals the other. |
+| GET | `/api/v1/notifications/health` | Per-source status for the in-widget staleness warning. |
+| POST | `/api/v1/notifications/:id/resolve` | User handled it here. |
+| POST | `/api/v1/notifications/:id/dismiss` | User does not want it. Never resurrected by a later poll. |
+| POST | `/api/v1/notifications/:id/opened-external` | User tapped through to the source app. Load-bearing: it is the denominator of the success metric (inline actions vs deep-links out). |
+| POST | `/api/v1/notifications/:id/draft-reply` | Gmail items only. Proposes an AI reply; sends and mutates nothing. Returns `{ to, toName, subject, body, isFallback, originalSnippet }`. |
+| POST | `/api/v1/notifications/:id/send-reply` | Body `{ body }` — the exact text the user approved. Sends via Gmail from the thread's own account and resolves the item. Never regenerates the text server-side. |
+
+```bash
+curl -s "$API/api/v1/notifications?includeCalendar=true"   -H "Authorization: Bearer $TOKEN" -H "X-Interlink-Mode: professional" | jq
+```
 
 ### `/api/v1/workers` (internal — QStash callbacks, `Upstash-Signature` verified)
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`.

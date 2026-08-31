@@ -34,7 +34,22 @@ const SLACK_USER_SCOPES = [
   // Open a direct-message channel with a person so we can DM their inbox, not just
   // post to channels. Existing users must reconnect Slack to grant it.
   "im:write",
+  // Notification Hub: read the user's DMs so unanswered messages reach the hub.
+  // `im:read` lists the DM conversations, `im:history` reads them, `search:read` finds
+  // @mentions without scanning every channel. All three were added together on purpose —
+  // each one costs the same forced reconnect, so splitting them across releases would make
+  // users re-authorize three times for one feature.
+  "im:read",
+  "im:history",
+  "search:read",
 ];
+
+/**
+ * Scopes the Notification Hub's Slack adapter needs. A token granted before 2026-08-31 has
+ * none of them, so the hub reports `reauth_required` rather than showing an empty Slack feed
+ * that looks like "no one messaged you".
+ */
+export const SLACK_HUB_SCOPES = ["user:im:read", "user:im:history"] as const;
 
 function clientId(): string {
   const id = process.env.SLACK_CLIENT_ID;
@@ -405,4 +420,106 @@ export function verifySlackSignature(
   const expectedBuf = Buffer.from(expected);
   const providedBuf = Buffer.from(signature);
   return expectedBuf.length === providedBuf.length && timingSafeEqual(expectedBuf, providedBuf);
+}
+
+// ─── Notification Hub reads ───────────────────────────────────────────────────
+
+export interface SlackDmMessage {
+  channel: string;
+  ts: string;
+  user: string | null;
+  text: string;
+}
+
+/** The Slack user id we authenticated as — used to tell "their message" from "mine". */
+export async function getAuthedUserId(userId: string): Promise<string | null> {
+  const integration = await getIntegration(userId, "slack");
+  const authed = integration?.metadata?.authedUserId;
+  return typeof authed === "string" ? authed : null;
+}
+
+/** True when the stored token carries the scopes the hub adapter needs. */
+export async function hasHubScopes(userId: string): Promise<boolean> {
+  const integration = await getIntegration(userId, "slack");
+  if (!integration) return false;
+  return SLACK_HUB_SCOPES.every((scope) => integration.scopes.includes(scope));
+}
+
+/** Open DM conversations for the authed user. Requires `im:read`. */
+export async function listDmConversations(userId: string): Promise<string[]> {
+  const data = await slackApi<{ channels?: { id?: string }[] }>(
+    userId,
+    "conversations.list",
+    { types: "im", limit: "100", exclude_archived: "true" },
+    "GET",
+    "user",
+  );
+  return (data.channels ?? []).map((c) => c.id).filter((id): id is string => Boolean(id));
+}
+
+/** Most recent messages in one conversation, newest first. Requires `im:history`. */
+export async function getConversationHistory(
+  userId: string,
+  channel: string,
+  oldestUnixSeconds: number,
+  limit = 20,
+): Promise<SlackDmMessage[]> {
+  const data = await slackApi<{
+    messages?: { ts?: string; user?: string; text?: string; subtype?: string }[];
+  }>(
+    userId,
+    "conversations.history",
+    { channel, oldest: String(oldestUnixSeconds), limit: String(limit) },
+    "GET",
+    "user",
+  );
+
+  return (data.messages ?? [])
+    // Joins, topic changes and other subtypes are not messages anyone is waiting on.
+    .filter((m) => !m.subtype && m.ts)
+    .map((m) => ({
+      channel,
+      ts: m.ts!,
+      user: m.user ?? null,
+      text: m.text ?? "",
+    }));
+}
+
+/**
+ * Recent @mentions of the authed user. Requires `search:read`.
+ *
+ * Search is used rather than walking every channel's history: one call instead of N, and it
+ * respects whatever the user can actually see. Callers must tolerate this throwing — search is
+ * unavailable on some Slack plans, and a missing mention list is not a reason to lose DMs.
+ */
+export async function searchMentions(
+  userId: string,
+  slackUserId: string,
+  count = 20,
+): Promise<{ ts: string; channelName: string; text: string; permalink: string | null }[]> {
+  const data = await slackApi<{
+    messages?: {
+      matches?: {
+        ts?: string;
+        text?: string;
+        permalink?: string;
+        channel?: { name?: string };
+      }[];
+    };
+  }>(
+    userId,
+    "search.messages",
+    { query: `<@${slackUserId}>`, count: String(count), sort: "timestamp" },
+    "GET",
+    "user",
+  );
+
+  return (data.messages?.matches ?? [])
+    .filter((m) => m.ts)
+    .map((m) => ({
+      ts: m.ts!,
+      channelName: m.channel?.name ?? "channel",
+      text: m.text ?? "",
+      permalink: m.permalink ?? null,
+    }));
 }

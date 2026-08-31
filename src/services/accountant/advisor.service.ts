@@ -523,10 +523,24 @@ export async function seedDemoAdvisor(userId: string): Promise<{ clients: number
     ["kyc_refresh", "KYC refresh — new account", byName("Grace Sullivan"), dueInDays(5)],
     ["adv_disclosure", "Deliver updated Form ADV Part 2", null, dueInDays(-5)],
   ];
+  // Guarded against re-seeding. This was a plain INSERT, so every call to /accountant/seed-demo
+  // added six more rows — one live account reached 30 rows for 4 distinct items, which surfaced
+  // as a wall of identical notifications in the hub (2026-08-31).
+  //
+  // Guarding here rather than adding a unique constraint: a real advisor legitimately can have
+  // two similar compliance items, so the demo seeder is the thing that should be idempotent,
+  // not the table that should forbid it.
   for (const [type, title, clientId, due] of complianceSeed) {
     const res = await query(
       `INSERT INTO advisor_compliance_items (user_id, client_id, type, title, due_date, status)
-       VALUES ($1, $2, $3, $4, $5, 'open')`,
+       SELECT $1, $2, $3, $4, $5, 'open'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM advisor_compliance_items
+           WHERE user_id = $1
+             AND type = $3
+             AND title = $4
+             AND client_id IS NOT DISTINCT FROM $2
+        )`,
       [userId, clientId, type, title, due],
     );
     complianceCount += res.rowCount ?? 0;

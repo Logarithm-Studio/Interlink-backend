@@ -21,6 +21,12 @@ import { processDlqJob } from "../workers/processors/dlq.processor";
 import { runDueAutomations } from "../services/accountant/automationRunner.service";
 import { runDueProfessionalAutomations } from "../services/professional/automationRunner";
 import { runDailyDigestForAllUsers } from "../services/notifications/dailyDigest.service";
+import { runHubRetention } from "../services/notifications/hubRetention.service";
+import {
+  runInternalAdapterForAllUsers,
+  dispatchExternalAdapters,
+} from "../services/notifications/hubScheduler.service";
+import { processHubJob } from "../workers/processors/hub.processor";
 
 const router = Router();
 
@@ -99,6 +105,43 @@ router.post("/professional-automations", (req, res) => {
     res,
     async () => {
       await runDueProfessionalAutomations();
+    },
+    req.body,
+    getJobId(req),
+  );
+});
+
+// Notification Hub — refresh internal signals for every user (QStash Schedule, hourly).
+// Internal signals are pure SQL over tables we already own, so a single tick is safe here.
+// External adapters (Gmail, Slack, GitHub) must fan out one job per user per source instead.
+router.post("/hub-refresh", (req, res) => {
+  void runWorker(
+    res,
+    async () => {
+      // Internal signals inline (pure SQL, no rate limits), then fan out one job per user
+      // per external source so a slow provider never stalls the whole fleet.
+      await runInternalAdapterForAllUsers();
+      await dispatchExternalAdapters();
+    },
+    req.body,
+    getJobId(req),
+  );
+});
+
+// One source, one user — dispatched by /hub-refresh.
+router.post("/hub", (req, res) => {
+  void runWorker(res, processHubJob, req.body, getJobId(req));
+});
+
+// Notification Hub — tiered retention sweep (QStash Schedule, daily).
+// Deletes resolved items at 7d, strips preview text from still-open items at 7d (the row
+// survives as a pointer), and drops anything still open at 30d. State-based, not age-based:
+// an invoice overdue 30 days is exactly what the hub is meant to keep holding.
+router.post("/hub-retention", (req, res) => {
+  void runWorker(
+    res,
+    async () => {
+      await runHubRetention();
     },
     req.body,
     getJobId(req),
