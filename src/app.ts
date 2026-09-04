@@ -73,9 +73,19 @@ function configureMiddleware(app: Express) {
 }
 
 function setupRoutes(app: Express) {
-  // Health check
+  // Health check.
+  //
+  // `commit` is here because "is my fix actually deployed?" was previously unanswerable from
+  // outside: the auth middleware returns 401 for EVERY path under /api/v1 — including paths that
+  // do not exist — so probing for a new route told you nothing, and a fix that had never shipped
+  // looked identical to one that had. That ambiguity cost a full debugging cycle. Vercel injects
+  // VERCEL_GIT_COMMIT_SHA at build time; compare it against `git rev-parse HEAD`.
   app.get("/health", (_req: Request, res: Response) => {
-    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+    res.status(200).json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local",
+    });
   });
 
   // API v1 routes
