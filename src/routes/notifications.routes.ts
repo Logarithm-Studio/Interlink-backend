@@ -34,6 +34,7 @@ import {
 } from "../services/notifications/hub.service";
 import { getDailySummary } from "../services/notifications/hubSummary.service";
 import { draftReply, sendReply } from "../services/notifications/hubReply.service";
+import { triggerUserHubRefresh } from "../services/notifications/hubScheduler.service";
 
 const router = Router();
 
@@ -108,6 +109,22 @@ router.get("/health", async (req: Request, res: Response, next: NextFunction) =>
     const user = (req as AuthenticatedRequest).user;
     const sources = await getSourceHealth(user.id);
     res.json({ success: true, data: { sources } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── POST /api/v1/notifications/refresh ──────────────────────────────
+// Actually go and LOOK. Every other endpoint here only reads rows the hourly tick already wrote,
+// so before this existed nothing the user could do would make the hub check their accounts: a
+// freshly connected source showed an empty feed for up to an hour and pull-to-refresh just
+// redisplayed the same stale list. External sources are enqueued (they are slow, rate-limited
+// API calls); local SQL adapters run inline, so the response already reflects them.
+router.post("/refresh", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const triggered = await triggerUserHubRefresh(user.id);
+    res.json({ success: true, data: { triggered } });
   } catch (err) {
     next(err);
   }

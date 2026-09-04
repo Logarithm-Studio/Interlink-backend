@@ -87,6 +87,146 @@ export async function runInternalAdapterForAllUsers(): Promise<number> {
 }
 
 /**
+ * Poll one user's sources on demand, for pull-to-refresh.
+ *
+ * The feed endpoint only ever *read* stored rows, so nothing the user could do made the hub go
+ * and look. Items appeared solely on the hourly tick, which meant a fresh connection showed an
+ * empty hub for up to an hour and pull-to-refresh redisplayed the same stale list.
+ *
+ * Health rows are deliberately NOT cleared here: a manual refresh is not evidence the credential
+ * was fixed, and blanking a genuine "Reconnect" banner on every pull would hide the one thing the
+ * user needs to act on. Only an actual reconnect clears it.
+ *
+ * Bucketed to 5 minutes rather than 1: this is user-triggered and QStash bills per message, so
+ * repeated pulls collapse instead of each buying a poll.
+ */
+export async function triggerUserHubRefresh(userId: string): Promise<string[]> {
+  const holders = await credentialHoldersBySource();
+  const bucket = new Date(Math.floor(Date.now() / 300_000) * 300_000)
+    .toISOString()
+    .slice(0, 16);
+
+  const triggered: string[] = [];
+  for (const source of EXTERNAL_SOURCES) {
+    if (!holders[source].includes(userId)) continue;
+    try {
+      await enqueueJob(
+        "hub",
+        {
+          jobType: JobType.HUB_SOURCE_REFRESH,
+          idempotencyKey: `hub:manual:${source}:${userId}:${bucket}`,
+          userId,
+          payload: { source },
+        },
+        { jobId: `hub-manual-${source}-${userId}-${bucket}` },
+      );
+      triggered.push(source);
+    } catch (err) {
+      logger.warn("[hub:manual] enqueue failed", {
+        userId,
+        source,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Local adapters are pure SQL over our own tables, so they can run in this request.
+  for (const [label, run] of [
+    ["internal", runInternalAdapter],
+    ["calendar", runCalendarAdapter],
+  ] as const) {
+    try {
+      await run(userId);
+      triggered.push(label);
+    } catch (err) {
+      logger.warn("[hub:manual] local adapter failed", {
+        userId,
+        adapter: label,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  logger.info("[hub:manual] refresh triggered", { userId, triggered });
+  return triggered;
+}
+
+/**
+ * Refresh one user's hub right after they (re)connect an account.
+ *
+ * WHY THIS EXISTS. `notification_source_health` is written *only* by the adapters. Reconnecting
+ * cleared `google_accounts.reauth_required` / `connected_integrations.status` but left the stale
+ * `reauth_required` health row untouched, so the "Reconnect" banner kept showing for an account
+ * that was already fixed, and no items arrived until the next hourly tick. Users reasonably read
+ * that as "reconnecting did nothing".
+ *
+ * The stale rows are DELETED rather than set to `ok`: we do not yet know the source is healthy,
+ * and claiming so would be a second lie. Absent means "no known problem, currently checking",
+ * which is the truth until the adapter writes a real verdict moments later.
+ *
+ * The job id deliberately does NOT reuse the hourly bucket. That bucket exists to collapse a
+ * double-fired schedule, but reusing it here would let an already-run hourly job swallow the
+ * refresh the user just asked for. A minute bucket still guards against a reconnect loop
+ * hammering the queue.
+ */
+export async function refreshHubAfterReconnect(
+  userId: string,
+  sources: readonly string[],
+): Promise<void> {
+  const external = sources.filter((s): s is ExternalSource =>
+    (EXTERNAL_SOURCES as readonly string[]).includes(s),
+  );
+
+  try {
+    await query(
+      `DELETE FROM notification_source_health WHERE user_id = $1 AND source = ANY($2)`,
+      [userId, [...sources]],
+    );
+  } catch (err) {
+    logger.warn("[hub:reconnect] could not clear stale source health", {
+      userId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const minute = new Date().toISOString().slice(0, 16); // yyyy-mm-ddThh:mm
+  for (const source of external) {
+    try {
+      await enqueueJob(
+        "hub",
+        {
+          jobType: JobType.HUB_SOURCE_REFRESH,
+          idempotencyKey: `hub:reconnect:${source}:${userId}:${minute}`,
+          userId,
+          payload: { source },
+        },
+        { jobId: `hub-reconnect-${source}-${userId}-${minute}` },
+      );
+    } catch (err) {
+      logger.warn("[hub:reconnect] enqueue failed — hourly tick will catch it", {
+        userId,
+        source,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Calendar is pure SQL over our own tables, so it can run right now rather than waiting.
+  if (sources.includes("calendar")) {
+    try {
+      await runCalendarAdapter(userId);
+    } catch (err) {
+      logger.warn("[hub:reconnect] inline calendar refresh failed", {
+        userId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  logger.info("[hub:reconnect] refresh triggered", { userId, sources, external });
+}
+
+/**
  * Which users actually hold a credential for each external source.
  *
  * The fan-out used to be `every active user × every external source`, so a source was polled for

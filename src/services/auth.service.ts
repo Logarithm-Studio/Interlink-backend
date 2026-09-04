@@ -2,6 +2,7 @@ import { query } from "../config/db";
 import { ConnectedAccount, GoogleAccountRole } from "../types";
 import { google } from "googleapis";
 import { encrypt, decrypt } from "../security/crypto";
+import { logger } from "../observability/logger";
 
 type Provider = "google" | "microsoft";
 
@@ -456,6 +457,22 @@ export async function upsertGoogleAccountOnConnect(
       encAccess.tag,
       encAccess.kid,
     );
+  }
+
+  // A reconnect fixes the credential but leaves the hub's stale `reauth_required` health row
+  // behind, so the "Reconnect" banner would keep showing an account the user just fixed and no
+  // items would arrive until the next hourly tick. Clear it and re-poll now. Never let this
+  // break the connect itself — the account IS connected by this point.
+  try {
+    const { refreshHubAfterReconnect } = await import(
+      "./notifications/hubScheduler.service"
+    );
+    await refreshHubAfterReconnect(userId, ["gmail", "calendar"]);
+  } catch (err) {
+    logger.warn("[auth] hub refresh after Google connect failed", {
+      userId,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 
   return { accountId, isPrimary, role };

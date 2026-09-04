@@ -5,6 +5,7 @@
 
 import { query } from "../../config/db";
 import { encrypt, decrypt } from "../../security/crypto";
+import { logger } from "../../observability/logger";
 
 export type IntegrationProvider =
   | "todoist"
@@ -69,6 +70,14 @@ export async function upsertIntegration(
   const accessPacked = encryptToken(tokens.accessToken);
   const refreshPacked = tokens.refreshToken ? encryptToken(tokens.refreshToken) : null;
 
+  // Snapshot the prior row so we can tell a genuine (re)connect from a routine token refresh.
+  // This function sits on both paths, and only the first should kick the hub.
+  const prior = await query<{ status: string; scopes: string[] | null }>(
+    `SELECT status, scopes FROM connected_integrations WHERE user_id = $1 AND provider = $2`,
+    [userId, provider],
+  );
+  const before = prior.rows[0];
+
   await query(
     `INSERT INTO connected_integrations
        (user_id, provider, access_token_packed, refresh_token_packed,
@@ -93,6 +102,34 @@ export async function upsertIntegration(
       JSON.stringify(metadata),
     ],
   );
+
+  // A reconnect fixes the credential but leaves the hub's stale health row behind, so the
+  // "Reconnect" banner keeps showing a source the user just fixed and no items arrive until the
+  // next hourly tick. Fire only on a real (re)connect: a brand new row, a row revived from a
+  // non-active status, or the same account re-authorised with different scopes. That last case is
+  // how Slack presents — its status stays `active` while the added scopes are what actually
+  // changed. A routine token refresh matches none of these and is correctly ignored.
+  const nextScopes = tokens.scopes ?? [];
+  const scopesChanged =
+    !before?.scopes ||
+    before.scopes.length !== nextScopes.length ||
+    [...before.scopes].sort().join(",") !== [...nextScopes].sort().join(",");
+  const isReconnect = !before || before.status !== "active" || scopesChanged;
+
+  if (isReconnect) {
+    try {
+      const { refreshHubAfterReconnect } = await import(
+        "../notifications/hubScheduler.service"
+      );
+      await refreshHubAfterReconnect(userId, [provider]);
+    } catch (err) {
+      logger.warn("[integrations] hub refresh after connect failed", {
+        userId,
+        provider,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 export async function getIntegration(
