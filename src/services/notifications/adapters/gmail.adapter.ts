@@ -62,16 +62,19 @@ export async function runGmailAdapter(userId: string): Promise<number> {
 
   let written = 0;
 
+  // Source health is ONE row per source (UNIQUE user_id, source) but a user can have several
+  // Google accounts, so writing it inside this loop made the last account processed win. A user
+  // with one stale unused mailbox saw a permanent "Reconnect" banner while their real inbox was
+  // syncing perfectly. Tally the outcomes here and decide once, after every account is done.
+  let polledOk = 0;
+  const lapsed: string[] = [];
+  let transientFailure = false;
+
   for (const account of accounts) {
-    // A Google account needing re-auth cannot be polled. Say so in the widget rather than
-    // letting the feed quietly go stale while the user believes they are caught up.
+    // A Google account needing re-auth cannot be polled — but it does not by itself mean mail
+    // has stopped, so it is recorded and judged against the other accounts below.
     if (account.reauthRequired) {
-      await setSourceHealth(
-        userId,
-        "gmail",
-        "reauth_required",
-        `Reconnect ${account.email ?? "your Google account"} to keep mail flowing.`,
-      );
+      lapsed.push(account.email ?? "your Google account");
       continue;
     }
 
@@ -131,8 +134,7 @@ export async function runGmailAdapter(userId: string): Promise<number> {
       }
 
       await resolveDisappeared(userId, account.id, seen);
-      await setCursor(userId, "gmail", null, true);
-      await setSourceHealth(userId, "gmail", "ok");
+      polledOk += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn("[hub:gmail] poll failed", {
@@ -148,16 +150,31 @@ export async function runGmailAdapter(userId: string): Promise<number> {
       const needsReauth =
         /invalid_grant|invalid_token|unauthorized|401|403/i.test(message);
 
-      await setSourceHealth(
-        userId,
-        "gmail",
-        needsReauth ? "reauth_required" : "error",
-        needsReauth
-          ? `Reconnect ${account.email ?? "your Google account"} to keep mail flowing.`
-          : "Gmail could not be reached on the last sync.",
-      );
-      await setCursor(userId, "gmail", null, false);
+      if (needsReauth) lapsed.push(account.email ?? "your Google account");
+      else transientFailure = true;
     }
+  }
+
+  // One verdict for the whole source.
+  //
+  // If ANY mailbox synced, mail is flowing and the banner would be a lie — that is the false
+  // alarm this replaces. A lapsed secondary account is still worth fixing, but Settings >
+  // Connected accounts is where it belongs; the hub banner means "the hub has stopped seeing
+  // your things", and that is simply not true while another inbox is syncing.
+  if (polledOk > 0) {
+    await setCursor(userId, "gmail", null, true);
+    await setSourceHealth(userId, "gmail", "ok");
+  } else if (lapsed.length > 0) {
+    await setCursor(userId, "gmail", null, false);
+    await setSourceHealth(
+      userId,
+      "gmail",
+      "reauth_required",
+      `Reconnect ${lapsed.join(", ")} to keep mail flowing.`,
+    );
+  } else if (transientFailure) {
+    await setCursor(userId, "gmail", null, false);
+    await setSourceHealth(userId, "gmail", "error", "Gmail could not be reached on the last sync.");
   }
 
   return written;

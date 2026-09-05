@@ -91,7 +91,10 @@ async function overdueInvoices(userId: string): Promise<number> {
       preview: `Invoice ${row.invoice_number}, due ${formatDate(row.due_date)}.`,
       actor: row.client_name,
       weight: HUB_WEIGHTS.invoiceOverdue,
-      externalRef: { invoiceId: row.id, route: "/(work)/invoice/[id]" },
+      externalRef: { invoiceId: row.id, route: `/(work)/invoice/${row.id}` },
+      // NOT the literal "/(work)/invoice/[id]": that template string was stored verbatim,
+      // so tapping the item pushed `[id]` as the id and the screen queried Postgres with
+      // it — "invalid input syntax for type uuid". Substitute here, where the id is known.
       occurredAt: new Date(row.due_date),
     });
   }
