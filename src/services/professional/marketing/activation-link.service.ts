@@ -32,8 +32,9 @@ export async function getMarketingActivationTrackedLink(userId: string, activati
 /** Count each redirect request in a UTC daily bucket without storing IPs, referrers, or user agents. */
 export async function recordMarketingActivationRedirect(token: string): Promise<string | null> {
   return withTransaction(async (client) => {
+    // KEY SHARE only guards against a concurrent delete; clicks must not serialize on the row or block owner edits.
     const result = await client.query<{ id: string; user_id: string; external_url: string | null }>(
-      `SELECT id,user_id,external_url FROM sales_marketing_activations WHERE public_link_token=$1 FOR UPDATE`, [token],
+      `SELECT id,user_id,external_url FROM sales_marketing_activations WHERE public_link_token=$1 FOR KEY SHARE`, [token],
     );
     const row = result.rows[0];
     const target = safeActivationRedirectTarget(row?.external_url);

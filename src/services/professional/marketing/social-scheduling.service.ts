@@ -10,7 +10,7 @@ import {
   assertMarketingContentPublishable, getMarketingPublishTargets, publishReservedMarketingContent,
   type MarketingPublishProvider,
 } from "./social-publishing.service";
-import { canUnscheduleSocialPublish, isSocialPublishWithinQueueWindow, socialPublishScheduleJobId } from "./social-scheduling.model";
+import { canUnscheduleSocialPublish, isSocialPublishDue, isSocialPublishWithinQueueWindow, socialPublishScheduleJobId } from "./social-scheduling.model";
 
 const CONTENT_COLUMNS = "id,campaign_id,title,channel,body,asset_url,status,scheduled_at,published_at,provider,provider_item_id,provider_target_id,provider_target_name,created_at,updated_at";
 const MINIMUM_SCHEDULE_LEAD_MS = 15 * 60_000;
@@ -277,7 +277,17 @@ async function claimScheduledPublish(userId: string, scheduleId: string, generat
     );
     if (!selected.rows[0]) return null;
     const schedule = mapSchedule(selected.rows[0] as Record<string, unknown>);
-    if (schedule.scheduledAt.getTime() > Date.now()) return null;
+    if (!isSocialPublishDue(schedule.scheduledAt)) {
+      // An early delivery must not strand the row in 'queued' — nothing re-dispatches that state.
+      // Bump the generation so the hourly re-enqueue gets a fresh QStash deduplication ID.
+      await client.query(
+        `UPDATE sales_marketing_social_publish_schedules
+            SET status='pending',generation=generation+1,dispatch_claimed_at=NULL,updated_at=now()
+          WHERE id=$1 AND user_id=$2 AND generation=$3 AND status IN ('dispatching','queued')`,
+        [scheduleId, userId, generation],
+      );
+      return null;
+    }
     if (item.status !== "planned" || !item.scheduledAt || item.scheduledAt.getTime() !== schedule.scheduledAt.getTime() ||
       item.provider !== schedule.provider || item.providerTargetId !== schedule.targetId) {
       await client.query(

@@ -931,10 +931,15 @@ export async function captureInboundLead(formKey: string, data: {
       const activation = await client.query<{ id: string; campaign_id: string | null }>(
         `SELECT id,campaign_id FROM sales_marketing_activations WHERE id=$1 AND user_id=$2`, [data.activationId, userId],
       );
-      if (!activation.rows[0] || !activationCampaignMatches(data.campaignId, activation.rows[0].campaign_id)) return false;
-      activationId = activation.rows[0].id;
-      campaignId = activation.rows[0].campaign_id;
-    } else if (data.campaignId) {
+      // A stale or mismatched activation link still carries a real inquiry: keep the lead, drop the unverifiable attribution.
+      if (activation.rows[0] && activationCampaignMatches(data.campaignId, activation.rows[0].campaign_id)) {
+        activationId = activation.rows[0].id;
+        campaignId = activation.rows[0].campaign_id;
+      } else {
+        delete marketingAttribution.activationId;
+      }
+    }
+    if (!activationId && data.campaignId) {
       const campaign = await client.query(`SELECT id FROM sales_marketing_campaigns WHERE id=$1 AND user_id=$2`, [data.campaignId, userId]);
       if (campaign.rows[0]) campaignId = data.campaignId;
     }

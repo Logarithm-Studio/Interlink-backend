@@ -116,6 +116,10 @@ router.post("/inbound/:formKey", marketingInboundFormRateLimit, async (req: Requ
 
 // ─── Everything else requires auth ─────────────────────────────────────────────
 router.use(authMiddleware as never);
+// Every :id here is a uuid column; reject malformed ids before Postgres turns them into a 500.
+router.param("id", (_req, _res, next, id: string) => {
+  next(z.string().uuid().safeParse(id).success ? undefined : new BadRequestError("Choose a valid item."));
+});
 
 function uid(req: Request): string {
   return (req as AuthenticatedRequest).user.id;

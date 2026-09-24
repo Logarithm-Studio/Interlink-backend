@@ -43,6 +43,10 @@ router.get("/activation-visit/:token", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 router.use(authMiddleware as never);
+// Every :id here is a uuid column; reject malformed ids before Postgres turns them into a 500.
+router.param("id", (_req, _res, next, id: string) => {
+  next(z.string().uuid().safeParse(id).success ? undefined : new BadRequestError("Choose a valid item."));
+});
 const userId = (req: Request) => (req as unknown as AuthenticatedRequest).user.id;
 const Channels = z.enum(["email", "instagram", "facebook", "linkedin", "youtube", "blog", "landing_page", "search", "ad", "influencer", "event", "other"]);
 const dateTime = z.string().datetime();

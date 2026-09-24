@@ -12,3 +12,10 @@ export function socialPublishScheduleJobId(scheduleId: string, generation: numbe
 export function canUnscheduleSocialPublish(status: string): boolean {
   return status === "pending" || status === "dispatching" || status === "queued";
 }
+
+/** QStash and the worker run on different clocks; a delivery this close to the slot is on time. */
+export const SOCIAL_PUBLISH_CLOCK_SKEW_MS = 2 * 60_000;
+
+export function isSocialPublishDue(scheduledAt: Date, now = new Date()): boolean {
+  return scheduledAt.getTime() <= now.getTime() + SOCIAL_PUBLISH_CLOCK_SKEW_MS;
+}
