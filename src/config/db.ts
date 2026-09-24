@@ -1,4 +1,4 @@
-import { Pool, QueryResult, QueryResultRow } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 
 let pool: Pool;
 
@@ -41,6 +41,26 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   }
 
   return result;
+}
+
+/** Run related writes on one connection so callers can keep CRM updates atomic. */
+export async function withTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Preserve the original operation error; the pool will discard broken clients.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

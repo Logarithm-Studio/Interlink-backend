@@ -40,6 +40,9 @@ export interface GeminiResult {
   functionCall?: { name: string; args: Record<string, unknown> };
   model: string;
   latencyMs: number;
+  groundingSources?: { uri: string; title: string }[];
+  webSearchQueries?: string[];
+  searchSuggestionHtml?: string;
 }
 
 // ─── Config ─────────────────────────────────────────────────────────────────
@@ -100,6 +103,8 @@ export async function geminiGenerateContent(args: {
   /** "reasoning" → the stronger brain model (agentic/multi-step); "fast" → cheap reads. */
   tier?: "reasoning" | "fast";
   tools?: GeminiToolFunction[];
+  /** Ground a user-requested research answer in live Google Search results. */
+  googleSearch?: boolean;
   /**
    * Function-calling mode when `tools` are present. "AUTO" (default) lets the model
    * choose between prose and a tool; "ANY" forces it to return a function call —
@@ -164,6 +169,8 @@ export async function geminiGenerateContent(args: {
     body.tool_config = {
       function_calling_config: { mode: args.toolMode ?? "AUTO" },
     };
+  } else if (args.googleSearch) {
+    body.tools = [{ google_search: {} }];
   }
 
   const controller = new AbortController();
@@ -194,12 +201,23 @@ export async function geminiGenerateContent(args: {
           functionCall?: { name?: string; args?: Record<string, unknown> };
         }[];
       };
+      groundingMetadata?: {
+        webSearchQueries?: string[];
+        searchEntryPoint?: { renderedContent?: string };
+        groundingChunks?: { web?: { uri?: string; title?: string } }[];
+      };
     }[];
     modelVersion?: string;
   };
 
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   const raw = parts.map((p) => p.text ?? "").join("");
+  const grounding = data.candidates?.[0]?.groundingMetadata;
+  const groundingSources = (grounding?.groundingChunks ?? [])
+    .map((chunk) => chunk.web)
+    .filter((web): web is { uri?: string; title?: string } => Boolean(web?.uri && web.uri.startsWith("https://")))
+    .map((web) => ({ uri: web.uri!, title: web.title?.trim() || new URL(web.uri!).hostname }))
+    .filter((source, index, all) => all.findIndex((candidate) => candidate.uri === source.uri) === index);
 
   let functionCall: GeminiResult["functionCall"];
   for (const p of parts) {
@@ -214,5 +232,8 @@ export async function geminiGenerateContent(args: {
     functionCall,
     model: data.modelVersion ?? model,
     latencyMs: Date.now() - start,
+    groundingSources,
+    webSearchQueries: grounding?.webSearchQueries ?? [],
+    searchSuggestionHtml: grounding?.searchEntryPoint?.renderedContent,
   };
 }

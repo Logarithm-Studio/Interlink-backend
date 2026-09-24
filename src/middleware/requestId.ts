@@ -35,6 +35,10 @@ declare global {
   }
 }
 
+export function redactSensitiveRequestPath(path: string): string {
+  return path.replace(/^(\/api\/v1\/marketing\/activation-visit\/)[A-Za-z0-9_-]+$/, "$1:token");
+}
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 /**
@@ -50,10 +54,13 @@ export function requestIdMiddleware(
     (req.headers["x-request-id"] as string | undefined)?.trim() || randomUUID();
 
   req.requestId = requestId;
+  // Activation visit tokens are public link capabilities. Keep them out of the
+  // request log context so routine access logs cannot be used to replay links.
+  const safePath = redactSensitiveRequestPath(req.path);
   req.log = logger.child({
     requestId,
     method: req.method,
-    path: req.path,
+    path: safePath,
   });
 
   // Propagate requestId to the response so clients/proxies can correlate.

@@ -136,6 +136,15 @@ export const COMPOSIO_CATALOG: ToolkitMeta[] = [
   { slug: "greenhouse", name: "Greenhouse", description: "Recruiting pipeline and candidates", audience: "professional" },
   { slug: "docusign", name: "DocuSign", description: "Send and track e-signature envelopes", audience: "professional" },
   { slug: "mailchimp", name: "Mailchimp", description: "Email campaigns and audience lists", audience: "professional" },
+  { slug: "kit", name: "Kit", description: "Creator newsletters, broadcasts, and subscribers", audience: "professional" },
+  { slug: "google_analytics", name: "Google Analytics", description: "Traffic, acquisition, and conversion reports", audience: "professional" },
+  { slug: "google_search_console", name: "Google Search Console", description: "Search queries, rankings, and indexing health", audience: "professional" },
+  { slug: "canva", name: "Canva", description: "Brand assets and campaign design files", audience: "professional" },
+  { slug: "facebook", name: "Facebook Pages", description: "Page posts, inbox, and post insights", audience: "professional" },
+  { slug: "instagram", name: "Instagram", description: "Business and Creator content and engagement", audience: "professional" },
+  { slug: "linkedin", name: "LinkedIn", description: "Professional page and profile posts, audience, and engagement", audience: "professional" },
+  { slug: "youtube", name: "YouTube", description: "Video publishing, channel performance, and audience", audience: "professional" },
+  { slug: "googleads", name: "Google Ads", description: "Read campaign performance; requires server developer-token setup", audience: "professional" },
 
   // Personal — the PRD catalog rows still marked "not built".
   { slug: "canvas", name: "Canvas", description: "Courses, assignments, grades, people & enrollments (LMS)", audience: "personal" },
@@ -192,6 +201,34 @@ export async function listConnections(userId: string): Promise<ComposioConnectio
   } catch (err) {
     logger.warn("[composio] listConnections failed", { err: String(err) });
     return [];
+  }
+}
+
+/** Authenticated provider API requests through Composio, without exposing OAuth tokens. */
+export async function executeComposioProxy(
+  userId: string,
+  toolkitSlug: string,
+  endpoint: string,
+  method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
+  body?: unknown,
+  parameters?: Array<{ in: "query" | "header"; name: string; value: string | number }>,
+): Promise<{ status: number; data: unknown }> {
+  const composio = await getClient();
+  if (!composio) throw new AppError("Connected app actions are unavailable because Composio is not configured.", 503);
+  const connection = (await listConnections(userId)).find(
+    (item) => item.toolkitSlug === toolkitSlug && item.status === "active" && item.connectedAccountId,
+  );
+  if (!connection?.connectedAccountId) {
+    throw new AppError(`${toolkitName(toolkitSlug)} is not connected. Connect it in Settings first.`, 409);
+  }
+  try {
+    const response = await composio.tools.proxyExecute({
+      endpoint, method, body, parameters, connectedAccountId: connection.connectedAccountId,
+    });
+    return { status: response.status, data: response.data };
+  } catch (error) {
+    logger.warn("[composio] provider proxy request failed", { toolkitSlug, endpoint, method, err: String(error) });
+    throw new AppError(`${toolkitName(toolkitSlug)} could not complete that request. Check the connection and provider permissions.`, 502);
   }
 }
 
@@ -270,6 +307,8 @@ async function getOrCreateAuthConfig(
     const found = existing.items?.find(
       (c) => c.toolkit?.slug?.toLowerCase() === toolkitSlug,
     );
+    // Composio redacts secrets such as Google Ads developer_token when listing auth configs,
+    // so do not inspect its value here. Reuse the toolkit config to avoid creating one per connect.
     if (found?.id) return found.id;
   } catch (err) {
     logger.warn("[composio] authConfigs.list failed; will try to create one", {
@@ -282,6 +321,9 @@ async function getOrCreateAuthConfig(
     // Most toolkits use Composio's managed OAuth app; BYOC toolkits (Canvas)
     // authenticate against our own registered app, so we pass our client credentials.
     const byoc = BYOC_CREDENTIALS[toolkitSlug]?.() ?? null;
+    const adsCredentials = toolkitSlug === "googleads"
+      ? { developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN! }
+      : undefined;
     const createOptions = byoc
       ? {
           type: "use_custom_auth",
@@ -289,7 +331,11 @@ async function getOrCreateAuthConfig(
           name: `Interlink ${toolkitName(toolkitSlug)}`,
           credentials: byoc.credentials,
         }
-      : { type: "use_composio_managed_auth", name: `Interlink ${toolkitName(toolkitSlug)}` };
+      : {
+          type: "use_composio_managed_auth",
+          name: `Interlink ${toolkitName(toolkitSlug)}`,
+          ...(adsCredentials ? { credentials: adsCredentials } : {}),
+        };
     // The SDK's create() options are a discriminated union; cast so the BYOC variant
     // (custom-auth) type-checks against either SDK minor version.
     const created = await composio.authConfigs.create(toolkitSlug, createOptions as never);
@@ -359,6 +405,9 @@ export async function connectToolkit(
   const composio = await getClient();
   if (!composio) throw new Error("Composio is not configured. Add COMPOSIO_API_KEY on the server.");
   if (!isKnownToolkit(toolkitSlug)) throw new Error(`Unknown toolkit "${toolkitSlug}".`);
+  if (toolkitSlug === "googleads" && !process.env.GOOGLE_ADS_DEVELOPER_TOKEN) {
+    throw new AppError("Google Ads requires a developer token configured by the Interlink server before it can connect.", 503);
+  }
 
   const authConfigId = await getOrCreateAuthConfig(composio, toolkitSlug);
 
@@ -576,6 +625,20 @@ const TOOLKIT_PRIORITY_TOOLS: Record<string, string[]> = {
     "CANVAS_CREATE_AN_ASSIGNMENT",
     "CANVAS_ENROLL_A_USER",
   ],
+  google_analytics: ["GOOGLE_ANALYTICS_RUN_REPORT", "GOOGLE_ANALYTICS_RUN_REALTIME_REPORT", "GOOGLE_ANALYTICS_LIST_ACCOUNT_SUMMARIES", "GOOGLE_ANALYTICS_LIST_PROPERTIES_FILTERED"],
+  google_search_console: ["GOOGLE_SEARCH_CONSOLE_SEARCH_ANALYTICS_QUERY", "GOOGLE_SEARCH_CONSOLE_LIST_SITES", "GOOGLE_SEARCH_CONSOLE_INSPECT_URL"],
+  googleads: ["GOOGLEADS_SEARCH_STREAM_GAQL", "GOOGLEADS_GET_CAMPAIGN_BY_NAME", "GOOGLEADS_GET_CAMPAIGN_BY_ID", "GOOGLEADS_LIST_ACCESSIBLE_CUSTOMERS"],
+  facebook: ["FACEBOOK_LIST_MANAGED_PAGES", "FACEBOOK_GET_PAGE_POSTS", "FACEBOOK_GET_PAGE_INSIGHTS", "FACEBOOK_GET_POST_INSIGHTS", "FACEBOOK_CREATE_POST"],
+  instagram: ["INSTAGRAM_GET_USER_INSIGHTS", "INSTAGRAM_GET_IG_USER_MEDIA", "INSTAGRAM_GET_IG_MEDIA_INSIGHTS", "INSTAGRAM_POST_IG_USER_MEDIA", "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH"],
+  linkedin: ["LINKEDIN_GET_MY_INFO", "LINKEDIN_GET_ORG_PAGE_STATS", "LINKEDIN_GET_POST_CONTENT", "LINKEDIN_CREATE_LINKED_IN_POST"],
+  youtube: ["YOUTUBE_GET_CHANNEL_STATISTICS", "YOUTUBE_LIST_CHANNEL_VIDEOS", "YOUTUBE_GET_VIDEO_DETAILS_BATCH", "YOUTUBE_UPLOAD_VIDEO"],
+  canva: ["CANVA_LIST_USER_DESIGNS", "CANVA_ACCESS_USER_SPECIFIC_BRAND_TEMPLATES_LIST", "CANVA_POST_DESIGNS", "CANVA_POST_EXPORTS", "CANVA_GET_DESIGNS_DESIGNID_EXPORTS"],
+  mailchimp: ["MAILCHIMP_GET_LISTS_INFO", "MAILCHIMP_ADD_CAMPAIGN", "MAILCHIMP_SET_CAMPAIGN_CONTENT", "MAILCHIMP_SEND_CAMPAIGN", "MAILCHIMP_GET_CAMPAIGN_REPORT"],
+  kit: ["KIT_LIST_BROADCASTS", "KIT_GET_BROADCAST_STATS", "KIT_CREATE_BROADCAST", "KIT_GET_GROWTH_STATS", "KIT_LIST_SUBSCRIBERS"],
+};
+
+const TOOLKIT_PRIORITY_BY_PERSONA: Record<string, string[]> = {
+  sales: ["mailchimp", "kit", "google_analytics", "google_search_console", "facebook", "instagram", "linkedin", "youtube", "canva", "googleads", "hubspot", "salesforce"],
 };
 
 /**
@@ -600,7 +663,7 @@ function priorityRank(priority: string[], slug: string | undefined): number {
 const toolCache = new Map<string, { at: number; tools: GeminiToolFunction[] }>();
 
 export function invalidateToolCache(userId: string): void {
-  toolCache.delete(userId);
+  for (const key of toolCache.keys()) if (key.startsWith(`${userId}:`)) toolCache.delete(key);
 }
 
 /**
@@ -608,20 +671,27 @@ export function invalidateToolCache(userId: string): void {
  * Returns [] when Composio is off or nothing is connected — so callers can always
  * spread it unconditionally.
  */
-export async function getComposioToolsForUser(userId: string): Promise<GeminiToolFunction[]> {
+export async function getComposioToolsForUser(userId: string, persona = "finance"): Promise<GeminiToolFunction[]> {
   const composio = await getClient();
   if (!composio) return [];
 
-  const cached = toolCache.get(userId);
+  const cacheKey = `${userId}:${persona}`;
+  const cached = toolCache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.tools;
 
-  const slugs = await activeToolkitSlugs(userId);
+  const preferred = TOOLKIT_PRIORITY_BY_PERSONA[persona] ?? [];
+  const connectedSlugs = await activeToolkitSlugs(userId);
+  const slugs = [...connectedSlugs].sort((a, b) => {
+    const aRank = preferred.indexOf(a); const bRank = preferred.indexOf(b);
+    return (aRank < 0 ? preferred.length : aRank) - (bRank < 0 ? preferred.length : bRank);
+  });
   if (slugs.length === 0) {
-    toolCache.set(userId, { at: Date.now(), tools: [] });
+    toolCache.set(cacheKey, { at: Date.now(), tools: [] });
     return [];
   }
 
   const tools: GeminiToolFunction[] = [];
+  const perToolkitLimit = persona === "sales" ? 4 : MAX_TOOLS_PER_TOOLKIT;
   try {
     for (const slug of slugs) {
       if (tools.length >= MAX_COMPOSIO_TOOLS) break;
@@ -640,7 +710,7 @@ export async function getComposioToolsForUser(userId: string): Promise<GeminiToo
 
       let perToolkit = 0;
       for (const tool of ordered) {
-        if (tools.length >= MAX_COMPOSIO_TOOLS || perToolkit >= MAX_TOOLS_PER_TOOLKIT) break;
+        if (tools.length >= MAX_COMPOSIO_TOOLS || perToolkit >= perToolkitLimit) break;
         if (!tool.slug || !isValidGeminiToolName(tool.slug)) continue;
 
         const parameters = toGeminiSchema(tool.inputParameters) ?? {
@@ -664,8 +734,8 @@ export async function getComposioToolsForUser(userId: string): Promise<GeminiToo
     return cached?.tools ?? [];
   }
 
-  toolCache.set(userId, { at: Date.now(), tools });
-  logger.info("[composio] loaded tools", { userId, toolkits: slugs.length, tools: tools.length });
+  toolCache.set(cacheKey, { at: Date.now(), tools });
+  logger.info("[composio] loaded tools", { userId, persona, toolkits: slugs.length, tools: tools.length });
   return tools;
 }
 

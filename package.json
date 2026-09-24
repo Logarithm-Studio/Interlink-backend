@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "worker:dev": "tsx watch src/worker.ts",
+    "marketing:schedules": "tsx scripts/register-marketing-schedules.ts",
     "build": "tsc",
-    "test": "tsx --test src/services/professional/spreadsheet.service.test.ts src/services/notifications/hubSummary.service.test.ts src/services/notifications/adapters/todoist.adapter.test.ts",
+      "test": "tsx --test src/services/professional/spreadsheet.service.test.ts src/services/professional/marketing/campaign-state.service.test.ts src/services/professional/marketing/content-state.service.test.ts src/services/professional/marketing/hubspot-sync.service.test.ts src/services/professional/marketing/hubspot-monitor.model.test.ts src/services/professional/marketing/analytics.service.test.ts src/services/professional/marketing/social-publishing.service.test.ts src/services/professional/marketing/post-monitoring.model.test.ts src/services/professional/marketing/activation-outcomes.model.test.ts src/services/professional/marketing/leads.service.test.ts src/services/professional/marketing/activation.model.test.ts src/services/professional/marketing/analytics-schedule.model.test.ts src/services/professional/marketing/turnstile.service.test.ts src/services/professional/marketing/campaign-goals.model.test.ts src/services/ai/geminiClient.test.ts src/middleware/client-ip.test.ts src/middleware/rateLimit.test.ts src/services/notifications/hubSummary.service.test.ts src/services/professional/marketing/todoist-project.model.test.ts src/services/professional/marketing/reminder-delivery.model.test.ts src/services/notifications/adapters/todoist.adapter.test.ts src/services/professional/marketing/hubspot-mapping.model.test.ts src/services/professional/marketing/social-scheduling.model.test.ts src/services/professional/marketing/notion-export.model.test.ts src/services/professional/marketing/activation-link.model.test.ts src/middleware/requestId.test.ts",
     "start": "node dist/server.js",
     "worker:start": "node dist/worker.js",
     "lint": "tsc --noEmit",

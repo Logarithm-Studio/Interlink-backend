@@ -10,6 +10,7 @@ import { BadRequestError } from "../../utils/errors";
 const NOTION_BASE = "https://api.notion.com/v1";
 const NOTION_OAUTH = "https://api.notion.com/v1/oauth";
 const NOTION_VERSION = "2022-06-28";
+const NOTION_MARKETING_VERSION = "2026-03-11";
 
 function clientId(): string {
   const id = process.env.NOTION_CLIENT_ID;
@@ -79,7 +80,7 @@ export async function exchangeCode(userId: string, code: string): Promise<void> 
 
 // ─── Authed fetch ────────────────────────────────────────────────────────────
 
-async function notionFetch(userId: string, path: string, opts: RequestInit = {}): Promise<Response> {
+async function notionFetch(userId: string, path: string, opts: RequestInit = {}, version = NOTION_VERSION): Promise<Response> {
   const integration = await getIntegration(userId, "notion");
   if (!integration || integration.status === "revoked") {
     throw new BadRequestError("Notion is not connected. Connect it from Settings → Connected Accounts.");
@@ -89,10 +90,77 @@ async function notionFetch(userId: string, path: string, opts: RequestInit = {})
     headers: {
       ...(opts.headers ?? {}),
       Authorization: `Bearer ${integration.accessToken}`,
-      "Notion-Version": NOTION_VERSION,
+      "Notion-Version": version,
       "Content-Type": "application/json",
     },
   });
+}
+
+export type NotionDataSource = { id: string; title: string; url: string; databaseId: string };
+export type NotionDataSourceProperty = { name: string; type: string };
+
+/** Search databases as data sources using Notion's current multi-source API. */
+export async function searchDataSources(userId: string, queryText: string): Promise<NotionDataSource[]> {
+  const res = await notionFetch(userId, "/search", {
+    method: "POST",
+    body: JSON.stringify({ query: queryText, filter: { value: "data_source", property: "object" }, page_size: 20 }),
+  }, NOTION_MARKETING_VERSION);
+  if (!res.ok) throw new BadRequestError("Couldn't search Notion databases. Check that the destination is shared with Interlink.");
+  const data = await res.json() as { results?: { id?: string; url?: string; title?: { plain_text?: string }[]; parent?: { database_id?: string } }[] };
+  return (data.results ?? []).flatMap((item) => item.id && item.parent?.database_id ? [{
+    id: item.id,
+    title: item.title?.map((part) => part.plain_text ?? "").join("") || "Untitled database",
+    url: item.url ?? "",
+    databaseId: item.parent.database_id,
+  }] : []);
+}
+
+export async function getDataSource(userId: string, dataSourceId: string): Promise<{ id: string; properties: NotionDataSourceProperty[] }> {
+  const res = await notionFetch(userId, `/data_sources/${encodeURIComponent(dataSourceId)}`, { method: "GET" }, NOTION_MARKETING_VERSION);
+  if (!res.ok) throw new BadRequestError("Couldn't read this Notion database schema. Check destination access and try again.");
+  const data = await res.json() as { id?: string; properties?: Record<string, { type?: string }> };
+  return { id: data.id ?? dataSourceId, properties: Object.entries(data.properties ?? {}).map(([name, property]) => ({ name, type: property.type ?? "unknown" })) };
+}
+
+/** Create a row under a data source. Caller supplies validated property values and a content snapshot. */
+export async function createDataSourcePage(
+  userId: string,
+  dataSourceId: string,
+  properties: Record<string, unknown>,
+  content: string,
+  title: string,
+): Promise<NotionPage> {
+  const res = await notionFetch(userId, "/pages", {
+    method: "POST",
+    body: JSON.stringify({
+      parent: { type: "data_source_id", data_source_id: dataSourceId },
+      properties,
+      children: markdownToBlocks(content).slice(0, 100),
+    }),
+  }, NOTION_MARKETING_VERSION);
+  if (!res.ok) throw new Error("Notion may not have confirmed row creation.");
+  const page = await res.json() as { id?: string; url?: string; last_edited_time?: string };
+  if (!page.id) throw new Error("Notion returned no row identifier.");
+  return { id: page.id, title, url: page.url ?? "", lastEdited: page.last_edited_time ?? "" };
+}
+
+/** Find campaign rows by the exact required marker field for uncertain-result recovery. */
+export async function queryDataSourceMarker(userId: string, dataSourceId: string, markerProperty: string, campaignId: string): Promise<NotionPage[]> {
+  const res = await notionFetch(userId, `/data_sources/${encodeURIComponent(dataSourceId)}/query`, {
+    method: "POST",
+    body: JSON.stringify({
+      filter: { property: markerProperty, rich_text: { equals: campaignId } },
+      page_size: 10,
+    }),
+  }, NOTION_MARKETING_VERSION);
+  if (!res.ok) throw new BadRequestError("Couldn't verify the campaign marker in Notion. Keep this export in review and try again later.");
+  const data = await res.json() as { results?: { id?: string; url?: string; last_edited_time?: string; properties?: Record<string, { title?: { plain_text?: string }[] }> }[] };
+  return (data.results ?? []).flatMap((page) => page.id ? [{
+    id: page.id,
+    title: Object.values(page.properties ?? {}).find((property) => property.title)?.title?.map((part) => part.plain_text ?? "").join("") ?? "Campaign row",
+    url: page.url ?? "",
+    lastEdited: page.last_edited_time ?? "",
+  }] : []);
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────

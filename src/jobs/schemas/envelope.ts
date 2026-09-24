@@ -44,6 +44,24 @@ export const JobType = {
 
   // Notification hub — one job per user per source (never one tick looping users).
   HUB_SOURCE_REFRESH: "hub.source.refresh",
+
+  // Marketing Todoist reconciliation — one hourly account job per user.
+  MARKETING_TODOIST_SYNC: "marketing.todoist.sync",
+
+  // Marketing follow-up reminder fan-out — one bounded delivery job per user.
+  MARKETING_FOLLOWUP_REMINDER: "marketing.followup.reminder",
+
+  // Marketing analytics refresh — one daily read-only snapshot job per user.
+  MARKETING_ANALYTICS_REFRESH: "marketing.analytics.refresh",
+
+  // Marketing post monitoring — one daily opt-in social read-back job per user.
+  MARKETING_POST_MONITOR: "marketing.post.monitor",
+
+  // HubSpot CRM monitoring — opt-in read-only polling for mapped marketing deals.
+  MARKETING_HUBSPOT_MONITOR: "marketing.hubspot.monitor",
+
+  // Confirmed social publication scheduled by a marketer.
+  MARKETING_SOCIAL_PUBLISH: "marketing.social.publish",
 } as const;
 
 export type JobTypeValue = (typeof JobType)[keyof typeof JobType];

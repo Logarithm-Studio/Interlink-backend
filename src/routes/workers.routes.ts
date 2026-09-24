@@ -27,6 +27,17 @@ import {
   dispatchExternalAdapters,
 } from "../services/notifications/hubScheduler.service";
 import { processHubJob } from "../workers/processors/hub.processor";
+import { processMarketingTodoistSyncJob } from "../workers/processors/marketingTodoist.processor";
+import { processMarketingFollowupReminderJob } from "../workers/processors/marketingFollowupReminder.processor";
+import { dispatchMarketingFollowupReminderUsers, dispatchStaleMarketingTodoistSyncs } from "../services/professional/marketing/leads.service";
+import { dispatchMarketingAnalyticsRefreshes } from "../services/professional/marketing/analytics-schedule.service";
+import { processMarketingAnalyticsRefreshJob } from "../workers/processors/marketingAnalyticsRefresh.processor";
+import { processMarketingPostMonitorJob } from "../workers/processors/marketingPostMonitor.processor";
+import { dispatchMarketingPostMonitoring } from "../services/professional/marketing/post-monitoring-schedule.service";
+import { dispatchMarketingHubSpotMonitoring } from "../services/professional/marketing/hubspot-monitoring.service";
+import { processMarketingHubSpotMonitorJob } from "../workers/processors/marketingHubSpotMonitor.processor";
+import { processMarketingSocialPublishJob } from "../workers/processors/marketingSocialPublish.processor";
+import { dispatchMarketingSocialPublishSchedules } from "../services/professional/marketing/social-scheduling.service";
 
 const router = Router();
 
@@ -160,6 +171,54 @@ router.post("/daily-digest", (req, res) => {
     req.body,
     getJobId(req),
   );
+});
+
+// Marketing hourly QStash Schedule for Todoist reconciliation, HubSpot checks, and follow-up reminders.
+router.post("/marketing-todoist-dispatch", (req, res) => {
+  void runWorker(
+    res,
+    async () => { await Promise.all([dispatchStaleMarketingTodoistSyncs(), dispatchMarketingFollowupReminderUsers(), dispatchMarketingHubSpotMonitoring(), dispatchMarketingSocialPublishSchedules()]); },
+    req.body,
+    getJobId(req),
+  );
+});
+
+// One delayed, user-scoped provider write for an explicitly scheduled and approved post.
+router.post("/marketing-social-publish", (req, res) => {
+  void runWorker(res, processMarketingSocialPublishJob, req.body, getJobId(req));
+});
+
+// One user's opt-in HubSpot mapped-deal polling job; provider values are never imported automatically.
+router.post("/marketing-hubspot-monitor", (req, res) => {
+  void runWorker(res, processMarketingHubSpotMonitorJob, req.body, getJobId(req));
+});
+
+// One user's mapped Marketing follow-ups — isolated so provider delays/retries do not stall a fleet tick.
+router.post("/marketing-todoist-sync", (req, res) => {
+  void runWorker(res, processMarketingTodoistSyncJob, req.body, getJobId(req));
+});
+
+// One user's bounded marketing reminder delivery pass; external sends are independently claimed per channel.
+router.post("/marketing-followup-reminder", (req, res) => {
+  void runWorker(res, processMarketingFollowupReminderJob, req.body, getJobId(req));
+});
+
+// Marketing read-only provider snapshots — daily fan-out, then isolated per-user refresh jobs.
+router.post("/marketing-analytics-dispatch", (req, res) => {
+  void runWorker(
+    res,
+    async () => { await Promise.all([dispatchMarketingAnalyticsRefreshes(), dispatchMarketingPostMonitoring()]); },
+    req.body,
+    getJobId(req),
+  );
+});
+
+router.post("/marketing-analytics-refresh", (req, res) => {
+  void runWorker(res, processMarketingAnalyticsRefreshJob, req.body, getJobId(req));
+});
+
+router.post("/marketing-post-monitor", (req, res) => {
+  void runWorker(res, processMarketingPostMonitorJob, req.body, getJobId(req));
 });
 
 export default router;

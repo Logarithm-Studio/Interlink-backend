@@ -26,6 +26,12 @@ export type QueueName =
   | "notifications"
   | "email"
   | "hub"
+  | "marketing-todoist-sync"
+  | "marketing-followup-reminder"
+  | "marketing-analytics-refresh"
+  | "marketing-post-monitor"
+  | "marketing-hubspot-monitor"
+  | "marketing-social-publish"
   | "dlq";
 
 export interface EnqueueOptions {

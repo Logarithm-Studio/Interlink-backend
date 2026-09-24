@@ -1,4 +1,4 @@
-/** /api/v1/todoist — Todoist REST API v2 proxy */
+/** /api/v1/todoist — Todoist API v1 proxy */
 
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
@@ -87,16 +87,18 @@ router.get("/tasks", async (req: Request, res: Response, next: NextFunction) => 
 
 const CreateBody = z.object({
   content: z.string().min(1).max(500),
+  description: z.string().max(16000).optional(),
   dueString: z.string().optional(),
+  dueDatetime: z.string().datetime().optional(),
   priority: z.number().int().min(1).max(4).optional(),
   projectId: z.string().optional(),
-});
+}).refine((body) => !(body.dueString && body.dueDatetime), { message: "Use either dueString or dueDatetime." });
 
 router.post("/tasks", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = CreateBody.safeParse(req.body ?? {});
-    if (!parsed.success) throw new BadRequestError("content is required.");
+    if (!parsed.success) throw new BadRequestError("Provide valid Todoist task content and due details.");
     res.status(201).json({ task: await createTask(user.id, parsed.data) });
   } catch (err) {
     next(err);

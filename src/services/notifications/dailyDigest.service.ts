@@ -87,6 +87,21 @@ async function activeLeads(userId: string): Promise<number> {
   }
 }
 
+/** Marketing follow-ups that are due now or within the next day. */
+async function dueMarketingFollowups(userId: string): Promise<number> {
+  try {
+    const res = await query<{ n: string }>(
+      `SELECT COUNT(*) n FROM sales_marketing_followups
+        WHERE user_id=$1 AND status='open' AND due_at <= now() + interval '24 hours'`,
+      [userId],
+    );
+    return parseInt(res.rows[0]?.n ?? "0", 10);
+  } catch {
+    // The digest must remain available if an older environment hasn't applied the marketing migration yet.
+    return 0;
+  }
+}
+
 /** Compliance actions still open (Financial Advisor). */
 async function openCompliance(userId: string): Promise<number> {
   try {
@@ -119,12 +134,13 @@ const usd = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US
 
 /** Assemble (but do not send) today's digest for one user. */
 export async function buildDailyDigest(userId: string): Promise<DailyDigest> {
-  const [events, overdue, leads, compliance, approvals] = await Promise.all([
+  const [events, overdue, leads, compliance, approvals, marketingFollowups] = await Promise.all([
     todaysEvents(userId),
     overdueInvoices(userId),
     activeLeads(userId),
     openCompliance(userId),
     pendingApprovals(userId),
+    dueMarketingFollowups(userId),
   ]);
 
   const lines: DigestLine[] = [];
@@ -134,6 +150,7 @@ export async function buildDailyDigest(userId: string): Promise<DailyDigest> {
     lines.push({ text: `${overdue.count} overdue ${overdue.count === 1 ? "invoice" : "invoices"} (${usd(overdue.cents)})`, weight: 4 });
   }
   if (compliance > 0) lines.push({ text: `${compliance} compliance ${compliance === 1 ? "item" : "items"} due`, weight: 3 });
+  if (marketingFollowups > 0) lines.push({ text: `${marketingFollowups} marketing ${marketingFollowups === 1 ? "follow-up" : "follow-ups"} due`, weight: 3 });
   if (leads > 0) lines.push({ text: `${leads} ${leads === 1 ? "lead" : "leads"} to follow up`, weight: 2 });
 
   if (lines.length === 0) {
@@ -201,6 +218,7 @@ export async function runDailyDigestForAllUsers(): Promise<{ considered: number;
            OR EXISTS (SELECT 1 FROM connected_integrations c WHERE c.user_id = u.id)
            OR EXISTS (SELECT 1 FROM invoices i WHERE i.user_id = u.id)
            OR EXISTS (SELECT 1 FROM re_leads r WHERE r.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM sales_marketing_followups f WHERE f.user_id=u.id AND f.status='open')
            OR EXISTS (SELECT 1 FROM push_tokens p WHERE p.user_id = u.id)`,
     );
     considered = res.rows.length;

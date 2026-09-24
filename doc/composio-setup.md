@@ -16,11 +16,24 @@ writing a bespoke service. Composio owns the OAuth apps, so a toolkit connects w
    ```
    COMPOSIO_API_KEY=<your-key>
    ```
-3. Run `npm run migrate` (applies `060_composio_connections.sql`).
+3. Run `npm run migrate` to apply pending migrations, including the Composio connection table and
+   the Marketing workflow schemas (`066_marketing_workflow.sql`, `067_marketing_lead_operations.sql`,
+   `068_marketing_content_revisions.sql`).
 4. Restart the server. The app's **Settings → Connected accounts** screen now shows a
    **More Apps** section; each row connects in one tap.
 
 That's the whole setup. There is no per-vendor configuration.
+
+Marketing-focused OAuth connections now include Mailchimp, Kit, Google Analytics, Google Search
+Console, Canva, Facebook Pages, Instagram Business/Creator, LinkedIn, and YouTube. The Campaigns
+workspace uses Mailchimp for provider-side email audience, suppression, schedule, and report state;
+other connected tools remain available to the assistant with confirmation for writes. Google Ads is
+also curated, but its first connection requires `GOOGLE_ADS_DEVELOPER_TOKEN` on the Interlink server.
+The toolkit uses that token on its Composio auth config; without it, Interlink blocks the connect flow
+instead of creating a connection whose ad tools cannot execute. LinkedIn Ads is a separate toolkit
+and currently does not use Composio's managed OAuth. See
+[the marketing workflow roadmap](../../plan/marketing-professional-workflows.md) for the current
+workflow map and provider-specific constraints.
 
 ## What it costs
 
