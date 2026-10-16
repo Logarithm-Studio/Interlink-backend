@@ -12,6 +12,7 @@ import { isConnected } from "../../integrations/tokenStore";
 import { getBoards, getListsForBoard, getCardsForBoard, createCard, updateCard } from "../../pm/trello.service";
 import { getChannels, postMessage } from "../../slack/slack.service";
 import { listDeals, createDeal, getOverview, type DealStage } from "./sales.service";
+import { formatSalesAmounts } from "./sales-overview.model";
 
 const PERSONA = "sales";
 type Result = { ok: boolean; message: string };
@@ -22,8 +23,8 @@ const STAGE_LABELS: Record<DealStage, string> = {
 };
 const STAGES = Object.keys(STAGE_LABELS) as DealStage[];
 
-function fmtMoney(cents: number): string {
-  return `$${Math.round(cents / 100).toLocaleString("en-US")}`;
+function fmtMoney(cents: number, currency: string): string {
+  return formatSalesAmounts([{ currency, amountCents: cents }]);
 }
 
 /** Best-effort map a Trello list name back to a pipeline stage. */
@@ -60,7 +61,7 @@ export async function syncPipelineToTrello(user: AppUser): Promise<Result> {
     const target =
       lists.find((l) => l.name.toLowerCase().includes(deal.stage) || l.name.toLowerCase().includes(label.toLowerCase())) ??
       lists[0];
-    const desc = `Stage: ${label} · ${fmtMoney(deal.amountCents)}${deal.company ? ` · ${deal.company}` : ""}${deal.contactName ? ` · ${deal.contactName}` : ""}`;
+    const desc = `Stage: ${label} · ${fmtMoney(deal.amountCents, deal.currency)}${deal.company ? ` · ${deal.company}` : ""}${deal.contactName ? ` · ${deal.contactName}` : ""}`;
     const existing = cards.find((c) => c.name.toLowerCase() === deal.title.toLowerCase());
     try {
       if (existing) { await updateCard(user.id, existing.id, { desc }); updated++; }
@@ -130,8 +131,8 @@ export async function postPipelineDigestToSlack(user: AppUser, channel?: string)
 
   const text =
     `*Sales pipeline digest*\n${overview.briefing}\n` +
-    `Open deals: ${overview.openCount} · Pipeline ${fmtMoney(overview.pipelineValueCents)} · ` +
-    `Won ${fmtMoney(overview.wonValueCents)} · Contracts out ${overview.contractsOut}`;
+    `Open deals: ${overview.openCount} · Pipeline ${formatSalesAmounts(overview.pipelineByCurrency)} · ` +
+    `Won ${formatSalesAmounts(overview.wonByCurrency)} · Contracts out ${overview.contractsOut}`;
   await postMessage(user.id, target, text);
 
   await recordActivity({ userId: user.id, persona: PERSONA, kind: "slack_digest", title: "Posted pipeline digest to Slack" });

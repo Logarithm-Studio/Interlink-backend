@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "crypto";
+import { buildSalesOverview, type SalesCurrencyAmount } from "./sales-overview.model";
 import { query, withTransaction } from "../../../config/db";
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
@@ -106,11 +107,13 @@ export interface MarketingLeadFormSettings {
 export interface DealDetail { deal: SalesDeal; contact: SalesContact | null; activities: SalesActivity[]; contracts: SalesContract[] }
 export interface SalesOverview {
   briefing: string;
+  pipelineByCurrency: SalesCurrencyAmount[];
+  wonByCurrency: SalesCurrencyAmount[];
   pipelineValueCents: number;
   openCount: number;
   wonValueCents: number;
-  stageBreakdown: { stage: DealStage; count: number; valueCents: number }[];
-  atRisk: { id: string; title: string; company: string | null; amountCents: number; stage: DealStage }[];
+  stageBreakdown: { stage: DealStage; count: number; valueCents: number; valuesByCurrency: SalesCurrencyAmount[] }[];
+  atRisk: { id: string; title: string; company: string | null; amountCents: number; currency: string; stage: DealStage }[];
   contractsOut: number;
 }
 
@@ -823,32 +826,7 @@ export async function getDealDetail(userId: string, dealId: string): Promise<Dea
 
 export async function getOverview(userId: string): Promise<SalesOverview> {
   const [deals, contracts] = await Promise.all([listDeals(userId), listContracts(userId)]);
-  const open = deals.filter((d) => d.stage !== "won" && d.stage !== "lost");
-  const won = deals.filter((d) => d.stage === "won");
-  const stages: DealStage[] = ["lead", "qualified", "proposal", "negotiation", "won", "lost", "nurture"];
-  const stageBreakdown = stages
-    .map((stage) => {
-      const inStage = deals.filter((d) => d.stage === stage);
-      return { stage, count: inStage.length, valueCents: inStage.reduce((s, d) => s + d.amountCents, 0) };
-    })
-    .filter((s) => s.count > 0);
-  const cutoff = Date.now() - 14 * 86_400_000;
-  const atRisk = open
-    .filter((d) => (d.lastActivityAt ? new Date(d.lastActivityAt).getTime() : new Date(d.createdAt).getTime()) < cutoff)
-    .sort((a, b) => b.amountCents - a.amountCents)
-    .slice(0, 5)
-    .map((d) => ({ id: d.id, title: d.title, company: d.company, amountCents: d.amountCents, stage: d.stage }));
-  const pipelineValueCents = open.reduce((s, d) => s + d.amountCents, 0);
-  const fmt = (c: number) => `$${Math.round(c / 100).toLocaleString("en-US")}`;
-  return {
-    briefing: `${open.length} open deal(s) worth ${fmt(pipelineValueCents)}; ${atRisk.length} need attention.`,
-    pipelineValueCents,
-    openCount: open.length,
-    wonValueCents: won.reduce((s, d) => s + d.amountCents, 0),
-    stageBreakdown,
-    atRisk,
-    contractsOut: contracts.filter((c) => c.status === "sent").length,
-  };
+  return buildSalesOverview(deals, contracts);
 }
 
 // ─── Inbound form key ──────────────────────────────────────────────────────────

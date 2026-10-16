@@ -251,6 +251,17 @@ per-vendor client id/secret and no app-side code exchange**. See [doc/composio-s
 Connected toolkits' tools are merged into **both** command centers automatically (`UPPER_SNAKE`
 slugs like `HUBSPOT_CREATE_CONTACT`), scoped to connected toolkits and capped at 40 tools.
 
+### `/api/v1/sales/overview` (Sales currency totals)
+
+`GET /api/v1/sales/overview` returns `pipelineByCurrency` and `wonByCurrency` as
+`{ currency, amountCents }[]`. Each stage adds `valuesByCurrency`, and each at-risk
+deal includes its `currency`. No exchange-rate conversion is performed. Legacy
+`pipelineValueCents`, `wonValueCents`, and stage `valueCents` now contain **USD
+only**; clients displaying other currencies must use the grouped fields. The
+briefing and pipeline export summaries preserve currency labels and fractional
+amounts. At-risk deals are ordered by oldest activity, since amounts in different
+currencies cannot be compared without an exchange rate. Counts retain all currencies.
+
 ### `/api/v1/sales/campaigns` (Marketing campaign review)
 
 | Method | Path | Notes |
