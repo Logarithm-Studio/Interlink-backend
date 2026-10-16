@@ -9,6 +9,18 @@ Base URL in local dev: `http://localhost:5000`. All routes are under `/api/v1` e
 
 ## Auth model
 
+Private Sales support data (`sales_reps`, `sales_settings`) is accessed through
+the authenticated Express API and its server-side PostgreSQL connection. Migration
+095 enables RLS and revokes direct PUBLIC, `anon`, and `authenticated` Data API
+privileges on these tables. Clients must use the Sales routes rather than query
+these tables directly through Supabase.
+
+The lead-list SQL regression can be checked against a migrated QA database by
+setting `DATABASE_URL` and `MARKETING_LEADS_TEST_CONTACT_ID` to an existing inbound
+QA contact, then running `node --import tsx --test src/services/professional/marketing/leads.service.test.ts`. The check uses a
+read-only transaction; it is skipped by the standard suite unless explicitly
+configured. Load local environment values with `-r dotenv/config` if needed.
+
 Every app-facing route requires `Authorization: Bearer <SUPABASE_JWT>` (validated via
 `supabase.auth.getUser`, which upserts the user into the local `users` table). Get a JWT from
 Supabase directly:

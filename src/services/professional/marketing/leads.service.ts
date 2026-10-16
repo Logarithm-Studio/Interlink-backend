@@ -679,7 +679,7 @@ export async function listMarketingLeads(userId: string): Promise<MarketingLead[
        FROM sales_contacts c
        LEFT JOIN sales_reps r ON r.id=c.marketing_owner_rep_id AND r.user_id=c.user_id
        LEFT JOIN LATERAL (
-         SELECT contact_id,campaign_id,attribution,captured_at FROM sales_marketing_contact_attributions
+         SELECT contact_id,campaign_id,attribution,captured_at,source FROM sales_marketing_contact_attributions
           WHERE user_id=c.user_id AND contact_id=c.id ORDER BY captured_at DESC LIMIT 1
        ) latest ON true
        LEFT JOIN sales_marketing_campaigns mc ON mc.id=latest.campaign_id AND mc.user_id=c.user_id
