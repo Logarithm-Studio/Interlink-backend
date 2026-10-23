@@ -14,6 +14,7 @@ import { marketingInboundFormRateLimit } from "../middleware/rateLimit";
 import { getMarketingTurnstileConfig, validateMarketingTurnstile } from "../services/professional/marketing/turnstile.service";
 import { listMarketingApprovalHistory } from "../services/professional/marketing/content.service";
 import { MARKETING_GOAL_METRICS } from "../services/professional/marketing/campaign-goals.model";
+import { parseCampaignInput } from "../services/professional/marketing/campaign-input";
 import {
   listDeals, getDealDetail, createDeal, updateDeal,
   listContacts, getContact, createContact, updateContact,
@@ -136,33 +137,12 @@ router.get("/campaigns", async (req, res, next) => {
   try { res.json({ campaigns: await listMarketingCampaigns(uid(req)) }); } catch (err) { next(err); }
 });
 
-const DateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
-});
-const CampaignBody = z.object({
-  topic: z.string().trim().min(1).max(300), audience: z.string().trim().max(500).optional(),
-  objective: z.string().trim().max(500).optional(), offer: z.string().trim().max(1000).optional(),
-  successMetric: z.string().trim().max(500).optional(),
-  goalMetric: z.enum(MARKETING_GOAL_METRICS).optional(),
-  goalTarget: z.number().int().min(1).max(1_000_000_000).optional(),
-  goalCurrency: z.string().regex(/^[A-Z]{3}$/).optional(),
-  channels: z.array(z.enum(["email", "instagram", "facebook", "linkedin", "youtube", "blog", "landing_page", "search", "ad", "influencer", "event", "other"])).min(1).max(12).optional(),
-  startDate: DateOnly.optional(), endDate: DateOnly.optional(),
-  budgetCents: z.number().int().min(0).max(1_000_000_000).optional(),
-}).refine((data) => !data.startDate || !data.endDate || data.endDate >= data.startDate, { message: "endDate must be on or after startDate." })
-  .refine((data) => {
-    if (!data.goalMetric) return data.goalTarget === undefined && data.goalCurrency === undefined;
-    if (data.goalTarget === undefined) return false;
-    return data.goalMetric === "closed_won_value" ? Boolean(data.goalCurrency) : data.goalCurrency === undefined;
-  }, { message: "Choose a target and, for closed-won value, its three-letter currency." });
 router.post("/campaigns", async (req, res, next) => {
   try {
-    const parsed = CampaignBody.safeParse(req.body ?? {});
-    if (!parsed.success) throw new BadRequestError("topic is required.");
+    const brief = parseCampaignInput(req.body ?? {});
     res.json({ campaign: await createMarketingCampaign(uid(req), {
-      ...parsed.data, topic: parsed.data.topic.trim(), audience: parsed.data.audience?.trim(),
-      objective: parsed.data.objective?.trim(), offer: parsed.data.offer?.trim(), successMetric: parsed.data.successMetric?.trim(),
+      ...brief, topic: brief.topic.trim(), audience: brief.audience?.trim(),
+      objective: brief.objective?.trim(), offer: brief.offer?.trim(), successMetric: brief.successMetric?.trim(),
     }) });
   } catch (err) { next(err); }
 });

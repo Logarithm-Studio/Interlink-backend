@@ -267,7 +267,7 @@ currencies cannot be compared without an exchange rate. Counts retain all curren
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/sales/campaigns` | Lists the user's briefs and provider state. |
-| POST | `/api/v1/sales/campaigns` | Body `{ topic, audience?, objective?, offer?, successMetric?, goalMetric?, goalTarget?, goalCurrency?, channels?, startDate?, endDate?, budgetCents? }`; saves a structured brief and generated email copy, never sends or spends. A numeric goal compares against supported CRM, content, activation, or Mailchimp metrics; `closed_won_value` uses integer minor units and requires an uppercase three-letter currency. |
+| POST | `/api/v1/sales/campaigns` | Body `{ topic, audience?, objective?, offer?, successMetric?, goalMetric?, goalTarget?, goalCurrency?, channels?, startDate?, endDate?, budgetCents? }`; saves a structured brief and generated email copy, never sends or spends. Invalid brief input returns HTTP 400 with the affected field or goal/range validation reason. A numeric goal compares against supported CRM, content, activation, or Mailchimp metrics; `closed_won_value` uses integer minor units and requires an uppercase three-letter currency. |
 | PATCH | `/api/v1/sales/campaigns/:id` | Edits subject/body/audience and the complete structured goal configuration while the record remains a local draft. Clear all goal fields with `{ goalMetric: null, goalTarget: null, goalCurrency: null }`. |
 | GET | `/api/v1/sales/campaigns/mailchimp/audiences` | Lists audiences from the authenticated Mailchimp connection. |
 | POST | `/api/v1/sales/campaigns/:id/provider-draft` | Body `{ audienceId, fromName, replyTo }`; creates a Mailchimp regular-campaign draft and records its provider ID. |
