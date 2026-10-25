@@ -1,0 +1,12 @@
+{
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.11"
+  },
+  "name": "interlink-marketing-sandbox",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 social.test.cjs marketing.test.cjs prospects.test.cjs outreach.test.cjs",
+    "start": "node runtime.cjs"
+  }
+}

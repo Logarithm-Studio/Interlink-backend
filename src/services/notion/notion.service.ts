@@ -172,6 +172,14 @@ export interface NotionPage {
   lastEdited: string;
 }
 
+/** Fail before reserving an export when its selected parent was removed or unshared. */
+export async function assertPageAccessible(userId:string,pageId:string):Promise<void> {
+  const response=await notionFetch(userId,`/pages/${encodeURIComponent(pageId)}`,{method:"GET"});
+  if(!response.ok)throw new BadRequestError("That Notion page is unavailable. Share a destination with your connection and choose it again.");
+  const page=await response.json() as {object?:string;id?:string;archived?:boolean;in_trash?:boolean};
+  if(page.object!=="page"||!page.id||page.archived||page.in_trash)throw new BadRequestError("Choose an active Notion page as the destination.");
+}
+
 export async function searchPages(userId: string, query: string): Promise<NotionPage[]> {
   const res = await notionFetch(userId, "/search", {
     method: "POST",

@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadGoogleAdsAnalyticsAccounts, loadGoogleAdsCampaignMetrics, loadStripeBalanceMetrics, normalizeGa4Analytics, normalizeGoogleAdsCampaignMetrics, normalizeMarketingSocialInsights, normalizeSearchConsoleAnalytics, normalizeStripeBalanceTransactions } from "./analytics.service";
 
+test("GA4 landing paths never retain query strings or fragments from provider responses", () => {
+  const result = normalizeGa4Analytics({ rows: [] }, { rows: [] }, {
+    rows: [{ dimensionValues: [{ value: "/pricing?email=private%40example.invalid#session" }], metricValues: [] }],
+  });
+  assert.equal((result.landingPages as { path: string }[])[0].path, "/pricing");
+});
+
 test("Google Ads discovery expands manager accounts and only returns reportable customer accounts", async () => {
   const requests: { toolName: string; args: Record<string, unknown> }[] = [];
   const result = await loadGoogleAdsAnalyticsAccounts(async (toolName, args) => {

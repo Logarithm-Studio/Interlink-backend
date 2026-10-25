@@ -154,7 +154,7 @@ async function claimScheduleForDispatch(scheduleId: string, now: Date): Promise<
     const selected = await client.query(
       `SELECT id,user_id,content_item_id,generation,provider,target_id,target_name,scheduled_at,status
          FROM sales_marketing_social_publish_schedules
-        WHERE id=$1 AND status='pending' AND scheduled_at <= $2 + interval '6 days'
+        WHERE id=$1 AND status='pending' AND scheduled_at <= $2::timestamptz + interval '6 days'
         FOR UPDATE SKIP LOCKED`, [scheduleId, now],
     );
     if (!selected.rows[0]) return null;
@@ -234,7 +234,7 @@ export async function dispatchMarketingSocialPublishSchedules(now = new Date(), 
 
   const due = await query<{ id: string }>(
     `SELECT id FROM sales_marketing_social_publish_schedules
-      WHERE status='pending' AND scheduled_at <= $1 + interval '6 days'
+      WHERE status='pending' AND scheduled_at <= $1::timestamptz + interval '6 days'
         AND ($2::uuid IS NULL OR id=$2)
       ORDER BY scheduled_at ASC LIMIT 500`, [now, onlyScheduleId ?? null],
   );

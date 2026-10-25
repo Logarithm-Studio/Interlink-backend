@@ -474,3 +474,16 @@ resolve `PUBLIC_BASE_URL` → Vercel's `VERCEL_PROJECT_PRODUCTION_URL` → `API_
   (`UnauthorizedError`, etc.); the global `errorHandler` (registered last in `app.ts`) shapes responses.
 - Validate external input with **Zod**.
 - Use `req.log` / the `src/observability/logger.ts` logger, not bare `console` in request paths.
+
+### Marketing research, outreach and signatures
+
+Marketing keeps the `sales` persona. Prospect search/import uses signed user-bound
+previews and preserves consent. The native sequence, agreement and research-plan
+routes live in `marketing-workflows.routes.ts`, mounted after Marketing auth.
+For their approval rules, recovery behavior, queues or deployment, read
+[doc/marketing-outreach.md](doc/marketing-outreach.md) before changing them.
+Migration 096 is required before deploying these routes and hourly dispatchers.
+
+Composio tools prioritize named connected apps and request preferred slugs
+explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;
+its native envelope lifecycle is separate from legacy emailed agreements.

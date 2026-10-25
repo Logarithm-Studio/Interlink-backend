@@ -352,8 +352,9 @@ async function professionalToolsWithPersonal(
   userId: string,
   tools: typeof PERSONAL_TOOLS,
   persona: string,
+  message: string,
 ): Promise<typeof PERSONAL_TOOLS> {
-  const composioTools = await getComposioToolsForUser(userId, persona);
+  const composioTools = await getComposioToolsForUser(userId, persona, message);
   const seen = new Set<string>();
   return [...tools, ...PERSONAL_TOOLS, ...composioTools].filter((tool) => {
     if (seen.has(tool.name)) return false;
@@ -443,7 +444,7 @@ export async function command(
       const plan = await planAgentActions({
         message,
         snapshot,
-        tools: await professionalToolsWithPersonal(userId, vertical.tools, persona),
+        tools: await professionalToolsWithPersonal(userId, vertical.tools, persona, message),
         system: `${vertical.systemPrompt}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
         attachment,
         clientNow: temporalContext.clientNow,
@@ -510,7 +511,7 @@ export async function command(
   const plan = await planAgentActions({
     message,
     snapshot,
-    tools: await professionalToolsWithPersonal(userId, AGENT_TOOLS, "finance"),
+    tools: await professionalToolsWithPersonal(userId, AGENT_TOOLS, "finance", message),
     system: `${AGENT_SYSTEM}\n${PERSONAL_TOOLS_NOTE}\n${CONNECTED_APP_ORCHESTRATION_PROMPT}\n\n${GLOBAL_AGENT_RULES}`,
     attachment,
     clientNow: temporalContext.clientNow,

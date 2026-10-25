@@ -1,3 +1,6 @@
+import { dispatchEmailSequences } from "../services/professional/marketing/email-sequence.service";
+import { dispatchAgreementChecks } from "../services/professional/marketing/agreement.service";
+import { processMarketingEmailSequence, processMarketingAgreementCheck } from "../workers/processors/marketingEmailSequence.processor";
 /**
  * /api/v1/workers/* — QStash callback endpoints.
  *
@@ -177,11 +180,14 @@ router.post("/daily-digest", (req, res) => {
 router.post("/marketing-todoist-dispatch", (req, res) => {
   void runWorker(
     res,
-    async () => { await Promise.all([dispatchStaleMarketingTodoistSyncs(), dispatchMarketingFollowupReminderUsers(), dispatchMarketingHubSpotMonitoring(), dispatchMarketingSocialPublishSchedules()]); },
+    async () => { await Promise.all([dispatchStaleMarketingTodoistSyncs(), dispatchMarketingFollowupReminderUsers(), dispatchMarketingHubSpotMonitoring(), dispatchMarketingSocialPublishSchedules(), dispatchEmailSequences(), dispatchAgreementChecks()]); },
     req.body,
     getJobId(req),
   );
 });
+
+router.post("/marketing-agreement-check", (req,res) => { void runWorker(res,processMarketingAgreementCheck,req.body,getJobId(req)); });
+router.post("/marketing-email-sequence", (req,res) => { void runWorker(res,processMarketingEmailSequence,req.body,getJobId(req)); });
 
 // One delayed, user-scoped provider write for an explicitly scheduled and approved post.
 router.post("/marketing-social-publish", (req, res) => {

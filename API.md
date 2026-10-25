@@ -442,3 +442,34 @@ After deploying the backend and applying migrations `064`–`092`, set `API_BASE
 ### `/api/v1/todoist`
 
 Uses Todoist API v1 with cursor pagination and rotating OAuth refresh-token support. `GET /api/v1/todoist/projects` lists the connected user's projects. Marketing follow-up copies include a stable Interlink marker so repeat requests reuse the existing active Todoist task. `GET /api/v1/marketing/todoist-project` and `PUT /api/v1/marketing/todoist-project` read or save the account-validated default project for new follow-up copies; send `{ projectId: null }` to use Todoist Inbox. Existing linked tasks stay in their current project. Requires migration 082.
+
+## Marketing prospect research (2026-10-25)
+
+All paths below use the `/api/v1` prefix and require bearer authentication.
+
+- `POST /marketing/prospects/search`: `{provider: "hubspot" | "salesforce", query: string, title?: string}`.
+  Query length 2?100. HubSpot searches standard contact properties; Salesforce
+  searches company names. Returns `{prospects: [{provider, externalId, name,
+  email, company, title, importToken}]}` with at most 25 records. No writes occur.
+- `POST /marketing/prospects/import`: `{importToken: string}`. User-bound signed
+  previews expire after 15 minutes. Returns `{contact, alreadyImported}` with 201
+  for creation or 200 for a matching contact. Existing fields/consent are preserved;
+  new contacts are not opted into marketing mail. Invalid/expired previews: 400.
+- `GET /google/gmail/sender`: `{email: string | null, reauthRequired: boolean}`
+  reflects the mailbox selected by the request mode and existing account resolver.
+- `POST /google/gmail/send-automated-response` additionally accepts optional
+  `expectedSenderEmail`. A changed mailbox is rejected with 400 before delivery.
+  An accepted response retains the existing `{sent: {id, threadId, labelIds}}` shape.
+
+Searches and imports reuse Marketing research/CRM rate limits. Provider failures
+return an actionable failure rather than a successful empty result. Import does
+not write back to the CRM, export tasks, grant consent or send a message.
+
+## Native Marketing workflows
+
+Authenticated `/api/v1/marketing` now includes `/email-sequences`, `/agreements`
+and `/research-plans`, with separate approval, delivery, read-back and recovery
+routes. Migration 096 is required. See [Marketing outreach](doc/marketing-outreach.md)
+for payloads, confirmation fields, fingerprint checks and job behavior. The hourly
+Marketing dispatcher also queues `marketing-email-sequence` and
+`marketing-agreement-check` jobs behind the existing QStash signature middleware.

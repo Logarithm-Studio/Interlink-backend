@@ -13,7 +13,7 @@ const SCHEDULES: MarketingSchedule[] = [
     name: "hourly",
     path: "/api/v1/workers/marketing-todoist-dispatch",
     cron: "0 * * * *",
-    description: "Todoist reconciliation, opted-in reminders, HubSpot checks, and scheduled social publishing",
+    description: "Todoist reconciliation, opted-in reminders, HubSpot checks, social publishing, approved email sequences and signature checks",
   },
   {
     name: "daily",

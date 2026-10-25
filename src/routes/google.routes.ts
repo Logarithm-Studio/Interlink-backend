@@ -41,6 +41,7 @@ const GmailDetailParamsSchema = z.object({
 });
 
 const SendAutomatedGmailResponseSchema = z.object({
+  expectedSenderEmail: z.string().email().optional(),
   toEmail: z.string().email("Invalid recipient email"),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(20_000),
@@ -240,6 +241,14 @@ router.get(
 );
 
 // POST /api/v1/google/gmail/send-automated-response
+router.get("/gmail/sender", async (req, res, next) => {
+  try {
+    const id = (req as AuthenticatedRequest).googleAccountId;
+    const account = id ? await getGoogleAccountSummaryById(id) : null;
+    res.json({ email: account?.email ?? null, reauthRequired: account?.reauthRequired ?? true });
+  } catch (error) { next(error); }
+});
+
 router.post(
   "/gmail/send-automated-response",
   async (req: Request, res: Response, next: NextFunction) => {
@@ -260,6 +269,10 @@ router.post(
         ? await getGoogleAccountSummaryById(googleAccountId)
         : null;
       const fromEmail = account?.email?.trim() || user.email;
+
+      if (parsed.data.expectedSenderEmail && parsed.data.expectedSenderEmail.toLowerCase() !== fromEmail.toLowerCase()) {
+        throw new BadRequestError("Your sending account changed. Review the sender before sending this message.");
+      }
 
       const sent = await sendAutomatedGmailMessage({
         userId: user.id,

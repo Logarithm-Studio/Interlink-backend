@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from "crypto";
+import { resolveWorkerOrigin } from "../config/workerOrigin";
 import { getQStashClient } from "../config/qstash";
 import { logger } from "../observability/logger";
 import type { JobEnvelope } from "../jobs/schemas/envelope";
@@ -32,6 +33,8 @@ export type QueueName =
   | "marketing-post-monitor"
   | "marketing-hubspot-monitor"
   | "marketing-social-publish"
+  | "marketing-email-sequence"
+  | "marketing-agreement-check"
   | "dlq";
 
 export interface EnqueueOptions {
@@ -46,10 +49,7 @@ export async function enqueueJob(
   envelope: Omit<JobEnvelope, "requestId"> & { requestId?: string },
   options: EnqueueOptions = {},
 ): Promise<void> {
-  const baseUrl = (
-    process.env.API_BASE_URL ??
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined)
-  )?.replace(/\/$/, "");
+  const baseUrl = resolveWorkerOrigin(process.env);
 
   if (!baseUrl) {
     throw new Error(

@@ -5,6 +5,7 @@ import helmet from "helmet";
 import { errorHandler } from "./utils/errors";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { initKeyring } from "./security/keyring";
+import { resolveWorkerOrigin } from "./config/workerOrigin";
 
 // Route imports
 import authRoutes from "./routes/auth.routes";
@@ -86,6 +87,7 @@ function setupRoutes(app: Express) {
       status: "ok",
       timestamp: new Date().toISOString(),
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local",
+      workerOrigin: resolveWorkerOrigin(process.env) ?? null,
     });
   });
 

@@ -61,6 +61,8 @@ export const JobType = {
   MARKETING_HUBSPOT_MONITOR: "marketing.hubspot.monitor",
 
   // Confirmed social publication scheduled by a marketer.
+  MARKETING_AGREEMENT_CHECK: "marketing.agreement.check",
+  MARKETING_EMAIL_SEQUENCE: "marketing.email.sequence",
   MARKETING_SOCIAL_PUBLISH: "marketing.social.publish",
 } as const;
 

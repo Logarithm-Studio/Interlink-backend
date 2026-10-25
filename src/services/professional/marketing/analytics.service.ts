@@ -408,8 +408,9 @@ function ga4Metrics(value: unknown, aggregateValue?: unknown, landingPageValue?:
     const dimensions = Array.isArray(row.dimensionValues) ? row.dimensionValues : Array.isArray(row.dimension_values) ? row.dimension_values : [];
     const metrics = Array.isArray(row.metricValues) ? row.metricValues : Array.isArray(row.metric_values) ? row.metric_values : [];
     const path = object(dimensions[0]).value;
+    const cleanPath = typeof path === "string" ? path.split(/[?#]/, 1)[0].trim() : "";
     return {
-      path: typeof path === "string" && path.trim() ? path : "(not set)",
+      path: cleanPath || "(not set)",
       sessions: numberValue(object(metrics[0]).value),
       keyEvents: numberValue(object(metrics[1]).value),
       revenue: numberValue(object(metrics[2]).value),

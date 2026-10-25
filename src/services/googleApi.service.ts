@@ -59,6 +59,15 @@ export async function listGoogleCalendarEvents(params: {
 
 export type GmailMailbox = "inbox" | "sent" | "all";
 
+/** Read the approved conversation too, so replies from a prospect's alias stop outreach. */
+export async function getGmailThreadMessages(params: { userId:string; googleAccountId:string; threadId:string }) {
+  const oauth2Client = await getGoogleOAuthClient(params.userId,params.googleAccountId);
+  const gmail = google.gmail({version:"v1",auth:oauth2Client});
+  const result = await gmail.users.threads.get({userId:"me",id:params.threadId,format:"metadata",metadataHeaders:["From"]});
+  if (result.data.id !== params.threadId || !Array.isArray(result.data.messages)) throw new BadRequestError("Gmail conversation could not be checked.");
+  return result.data.messages.map(message=>({id:message.id??"",from:readHeader(message.payload?.headers,"From"),internalDate:message.internalDate??null,labelIds:message.labelIds??[]}));
+}
+
 export interface GmailMessageSummary {
   id: string;
   threadId: string;

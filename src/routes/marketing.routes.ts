@@ -1,3 +1,5 @@
+import marketingWorkflowsRouter from "./marketing-workflows.routes";
+import { ProspectSearchSchema, searchCrmProspects, importCrmProspect } from "../services/professional/marketing/prospect.service";
 import { Router, Request } from "express";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth";
@@ -43,6 +45,7 @@ router.get("/activation-visit/:token", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 router.use(authMiddleware as never);
+router.use(marketingWorkflowsRouter);
 // Every :id here is a uuid column; reject malformed ids before Postgres turns them into a 500.
 router.param("id", (_req, _res, next, id: string) => {
   next(z.string().uuid().safeParse(id).success ? undefined : new BadRequestError("Choose a valid item."));
@@ -55,6 +58,21 @@ const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }, "Use a real calendar date.");
+router.post("/prospects/search", marketingResearchRateLimit, async (req, res, next) => {
+  try {
+    const parsed = ProspectSearchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Choose a CRM and enter at least two characters of company or contact search text.");
+    res.json({ prospects: await searchCrmProspects(userId(req), parsed.data) });
+  } catch (error) { next(error); }
+});
+router.post("/prospects/import", marketingCrmSyncRateLimit, async (req, res, next) => {
+  try {
+    const parsed = z.object({ importToken: z.string().min(1).max(10000) }).safeParse(req.body ?? {});
+    if (!parsed.success) throw new BadRequestError("Choose a prospect from a current CRM search.");
+    const result = await importCrmProspect(userId(req), parsed.data.importToken);
+    res.status(result.alreadyImported ? 200 : 201).json(result);
+  } catch (error) { next(error); }
+});
 router.post("/campaigns/:id/research", marketingResearchRateLimit, async (req, res, next) => {
   try {
     const id = z.string().uuid().safeParse(req.params.id);

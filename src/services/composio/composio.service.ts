@@ -21,6 +21,7 @@
  * and the connection/tool-schema reads hit their API; native tools stay free.
  */
 
+import { orderConnectedToolkits } from "./toolkit-order";
 import type { Composio } from "@composio/core";
 import { query } from "../../config/db";
 import { AppError } from "../../utils/errors";
@@ -140,6 +141,7 @@ export const COMPOSIO_CATALOG: ToolkitMeta[] = [
   { slug: "google_analytics", name: "Google Analytics", description: "Traffic, acquisition, and conversion reports", audience: "professional" },
   { slug: "google_search_console", name: "Google Search Console", description: "Search queries, rankings, and indexing health", audience: "professional" },
   { slug: "canva", name: "Canva", description: "Brand assets and campaign design files", audience: "professional" },
+  { slug: "whatsapp", name: "WhatsApp Business", description: "Business messaging and approved templates; requires a WhatsApp Business account", audience: "professional" },
   { slug: "facebook", name: "Facebook Pages", description: "Page posts, inbox, and post insights", audience: "professional" },
   { slug: "instagram", name: "Instagram", description: "Business and Creator content and engagement", audience: "professional" },
   { slug: "linkedin", name: "LinkedIn", description: "Professional page and profile posts, audience, and engagement", audience: "professional" },
@@ -289,6 +291,16 @@ const BYOC_CREDENTIALS: Record<
   string,
   () => { authScheme: string; credentials: Record<string, string> } | null
 > = {
+  docusign: () => {
+    const clientId = process.env.DOCUSIGN_CLIENT_ID;
+    const clientSecret = process.env.DOCUSIGN_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return null;
+    const authUrl = process.env.DOCUSIGN_AUTH_URL || "https://account-d.docusign.com";
+    if (!["https://account.docusign.com", "https://account-d.docusign.com"].includes(authUrl)) {
+      throw new AppError("DocuSign authorization URL must use the official production or demo account host.", 422);
+    }
+    return { authScheme: "OAUTH2", credentials: { client_id: clientId, client_secret: clientSecret, full: authUrl, scopes: "signature,impersonation" } };
+  },
   canvas: () => {
     const clientId = process.env.CANVAS_CLIENT_ID;
     const clientSecret = process.env.CANVAS_CLIENT_SECRET;
@@ -321,6 +333,9 @@ async function getOrCreateAuthConfig(
     // Most toolkits use Composio's managed OAuth app; BYOC toolkits (Canvas)
     // authenticate against our own registered app, so we pass our client credentials.
     const byoc = BYOC_CREDENTIALS[toolkitSlug]?.() ?? null;
+    if (toolkitSlug === "docusign" && !byoc) {
+      throw new AppError("DocuSign needs server OAuth setup. Configure DOCUSIGN_CLIENT_ID and DOCUSIGN_CLIENT_SECRET, then connect your account.", 422);
+    }
     const adsCredentials = toolkitSlug === "googleads"
       ? { developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN! }
       : undefined;
@@ -348,6 +363,7 @@ async function getOrCreateAuthConfig(
     // Composio-managed OAuth app, so create() 400s with "Default auth config not found".
     // That's a user-actionable limitation, not a server fault — surface it as a clean 422
     // instead of a raw 500 with a Composio stack string.
+    if (err instanceof AppError) throw err;
     const msg = String((err as Error)?.message ?? "");
     if (/auth config|managed auth|not found/i.test(msg)) {
       throw new AppError(
@@ -628,6 +644,10 @@ const TOOLKIT_PRIORITY_TOOLS: Record<string, string[]> = {
   google_analytics: ["GOOGLE_ANALYTICS_RUN_REPORT", "GOOGLE_ANALYTICS_RUN_REALTIME_REPORT", "GOOGLE_ANALYTICS_LIST_ACCOUNT_SUMMARIES", "GOOGLE_ANALYTICS_LIST_PROPERTIES_FILTERED"],
   google_search_console: ["GOOGLE_SEARCH_CONSOLE_SEARCH_ANALYTICS_QUERY", "GOOGLE_SEARCH_CONSOLE_LIST_SITES", "GOOGLE_SEARCH_CONSOLE_INSPECT_URL"],
   googleads: ["GOOGLEADS_SEARCH_STREAM_GAQL", "GOOGLEADS_GET_CAMPAIGN_BY_NAME", "GOOGLEADS_GET_CAMPAIGN_BY_ID", "GOOGLEADS_LIST_ACCESSIBLE_CUSTOMERS"],
+  hubspot: ["HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA", "HUBSPOT_SEARCH_COMPANIES", "HUBSPOT_LIST_CONTACTS", "HUBSPOT_SEARCH_DEALS"],
+  salesforce: ["SALESFORCE_SEARCH_LEADS", "SALESFORCE_SEARCH_CONTACTS", "SALESFORCE_RUN_SOQL_QUERY", "SALESFORCE_LIST_OPPORTUNITIES"],
+  docusign: ["DOCUSIGN_GET_ENVELOPE", "DOCUSIGN_CREATE_ENVELOPE_FROM_TEMPLATE", "DOCUSIGN_SEND_ENVELOPE"],
+  whatsapp: ["WHATSAPP_GET_PHONE_NUMBERS", "WHATSAPP_GET_MESSAGE_TEMPLATES", "WHATSAPP_SEND_MESSAGE", "WHATSAPP_SEND_TEMPLATE_MESSAGE"],
   facebook: ["FACEBOOK_LIST_MANAGED_PAGES", "FACEBOOK_GET_PAGE_POSTS", "FACEBOOK_GET_PAGE_INSIGHTS", "FACEBOOK_GET_POST_INSIGHTS", "FACEBOOK_CREATE_POST"],
   instagram: ["INSTAGRAM_GET_USER_INSIGHTS", "INSTAGRAM_GET_IG_USER_MEDIA", "INSTAGRAM_GET_IG_MEDIA_INSIGHTS", "INSTAGRAM_POST_IG_USER_MEDIA", "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH"],
   linkedin: ["LINKEDIN_GET_MY_INFO", "LINKEDIN_GET_ORG_PAGE_STATS", "LINKEDIN_GET_POST_CONTENT", "LINKEDIN_CREATE_LINKED_IN_POST"],
@@ -671,20 +691,17 @@ export function invalidateToolCache(userId: string): void {
  * Returns [] when Composio is off or nothing is connected — so callers can always
  * spread it unconditionally.
  */
-export async function getComposioToolsForUser(userId: string, persona = "finance"): Promise<GeminiToolFunction[]> {
+export async function getComposioToolsForUser(userId: string, persona = "finance", message = ""): Promise<GeminiToolFunction[]> {
   const composio = await getClient();
   if (!composio) return [];
 
-  const cacheKey = `${userId}:${persona}`;
+  const preferred = TOOLKIT_PRIORITY_BY_PERSONA[persona] ?? [];
+  const connectedSlugs = await activeToolkitSlugs(userId);
+  const slugs = orderConnectedToolkits(connectedSlugs, preferred, message);
+  const cacheKey = `${userId}:${persona}:${slugs.join(",")}`;
   const cached = toolCache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.tools;
 
-  const preferred = TOOLKIT_PRIORITY_BY_PERSONA[persona] ?? [];
-  const connectedSlugs = await activeToolkitSlugs(userId);
-  const slugs = [...connectedSlugs].sort((a, b) => {
-    const aRank = preferred.indexOf(a); const bRank = preferred.indexOf(b);
-    return (aRank < 0 ? preferred.length : aRank) - (bRank < 0 ? preferred.length : bRank);
-  });
   if (slugs.length === 0) {
     toolCache.set(cacheKey, { at: Date.now(), tools: [] });
     return [];
@@ -698,12 +715,20 @@ export async function getComposioToolsForUser(userId: string, persona = "finance
       // Per-toolkit rather than one bulk call, so the per-toolkit cap is enforceable and
       // one broken toolkit can't wipe out every other toolkit's tools.
       const priority = TOOLKIT_PRIORITY_TOOLS[slug];
-      // When a toolkit has priority tools, pull a wider page so those slugs are actually in it,
-      // then reorder them to the front; otherwise just take the first N.
-      const list = await composio.tools.getRawComposioTools({
-        toolkits: [slug],
-        limit: priority ? 100 : MAX_TOOLS_PER_TOOLKIT,
-      });
+      // Request preferred slugs explicitly: CRM catalogs exceed one hundred tools,
+      // so fetching an arbitrary first page can omit every research operation.
+      const requests = [composio.tools.getRawComposioTools({ toolkits: [slug], limit: MAX_TOOLS_PER_TOOLKIT })];
+      if (priority?.length) requests.push(composio.tools.getRawComposioTools({ tools: priority }));
+      const results = await Promise.allSettled(requests);
+      const bySlug = new Map<string, Awaited<ReturnType<typeof composio.tools.getRawComposioTools>>[number]>();
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          for (const tool of result.value) if (tool.slug) bySlug.set(tool.slug, tool);
+        } else {
+          logger.warn("[composio] toolkit schema lookup failed; retaining available schemas", { toolkit: slug });
+        }
+      }
+      const list = [...bySlug.values()];
       const ordered = priority
         ? [...list].sort((a, b) => priorityRank(priority, a.slug) - priorityRank(priority, b.slug))
         : list;

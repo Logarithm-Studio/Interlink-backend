@@ -1236,6 +1236,7 @@ const SYSTEM_PROMPT = [
   "- Lead enrichment: when the user pastes/attaches an email, call enrich_lead to extract and add/update the contact.",
   "- Post-meeting follow-up: given a call transcript (text or attached file), extract the client's pain points and call meeting_followup for the relevant deal — it emails a follow-up and advances the stage.",
   "- Contract generation: generate_contract drafts a proposal from a deal and emails it for signature; mark_contract_signed closes the deal won.",
+  "- DocuSign requests use the Marketing Contracts & signatures workspace: collect actual scope, commercial terms and signer first; prepare an unsent draft for review. generate_contract is a legacy direct-email action, not DocuSign: use it only when the user explicitly requests an emailed agreement. Never infer that sending or signing happened from a prepared draft.",
   "- Inbound routing: route_lead assigns a lead to a rep by territory and schedules an intro meeting.",
   "- Pipeline hygiene: reengage_deal revives a stalled deal, advance_stage moves a deal, and post_pipeline_to_slack / sync_pipeline_to_trello share the pipeline.",
   "- Campaigns: draft_campaign creates a saved email draft for review. Never send a campaign from chat; the marketer reviews audience and copy in the Campaigns workspace and sends explicitly there.",
