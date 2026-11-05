@@ -1253,7 +1253,7 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "create_deal", description: "Create a new deal/opportunity.", parameters: { type: "object", properties: { title: { type: "string" }, contactName: { type: "string" }, company: { type: "string" }, amountCents: { type: "number" }, stage: { type: "string", enum: STAGES } }, required: ["title"] } },
   { name: "advance_stage", description: "Move a deal to a new pipeline stage.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, stage: { type: "string", enum: STAGES } }, required: ["dealTitle", "stage"] } },
   { name: "draft_followup", description: "Draft and send a follow-up email to a contact.", parameters: { type: "object", properties: { contactName: { type: "string" }, note: { type: "string" } }, required: ["contactName"] } },
-  { name: "draft_campaign", description: "Create a saved marketing email draft for human review. Optionally define an audience filter (company/title/territory). This never sends email.", parameters: { type: "object", properties: { topic: { type: "string" }, audience: { type: "string", description: "Optional filter, e.g. a company, title, or territory." } }, required: ["topic"] } },
+  { name: "draft_campaign", description: "Create a saved marketing email draft for human review. Preserve the user's objective, success criterion and chosen channels. This never sends email.", parameters: { type: "object", properties: { topic: { type: "string" }, audience: { type: "string", description: "Optional audience or company/title/territory filter." }, objective: { type: "string" }, successMetric: { type: "string", description: "The user's exact desired outcome, e.g. 10 qualified leads; this is a plan, not measured results." }, channels: { type: "array", items: { type: "string" } } }, required: ["topic"] } },
   { name: "enrich_lead", description: "Extract & enrich a lead from a pasted or attached email; creates/updates a contact.", parameters: { type: "object", properties: { emailText: { type: "string", description: "The email text to parse (if pasted)." } } } },
   { name: "meeting_followup", description: "After a call: send a follow-up that addresses pain points and advance the deal.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, painPoints: { type: "array", items: { type: "string" } }, summary: { type: "string" } }, required: ["dealTitle"] } },
   { name: "generate_contract", description: "Generate a proposal/contract from a deal and email it for signature.", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
@@ -1287,7 +1287,7 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
   }
 }
 
-async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string; data?: unknown }> {
   try {
     switch (name) {
       case "create_contact": {
@@ -1318,8 +1318,13 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Follow-up sent to ${c.name}.` };
       }
       case "draft_campaign": {
-        const campaign = await createMarketingCampaign(user.id, { topic: String(args.topic ?? "").trim(), audience: args.audience ? String(args.audience) : undefined });
-        return { ok: true, message: `Saved campaign draft "${campaign.subject}". Review the copy and choose a Mailchimp audience in the Campaigns workspace before any delivery.` };
+        const campaign = await createMarketingCampaign(user.id, {
+          topic: String(args.topic ?? "").trim(), audience: args.audience ? String(args.audience) : undefined,
+          objective: typeof args.objective === "string" ? args.objective : undefined,
+          successMetric: typeof args.successMetric === "string" ? args.successMetric : undefined,
+          channels: Array.isArray(args.channels) ? args.channels.filter((value): value is string => typeof value === "string") : undefined,
+        });
+        return { ok: true, message: `Saved campaign draft "${campaign.subject}" (ID: ${campaign.id}; status: ${campaign.status}). Review the copy and choose a Mailchimp audience in the Campaigns workspace before any delivery.`, data: { campaignId: campaign.id, status: campaign.status, subject: campaign.subject } };
       }
       case "enrich_lead": {
         const text = String(args.emailText ?? "").trim();

@@ -51,6 +51,8 @@ import {
 } from "./automations.service";
 import { recordActivity } from "./activity.service";
 import { AppUser } from "../../types";
+import { AppError } from "../../utils/errors";
+import { MARKETING_READ_TOOLS, readMarketingCampaigns } from "../professional/marketing/assistant-read.service";
 
 function daysOverdue(due: string): number {
   const d = new Date(`${due}T00:00:00`).getTime();
@@ -356,7 +358,7 @@ async function professionalToolsWithPersonal(
 ): Promise<typeof PERSONAL_TOOLS> {
   const composioTools = await getComposioToolsForUser(userId, persona, message);
   const seen = new Set<string>();
-  return [...tools, ...PERSONAL_TOOLS, ...composioTools].filter((tool) => {
+  return [...tools, ...(persona === "sales" ? MARKETING_READ_TOOLS : []), ...PERSONAL_TOOLS, ...composioTools].filter((tool) => {
     if (seen.has(tool.name)) return false;
     seen.add(tool.name);
     return true;
@@ -389,12 +391,17 @@ async function runReadOnlyPersonalAction(
   args: Record<string, unknown>,
 ): Promise<{ message: string }> {
   try {
+    if (name === "read_marketing_campaigns") return await readMarketingCampaigns(userId, args);
     return await executePersonalAction(userId, name, args);
   } catch (err) {
     return {
       message: actionErrorMessage(err, "I could not load that connected-app information right now."),
     };
   }
+}
+
+function isReadOnlyProfessionalAction(name: string): boolean {
+  return name === "read_marketing_campaigns" || isReadOnlyPersonalAction(name);
 }
 
 async function loadRecentHistory(
@@ -450,12 +457,12 @@ export async function command(
         clientNow: temporalContext.clientNow,
         tz: temporalContext.tz,
         history,
-        isReadOnly: isReadOnlyPersonalAction,
+        isReadOnly: isReadOnlyProfessionalAction,
         execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {
-        if (isReadOnlyPersonalAction(plan.action.name)) {
+        if (isReadOnlyProfessionalAction(plan.action.name)) {
           const exec = await runReadOnlyPersonalAction(userId, plan.action.name, plan.action.args);
           await query(
             `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
@@ -517,13 +524,13 @@ export async function command(
     clientNow: temporalContext.clientNow,
     tz: temporalContext.tz,
     history: financeHistory,
-    isReadOnly: isReadOnlyPersonalAction,
+    isReadOnly: isReadOnlyProfessionalAction,
     execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
   });
 
   let action: PendingAction | null = null;
   if (plan.action) {
-    if (isReadOnlyPersonalAction(plan.action.name)) {
+    if (isReadOnlyProfessionalAction(plan.action.name)) {
       const exec = await runReadOnlyPersonalAction(userId, plan.action.name, plan.action.args);
       await query(
         `INSERT INTO accountant_chat_messages (user_id, role, content, conversation_id)
@@ -559,13 +566,13 @@ export async function command(
 }
 
 /** Execute a user-confirmed agent action via the existing services. */
-export async function executeAction(
+async function executeActionOnce(
   user: AppUser,
   name: string,
   args: Record<string, unknown>,
   attachment?: { base64: string; mimeType: string; name: string },
   tz?: string,
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string; data?: unknown }> {
   // Composio-brokered tools are persona-agnostic — a connected HubSpot works the same for
   // finance and every vertical — so dispatch them before the persona branch.
   if (isComposioToolName(name)) return executeComposioTool(user.id, name, args);
@@ -734,6 +741,45 @@ export async function executeAction(
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Record actual execution separately from the earlier proposal, before the next turn. */
+export async function executeAction(
+  user: AppUser,
+  name: string,
+  args: Record<string, unknown>,
+  attachment?: { base64: string; mimeType: string; name: string },
+  tz?: string,
+  conversationId?: string,
+): Promise<{ ok: boolean; message: string; data?: unknown }> {
+  if (conversationId) {
+    const owned = await query('SELECT id FROM accountant_conversations WHERE id=$1 AND user_id=$2', [conversationId, user.id]);
+    if (!owned.rows[0]) throw new AppError("Conversation not found.", 404);
+  }
+  const remember = async (message: string) => {
+    if (!conversationId) return;
+    try {
+      await query(
+        `INSERT INTO accountant_chat_messages(user_id,role,content,conversation_id)
+         SELECT $1,'assistant',$2,$3 WHERE EXISTS(SELECT 1 FROM accountant_conversations WHERE id=$3 AND user_id=$1)`,
+        [user.id, message.slice(0, 8000), conversationId]);
+      await query('UPDATE accountant_conversations SET updated_at=now() WHERE id=$1 AND user_id=$2', [conversationId, user.id]);
+    } catch {
+      // A failed history write must not turn a completed external action into a retryable failure.
+      console.warn("[autolink] Could not record action outcome in conversation history.");
+    }
+  };
+  let result: { ok: boolean; message: string; data?: unknown };
+  try { result = await executeActionOnce(user, name, args, attachment, tz); }
+  catch (error) {
+    await remember(`Action outcome for ${name}: no confirmed result was received. Check the provider before retrying; do not assume completion.`);
+    throw error;
+  }
+  let outcome: string;
+  try { outcome = JSON.stringify({ ok: result.ok, message: result.message, data: result.data }); }
+  catch { outcome = JSON.stringify({ ok: result.ok, message: result.message }); }
+  await remember(`Action outcome for ${name}: ${outcome}`);
+  return result;
 }
 
 export { isMoneyAdjacent };

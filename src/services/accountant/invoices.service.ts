@@ -156,7 +156,7 @@ export async function createInvoice(
              'manual')
      ON CONFLICT (user_id, invoice_number) DO NOTHING
      RETURNING id`,
-    [userId, number, data.clientName.trim(), data.clientEmail ?? null, data.amountCents, data.currency ?? "USD", data.dueDate ?? ""],
+    [userId, number, data.clientName.trim(), data.clientEmail ?? "", data.amountCents, data.currency ?? "USD", data.dueDate ?? ""],
   );
   let id = res.rows[0]?.id;
   if (!id) {

@@ -510,6 +510,7 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
 // Execute a user-confirmed action.
 const ExecuteBody = z.object({
   name: z.string().min(1),
+  conversationId: z.string().uuid().optional(),
   args: z.record(z.unknown()).optional(),
   tz: z.string().optional(),
   attachmentBase64: z.string().min(1).optional(),
@@ -528,7 +529,7 @@ router.post("/assistant/execute", async (req: Request, res: Response, next: Next
           name: parsed.data.attachmentName ?? "Upload",
         }
       : undefined;
-    res.json(await executeAction(user, parsed.data.name, parsed.data.args ?? {}, attachment, parsed.data.tz));
+    res.json(await executeAction(user, parsed.data.name, parsed.data.args ?? {}, attachment, parsed.data.tz, parsed.data.conversationId));
   } catch (err) {
     mapSendError(err, next);
   }

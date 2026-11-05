@@ -10,6 +10,7 @@
 
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
+import { looksLikeAgentActionRequest } from "./agent-intent";
 import { prepareAssistantAttachment } from "./attachment.service";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
 import {
@@ -154,15 +155,6 @@ export async function planPersonaReply(params: {
     console.error("[multimodal] persona reply failed:", err);
     return { answer: "Sorry, I couldn't process that just now.", isLive: true };
   }
-}
-
-// Verbs/nouns that signal an actionable command across the professional verticals
-// (finance, sales, PM, HR, support, real-estate) + the shared personal tools.
-const AGENT_ACTION_INTENT =
-  /\b(create|add|make|new|send|draft|write|generate|update|assign|move|close|remind|schedule|log|post|file|enrich|route|clean|sync|release|record|mark|pay|invoice|refund)\b|\b(ticket|issue|invoice|reminder|deal|contact|lead|contract|report|expense|receipt|task|card|pr|pull request|release notes|sprint|campaign|note|page|channel|meeting)\b/i;
-
-function looksLikeAgentActionRequest(message: string): boolean {
-  return AGENT_ACTION_INTENT.test(message);
 }
 
 export async function planAgentActions(params: {

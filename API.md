@@ -165,7 +165,7 @@ JSON-only, Zod-validated, and cached in `ai_outputs`. **Dunning send** mirrors
 | POST | `/activity/:id/approve` | Execute a suggested item |
 | POST | `/activity/:id/dismiss` | Dismiss a suggested item |
 | POST | `/assistant/command` | Agentic command → answer/action. Supports `{ message, conversationId?, attachmentBase64?, attachmentMimeType?, attachmentName?, clientNow?, tz? }` |
-| POST | `/assistant/execute` | Execute a confirmed action. Supports `{ name, args, tz?, attachmentBase64?, attachmentMimeType?, attachmentName? }` |
+| POST | `/assistant/execute` | Execute a confirmed action. Supports `{ name, args, conversationId?, tz?, attachmentBase64?, attachmentMimeType?, attachmentName? }`. When supplied, the conversation must belong to this user; actual execution results are recorded for the next turn. |
 | POST | `/assistant/transcribe` | Voice → text (`{ audioBase64, mimeType? }` → Gemini audio) |
 | GET | `/tax/contractors` | Contractors + `needsW9` flag |
 | POST | `/tax/contractors/:id/request-w9` | AI-draft + send a W-9 request; mark `requested` |
