@@ -3,6 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 import express from "express";
 import { verifyQStash } from "./qstashVerify";
+import { getQStashReceiver } from "../config/qstash";
 
 test("production worker verification separates missing configuration and binds raw bytes to the destination", async () => {
   const saved = { ...process.env };
@@ -30,10 +31,11 @@ test("production worker verification separates missing configuration and binds r
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address() as { port: number };
-  async function post(path: string, signature?: string, input = body, expectedCode?: string) {
+  async function post(path: string, signature?: string, input = body, expectedCode?: string, expectedReason?: string) {
     const response = await fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(signature ? { "upstash-signature": signature } : {}) }, body: input });
     const result = await response.json();
     if (expectedCode) assert.equal(result.code, expectedCode);
+    if (expectedReason) assert.equal(result.reason, expectedReason);
     return response.status;
   }
   try {
@@ -45,7 +47,13 @@ test("production worker verification separates missing configuration and binds r
     assert.equal(await post("/one", sign("/one", body, key + "-next")), 200);
     assert.equal(await post("/one", sign("/one"), '{"probe":true}', "WORKER_BODY_MISMATCH"), 401);
     assert.equal(await post("/two", sign("/one"), body, "WORKER_DESTINATION_MISMATCH"), 401, "a signed job cannot be replayed against another worker");
-    assert.equal(await post("/one", sign("/one", body, "wrong-key"), body, "WORKER_SIGNATURE_INVALID"), 401);
+    assert.equal(await post("/one", sign("/one", body, "wrong-key"), body, "WORKER_SIGNATURE_INVALID", "signature_mismatch"), 401);
+    const receiver = getQStashReceiver();
+    const verify = receiver.verify;
+    try {
+      receiver.verify = async () => { throw new ReferenceError("crypto is not defined"); };
+      assert.equal(await post("/one", sign("/one"), body, "WORKER_CRYPTO_UNAVAILABLE"), 503);
+    } finally { receiver.verify = verify; }
     assert.equal(executions, 2);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

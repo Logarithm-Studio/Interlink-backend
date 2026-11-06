@@ -53,9 +53,16 @@ export async function verifyQStash(
     // Fixed diagnostic codes distinguish transport faults without disclosing
     // JWTs, signing keys, URLs or body hashes from the SDK's error message.
     const message = error instanceof Error ? error.message : "";
+    if (message === "crypto is not defined" || message === "CryptoKey is not defined") {
+      res.status(503).json({ error: "Worker cryptography is unavailable", code: "WORKER_CRYPTO_UNAVAILABLE" });
+      return;
+    }
     const code = message.startsWith("invalid subject:") ? "WORKER_DESTINATION_MISMATCH"
       : message.startsWith("body hash does not match") ? "WORKER_BODY_MISMATCH"
       : "WORKER_SIGNATURE_INVALID";
-    res.status(401).json({ error: "Invalid QStash signature", code });
+    const reason = message === "signature verification failed" ? "signature_mismatch"
+      : message.includes('"exp" claim') || message.includes('"nbf" claim') ? "signature_time_invalid"
+      : "verification_failed";
+    res.status(401).json({ error: "Invalid QStash signature", code, reason });
   }
 }
