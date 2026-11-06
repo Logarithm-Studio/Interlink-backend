@@ -112,5 +112,35 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       const resumed = await api('/tasks/' + id + '/continue', { attachmentBase64: data, attachmentMimeType: 'text/plain' });
       assert.equal(resumed.task.steps.filter(step => step.status === 'succeeded').length, 1);
     });
+    await t.test('an unconfirmed action blocks continuation and cannot be run again', async () => {
+      const crypto = require('node:crypto');
+      const service = s.load('services/accountant/agent-task.service.js');
+      const id = await service.createAgentTask(uid, plan.conversationId, 'Prepare one controlled action.');
+      const action = { id: crypto.randomUUID(), name: 'create_invoice', args: {}, summary: 'Controlled uncertain action', needsConfirm: true };
+      await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
+      let calls = 0;
+      const execute = async () => { calls++; return { ok: false, message: 'Provider result is uncertain.' }; };
+      const result = await service.executeTaskProposal(uid, id, action.id, execute);
+      assert.equal(result.task.status, 'blocked');
+      await assert.rejects(() => service.claimTaskContinuation(uid, id));
+      assert.equal((await service.executeTaskProposal(uid, id, action.id, execute)).ok, false);
+      assert.equal(calls, 1);
+    });
+    await t.test('receipt persistence failure after a write leaves the action locked against retries', async () => {
+      const crypto = require('node:crypto');
+      const service = s.load('services/accountant/agent-task.service.js');
+      const db = s.load('config/db.js');
+      const original = db.withTransaction;
+      const id = await service.createAgentTask(uid, plan.conversationId, 'Exercise durable receipt failure.');
+      const action = { id: crypto.randomUUID(), name: 'create_invoice', args: {}, summary: 'Receipt failure', needsConfirm: true };
+      await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
+      let writes = 0;
+      const execute = async () => { writes++; return { ok: true, message: 'Provider write completed.' }; };
+      db.withTransaction = async () => { throw new Error('Simulated receipt persistence outage'); };
+      try { await assert.rejects(() => service.executeTaskProposal(uid, id, action.id, execute)); }
+      finally { db.withTransaction = original; }
+      await assert.rejects(() => service.executeTaskProposal(uid, id, action.id, execute), /has not been run again/);
+      assert.equal(writes, 1);
+    });
   } finally { await s.close(); }
 });
