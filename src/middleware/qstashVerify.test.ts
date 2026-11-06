@@ -7,6 +7,7 @@ import { getQStashReceiver } from "../config/qstash";
 
 test("production worker verification separates missing configuration and binds raw bytes to the destination", async () => {
   const saved = { ...process.env };
+  const originalFetch = global.fetch;
   process.env.NODE_ENV = "production";
   process.env.API_BASE_URL = "https://workers.example.invalid";
   delete process.env.VERCEL_ENV;
@@ -14,6 +15,7 @@ test("production worker verification separates missing configuration and binds r
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
   delete process.env.QSTASH_CURRENT_SIGNING_KEY;
   delete process.env.QSTASH_NEXT_SIGNING_KEY;
+  delete process.env.QSTASH_TOKEN;
   const key = "controlled-worker-signing-key";
   const body = '{ "probe": true }';
   function sign(path: string, input = body, secret = key) {
@@ -55,7 +57,27 @@ test("production worker verification separates missing configuration and binds r
       assert.equal(await post("/one", sign("/one"), body, "WORKER_CRYPTO_UNAVAILABLE"), 503);
     } finally { receiver.verify = verify; }
     assert.equal(executions, 2);
+    let keyReads = 0;
+    process.env.QSTASH_TOKEN = "controlled-publisher-token";
+    global.fetch = async (input, init) => {
+      if (String(input) !== "https://qstash.upstash.io/v2/keys") return originalFetch(input, init);
+      keyReads++;
+      assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer controlled-publisher-token");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return new Response(JSON.stringify({ current: key + "-rotated", next: key + "-rotated-next" }));
+    };
+    assert.deepEqual(await Promise.all([
+      post("/one", sign("/one", body, key + "-rotated")),
+      post("/two", sign("/two", body, key + "-rotated")),
+    ]), [200, 200], "rotated provider keys recover signed jobs without disabling verification");
+    assert.equal(keyReads, 1, "concurrent recovery shares one authenticated key lookup");
+    assert.equal(await post("/one", sign("/one", body, key + "-rotated"), '{"changed":true}', "WORKER_BODY_MISMATCH"), 401);
+    assert.equal(await post("/two", sign("/one", body, key + "-rotated"), body, "WORKER_DESTINATION_MISMATCH"), 401);
+    assert.equal(await post("/one", sign("/one", body, "attacker"), body, "WORKER_SIGNATURE_INVALID"), 401);
+    assert.equal(keyReads, 1, "invalid callbacks cannot repeatedly fetch keys during the cooldown");
+    assert.equal(executions, 4, "only fully verified jobs reach execution after key recovery");
   } finally {
+    global.fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name];
     Object.assign(process.env, saved);

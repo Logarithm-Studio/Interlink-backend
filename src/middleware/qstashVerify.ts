@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { getQStashReceiver } from "../config/qstash";
+import { getQStashReceiver, refreshQStashReceiver } from "../config/qstash";
 import { resolveWorkerOrigin } from "../config/workerOrigin";
 
 /**
@@ -47,7 +47,14 @@ export async function verifyQStash(
   }
 
   try {
-    await receiver.verify({ signature, body: rawBody, url: origin + req.originalUrl });
+    const request = { signature, body: rawBody, url: origin + req.originalUrl };
+    try { await receiver.verify(request); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== "signature verification failed") throw error;
+      const refreshed = await refreshQStashReceiver();
+      if (!refreshed) throw error;
+      await refreshed.verify(request);
+    }
     next();
   } catch (error) {
     // Fixed diagnostic codes distinguish transport faults without disclosing
