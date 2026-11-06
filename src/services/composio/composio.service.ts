@@ -608,6 +608,7 @@ const READ_VERBS = [
 export function isComposioReadOnlyTool(slug: string): boolean {
   if (!isComposioToolName(slug)) return false;
   const action = slug.includes("_") ? slug.slice(slug.indexOf("_") + 1) : slug;
+  if (/(?:^|_)(?:OR|AND)(?:_|$)/.test(action)) return false;
   // Composite names such as GET_OR_CREATE are writes despite their first verb.
   if (/(?:^|_)(?:CREATE|UPDATE|DELETE|SEND|PUBLISH|EXECUTE|RUN|TRIGGER|IMPORT|EXPORT|UPSERT|ASSIGN|ARCHIVE|RESTORE|ADD|REMOVE|SET|SAVE|WRITE|OPEN|JOIN|INVITE|SUBSCRIBE|UNSUBSCRIBE|CANCEL|SCHEDULE|APPEND)(?:_|$)/.test(action)) return false;
   return READ_VERBS.some((verb) => action.startsWith(verb));

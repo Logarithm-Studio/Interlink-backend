@@ -3,7 +3,7 @@ import test from "node:test";
 import { isComposioReadOnlyTool } from "./composio.service";
 
 test("connector exports and composite mutation actions always require review", () => {
-  for (const tool of ["HUBSPOT_GET_OR_CREATE_CONTACT", "CRM_FIND_OR_CREATE_CONTACT", "GMAIL_SEARCH_AND_SEND_MESSAGE", "NOTION_EXPORT_PAGE", "TODOIST_LIST_AND_DELETE_TASKS", "STRIPE_CREATE_REFUND"]) {
+  for (const tool of ["HUBSPOT_GET_OR_CREATE_CONTACT", "CRM_FIND_OR_CREATE_CONTACT", "GMAIL_SEARCH_AND_SEND_MESSAGE", "NOTION_EXPORT_PAGE", "TODOIST_LIST_AND_DELETE_TASKS", "BILLING_GET_OR_REFUND_PAYMENT", "HELPDESK_GET_AND_CLOSE_TICKET", "STRIPE_CREATE_REFUND"]) {
     assert.equal(isComposioReadOnlyTool(tool), false, tool);
   }
   for (const tool of ["GMAIL_GET_MESSAGE", "HUBSPOT_SEARCH_CONTACTS", "NOTION_LIST_PAGES", "GITHUB_GET_PULL_REQUEST", "CRM_LIST_DELETED_RECORDS"]) {
