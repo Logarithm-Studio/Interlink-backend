@@ -41,6 +41,14 @@ prove that this uncommitted release is deployed or that worker signatures work.
 
 ## Email sequences
 
+Worker verification uses the original JSON bytes and the resolved callback URL.
+Vercel body parsing is disabled at the function entry point so Express can capture
+those bytes. Unsigned, altered, expired or wrong-destination callbacks return 401.
+Missing verification configuration or missing raw bytes returns 503 and never runs
+the processor. A signed malformed `{}` envelope must reach 422 on the sequence and
+agreement-check routes before background delivery can be accepted. Keep schedules
+paused while that transport check fails; do not disable signature verification.
+
 `POST /api/v1/marketing/email-sequences` accepts an owned `contactId`, a confirmed
 `initialMessageId`, `expectedSenderEmail`, one to three `{subject,body,delayDays}`
 steps, and `confirmed:true`. Each delay is 1–30 days. The first delay starts at
@@ -101,6 +109,12 @@ The older direct-email `generate_contract` action remains a separate legacy API.
 Autolink instructions and workflow links direct DocuSign requests to this reviewed
 native workspace instead of treating an emailed draft as an e-signature envelope.
 
+The legacy pipeline-cleaning `reengage_deal` action requires a contact email,
+recorded marketing permission and complete AI copy. Missing/offline copy cannot
+send fallback text or advance the deal. Permission and address are checked again
+after drafting. This action does not replace the exact-message review and reply
+checks in the native sequence workspace.
+
 ## Research shortlist exports
 
 `POST /research-plans` saves `title`, `objective`, and 1–25 owned `contactIds`.
@@ -124,6 +138,12 @@ explicit `confirmedNoCopy:true` after checking the provider. A mistaken manual
 no-copy confirmation can still create a duplicate; it is never an automatic retry.
 
 ## Verification
+
+Notion exports split long paragraphs and code into rich-text fragments without
+cutting their reviewed content or emoji pairs. A new page exceeding 100 blocks is
+rejected before creation; it is never silently truncated to the first 100 blocks.
+Append operations retain the existing 100-block batching behavior. Limits follow
+[Notion's request limits](https://developers.notion.com/reference/request-limits).
 
 `npm run test:sandbox` explicitly registers `sandbox/outreach.test.cjs` alongside
 the existing suites. It executes production auth/routes/jobs and all migrations

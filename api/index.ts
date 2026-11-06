@@ -14,4 +14,7 @@
  */
 import app from "../src/app";
 
+// Express owns parsing and raw-byte capture for signed worker callbacks.
+export const config = { api: { bodyParser: false } };
+
 export default app;

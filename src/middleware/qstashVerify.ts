@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { getQStashReceiver } from "../config/qstash";
+import { resolveWorkerOrigin } from "../config/workerOrigin";
 
 /**
  * Express middleware that verifies the Upstash-Signature header on incoming
@@ -26,13 +27,27 @@ export async function verifyQStash(
     return;
   }
 
-  const rawBody: string =
-    (req as Request & { rawBody?: string }).rawBody ??
-    JSON.stringify(req.body ?? {});
+  let receiver: ReturnType<typeof getQStashReceiver>;
+  let origin: string | undefined;
+  try {
+    receiver = getQStashReceiver();
+    origin = resolveWorkerOrigin(process.env);
+    if (!origin) throw new Error("Worker origin is missing");
+  } catch {
+    res.status(503).json({ error: "Worker verification is not configured" });
+    return;
+  }
+
+  // Re-serializing parsed JSON changes the bytes QStash signed. Fail closed if
+  // the hosting runtime did not preserve them rather than verifying a guess.
+  const rawBody = (req as Request & { rawBody?: string }).rawBody;
+  if (typeof rawBody !== "string") {
+    res.status(503).json({ error: "Worker request body was not preserved" });
+    return;
+  }
 
   try {
-    const receiver = getQStashReceiver();
-    await receiver.verify({ signature, body: rawBody });
+    await receiver.verify({ signature, body: rawBody, url: origin + req.originalUrl });
     next();
   } catch {
     res.status(401).json({ error: "Invalid QStash signature" });

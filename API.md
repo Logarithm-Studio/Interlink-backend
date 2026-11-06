@@ -479,3 +479,9 @@ routes. Migration 096 is required. See [Marketing outreach](doc/marketing-outrea
 for payloads, confirmation fields, fingerprint checks and job behavior. The hourly
 Marketing dispatcher also queues `marketing-email-sequence` and
 `marketing-agreement-check` jobs behind the existing QStash signature middleware.
+
+Production worker signatures are bound to the resolved callback URL and original
+body bytes. Invalid signatures return 401; unavailable signing configuration or
+raw-body capture returns 503 without execution. Gmail send attempts without both
+message and thread identifiers return 502 (uncertain delivery), never a safe 400
+rejection. Check Sent Mail before attempting another send.

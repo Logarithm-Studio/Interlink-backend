@@ -20,6 +20,26 @@ test('reviewed CRM prospect imports run through real auth and PostgreSQL', async
   }
   let preview;
   try {
+    await t.test('pipeline cleaning cannot send without permission or claim an unsent re-engagement', async () => {
+      const sales = s.load('services/professional/sales/sales.service.js');
+      const { salesVertical } = sales;
+      const contact = await sales.createContact(userId, { name: 'Pipeline QA', email: 'pipeline@sandbox.invalid' });
+      const deal = await sales.createDeal(userId, { title: 'Pipeline QA deal', contactId: contact.id });
+      let sends = 0;
+      s.load('services/professional/email.js').sendProfessionalEmail = async () => { sends++; return { messageId: 'fixture' }; };
+      const action = () => salesVertical.executeTool({ id: userId, email: s.config.email }, 'reengage_deal', { dealTitle: deal.title });
+      let result = await action();
+      assert.equal(result.ok, false, 'imported contacts have no automatic outreach permission');
+      assert.equal(sends, 0);
+      await sales.updateContact(userId, contact.id, { marketingOptIn: true, marketingOptInSource: 'email_request', marketingOptInEvidence: 'Controlled permission fixture' });
+      // No model is configured in this sandbox. Offline fallback must stay unsent.
+      result = await action();
+      assert.equal(result.ok, false);
+      assert.equal(sends, 0);
+      assert.equal((await sales.getDeal(userId, deal.id)).stage, deal.stage);
+      await s.db.query('DELETE FROM sales_deals WHERE id=$1', [deal.id]);
+      await s.db.query('DELETE FROM sales_contacts WHERE id=$1', [contact.id]);
+    });
     await t.test('search returns source-backed signed previews without writing contacts', async () => {
       preview = (await api('search', { provider: 'hubspot', query: 'QA Company' }, 200)).prospects[0];
       assert.equal(preview.externalId, 'crm-101'); assert.ok(preview.importToken);

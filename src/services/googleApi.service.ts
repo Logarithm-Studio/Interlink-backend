@@ -3,7 +3,7 @@ import {
   refreshGoogleTokenIfNeeded,
   refreshGoogleTokenForAccount,
 } from "./auth.service";
-import { BadRequestError } from "../utils/errors";
+import { AppError, BadRequestError } from "../utils/errors";
 
 async function getGoogleOAuthClient(
   userId: string,
@@ -467,7 +467,7 @@ export async function sendAutomatedGmailMessage(params: {
   });
 
   if (!response.data.id || !response.data.threadId) {
-    throw new BadRequestError("Gmail did not return message identifiers");
+    throw new AppError("Gmail delivery was not confirmed. Check Sent Mail before sending again.", 502);
   }
 
   return {

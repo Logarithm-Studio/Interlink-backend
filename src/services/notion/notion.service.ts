@@ -135,7 +135,7 @@ export async function createDataSourcePage(
     body: JSON.stringify({
       parent: { type: "data_source_id", data_source_id: dataSourceId },
       properties,
-      children: markdownToBlocks(content).slice(0, 100),
+      children: pageContentBlocks(content),
     }),
   }, NOTION_MARKETING_VERSION);
   if (!res.ok) throw new Error("Notion may not have confirmed row creation.");
@@ -209,7 +209,7 @@ export async function createPage(
 ): Promise<NotionPage> {
   // Render the body as real Notion blocks (headings/bullets/to-dos/code), not a single
   // paragraph — so created pages are structured documents, not text blobs.
-  const children = data.content ? markdownToBlocks(data.content) : [];
+  const children = data.content ? pageContentBlocks(data.content) : [];
 
   const res = await notionFetch(userId, "/pages", {
     method: "POST",
@@ -261,6 +261,7 @@ export async function createDatabaseRow(
   title: string,
   content?: string,
 ): Promise<NotionPage> {
+  const children = content ? pageContentBlocks(content) : [];
   // Find the title property's name (it varies: "Name", "Task", etc.).
   const schemaRes = await notionFetch(userId, `/databases/${databaseId}`, { method: "GET" });
   let titleProp = "Name";
@@ -275,7 +276,7 @@ export async function createDatabaseRow(
     body: JSON.stringify({
       parent: { type: "database_id", database_id: databaseId },
       properties: { [titleProp]: { title: [{ text: { content: title } }] } },
-      children: content ? markdownToBlocks(content) : [],
+      children,
     }),
   });
   if (!res.ok) {
@@ -290,7 +291,23 @@ export async function createDatabaseRow(
 
 type NotionBlock = { object: "block"; type: string; [k: string]: unknown };
 
-const richText = (content: string) => [{ type: "text", text: { content: content.slice(0, 2000) } }];
+function richText(content: string) {
+  const parts: { type: "text"; text: { content: string } }[] = [];
+  for (let offset = 0; offset < content.length;) {
+    let end = Math.min(offset + 2000, content.length);
+    if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1])) end--;
+    parts.push({ type: "text", text: { content: content.slice(offset, end) } });
+    offset = end;
+  }
+  if (parts.length > 100) throw new BadRequestError("This Notion block is too long. Split the document into shorter sections before exporting.");
+  return parts;
+}
+
+function pageContentBlocks(content: string): NotionBlock[] {
+  const blocks = markdownToBlocks(content);
+  if (blocks.length > 100) throw new BadRequestError("This Notion document exceeds 100 blocks. Split it into smaller documents before exporting.");
+  return blocks;
+}
 const textBlock = (type: string, content: string, extra: Record<string, unknown> = {}): NotionBlock => ({
   object: "block",
   type,

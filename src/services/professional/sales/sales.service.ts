@@ -1162,12 +1162,18 @@ async function reengageDeal(user: AppUser, dealTitle: string): Promise<{ ok: boo
   const deal = await findDealByTitle(user.id, dealTitle);
   if (!deal) return { ok: false, message: "Couldn't find that deal." };
   const contact = await getDealContact(user.id, deal);
+  if (!contact?.email) return { ok: false, message: "Add a contact with an email before re-engaging this deal. No message was sent or stage changed." };
+  if (!contact.marketingOptIn) return { ok: false, message: "Record this contact's marketing permission before automatic re-engagement. No message was sent or stage changed." };
   const draft = await draftEmail({
     role: "sales representative",
     purpose: "a short, low-pressure re-engagement email to revive a stalled deal",
     context: `Deal: ${deal.title} (${deal.company ?? ""}), currently ${deal.stage}.`,
   });
-  if (contact?.email) await sendProfessionalEmail({ user, to: contact.email, subject: draft.subject, body: draft.body, tag: "sales_reengage" });
+  if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "AI copy is unavailable. Prepare and review the message in Email Marketing; no message was sent or stage changed." };
+  // Recheck consent after drafting, immediately before attempting delivery.
+  const approved = await getContact(user.id, contact.id);
+  if (!approved?.marketingOptIn || approved.email !== contact.email) return { ok: false, message: "Contact permission or address changed. Review the prospect before sending." };
+  await sendProfessionalEmail({ user, to: contact.email, subject: draft.subject, body: draft.body, tag: "sales_reengage" });
   await updateDeal(user.id, deal.id, { stage: "nurture" });
   await logActivity(user.id, { dealId: deal.id, kind: "reengaged", note: "Re-engagement sent; moved to nurture" });
   await recordActivity({ userId: user.id, persona: PERSONA, kind: "deal_reengaged", title: `Re-engaged ${deal.title}`, detail: "moved to nurture", entityType: "sales_deal", entityId: deal.id });
