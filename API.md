@@ -485,3 +485,12 @@ body bytes. Invalid signatures return 401; unavailable signing configuration or
 raw-body capture returns 503 without execution. Gmail send attempts without both
 message and thread identifiers return 502 (uncertain delivery), never a safe 400
 rejection. Check Sent Mail before attempting another send.
+
+## Autolink recovery
+
+Both command endpoints accept up to 12,000 trimmed characters. Invalid task UUIDs
+return 400. Expired pending Professional proposals become cancelled, unexecuted
+receipts; their task can continue with a fresh approval. Deleting a conversation
+with active planning/execution returns 409. Inline attachments are limited to 3 MB
+for hosted transport; transcription provider outages return 503. See
+[Autolink reliability](doc/autolink-reliability.md) for execution boundaries.

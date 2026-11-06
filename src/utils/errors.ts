@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../observability/logger";
+import { ZodError } from "zod";
 
 /**
  * Custom application error with HTTP status code.
@@ -49,6 +50,10 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  if (err instanceof ZodError) {
+    res.status(400).json({ error: err.issues.map(issue => issue.message).join(" "), statusCode: 400 });
+    return;
+  }
   if (err instanceof AppError) {
     // Operational errors are expected; log at warn unless 5xx.
     const log = req.log ?? logger;

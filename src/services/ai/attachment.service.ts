@@ -23,9 +23,8 @@ export type PrepareAssistantAttachmentResult =
   | { ok: true; value: PreparedAssistantAttachment }
   | { ok: false; message: string };
 
-// A base64 attachment lives inside a 25 MB JSON request. Keeping raw files at 15 MB
-// leaves room for encoding overhead, the prompt, and middleware bookkeeping.
-export const MAX_ASSISTANT_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+// Base64 plus JSON must fit Vercel's 4.5 MB request limit.
+export const MAX_ASSISTANT_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 const MAX_EXTRACTED_TEXT_CHARS = 120_000;
 const MAX_ARCHIVE_ENTRY_BYTES = 8 * 1024 * 1024;
 const MAX_ARCHIVE_EXTRACTED_BYTES = 24 * 1024 * 1024;
@@ -207,6 +206,7 @@ export function prepareAssistantAttachment(
   let buffer: Buffer;
   try {
     buffer = Buffer.from(attachment.data, "base64");
+    if (buffer.toString("base64") !== attachment.data.replace(/\s/g, "")) throw new Error("Invalid base64");
   } catch {
     return { ok: false, message: "The attachment data is invalid. Please attach the file again." };
   }
@@ -215,7 +215,7 @@ export function prepareAssistantAttachment(
   if (buffer.length > MAX_ASSISTANT_ATTACHMENT_BYTES) {
     return {
       ok: false,
-      message: `"${name}" is too large. Attach a file smaller than 15 MB so I can analyze it reliably.`,
+      message: `"${name}" is too large. Attach a file smaller than 3 MB for this upload.`,
     };
   }
 

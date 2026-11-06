@@ -70,12 +70,15 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       assert.equal((await s.db.query('SELECT id FROM invoices WHERE user_id=$1', [uid])).rows.length, 1);
     });
     await t.test('expired approval cannot perform a write', async () => {
-      await s.db.query("UPDATE autolink_tasks SET status='review' WHERE id=$1", [taskId]);
-      await s.db.query("UPDATE autolink_action_proposals SET expires_at=now()-interval '1 minute' WHERE id=$1", [second.action.id]);
-      await api('/tasks/' + taskId + '/actions/' + second.action.id + '/execute', {}, 409);
+      const service = s.load('services/accountant/agent-task.service.js');
+      const id = await service.createAgentTask(uid, plan.conversationId, 'Expired approval fixture');
+      const action = { ...second.action, id: require('node:crypto').randomUUID() };
+      await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
+      await s.db.query("UPDATE autolink_action_proposals SET expires_at=now()-interval '1 minute' WHERE id=$1", [action.id]);
+      await api('/tasks/' + id + '/actions/' + action.id + '/execute', {}, 409);
     });
     await t.test('successful second action finishes with both durable receipts', async () => {
-      await s.db.query("UPDATE autolink_action_proposals SET expires_at=now()+interval '1 minute' WHERE id=$1", [second.action.id]);
+      await api('/tasks/' + taskId + '/resume', {});
       assert.equal((await api('/tasks/' + taskId + '/actions/' + second.action.id + '/execute', {})).ok, true);
       const done = await api('/tasks/' + taskId + '/continue', {});
       assert.equal(done.action, null);
@@ -136,7 +139,8 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
       let writes = 0;
       const execute = async () => { writes++; return { ok: true, message: 'Provider write completed.' }; };
-      db.withTransaction = async () => { throw new Error('Simulated receipt persistence outage'); };
+      let transactions = 0;
+      db.withTransaction = async work => { if (++transactions === 2) throw new Error('Simulated receipt persistence outage'); return original(work); };
       try { await assert.rejects(() => service.executeTaskProposal(uid, id, action.id, execute)); }
       finally { db.withTransaction = original; }
       await assert.rejects(() => service.executeTaskProposal(uid, id, action.id, execute), /has not been run again/);

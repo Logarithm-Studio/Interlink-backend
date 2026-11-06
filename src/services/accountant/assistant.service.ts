@@ -6,7 +6,7 @@
  */
 
 import { createHash, randomUUID } from "crypto";
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
 import { generateAssistantReply } from "../ai/ai.service";
 import type { AssistantReply, AssistantChatTurn } from "../ai/prompts/assistant";
 import { listInvoices, createInvoice, type Invoice } from "./invoices.service";
@@ -307,7 +307,13 @@ export async function listConversations(
 
 /** Delete a conversation and its messages (messages cascade). Scoped to the user. */
 export async function deleteConversation(userId: string, conversationId: string): Promise<void> {
-  await query(`DELETE FROM accountant_conversations WHERE id = $1 AND user_id = $2`, [conversationId, userId]);
+  await withTransaction(async client => {
+    await client.query("SELECT id FROM accountant_conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, userId]);
+    const active = await client.query(`SELECT id FROM autolink_tasks t WHERE t.conversation_id=$1 AND t.user_id=$2
+      AND (t.status IN ('planning','running') OR EXISTS(SELECT 1 FROM autolink_action_proposals p WHERE p.task_id=t.id AND p.status='running')) LIMIT 1`, [conversationId, userId]);
+    if (active.rows.length) throw new AppError("This chat has work in progress. Let it finish and check its result before deleting it.", 409);
+    await client.query(`DELETE FROM accountant_conversations WHERE id = $1 AND user_id = $2`, [conversationId, userId]);
+  });
 }
 
 /** Fetch the messages of one conversation (oldest first), scoped to the user. */

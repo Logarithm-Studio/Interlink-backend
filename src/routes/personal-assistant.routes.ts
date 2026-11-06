@@ -36,7 +36,7 @@ router.post("/chat", async (req: Request, res: Response, next: NextFunction) => 
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = ChatBody.safeParse(req.body ?? {});
-    if (!parsed.success) throw new BadRequestError("message is required.");
+    if (!parsed.success) throw new BadRequestError(parsed.error.issues.map(issue => issue.message).join(" "));
     res.json(await chat(user.id, parsed.data.message, parsed.data.history));
   } catch (err) {
     next(err);
@@ -112,7 +112,7 @@ router.get(
 // ─── Command (function-calling) ───────────────────────────────────────────────
 
 const CommandBody = z.object({
-  message: z.string().min(1).max(2000),
+  message: z.string().trim().min(1, "Enter a message.").max(12000, "Keep the message within 12,000 characters."),
   // Optional attached image for multimodal reasoning (base64, no data: prefix).
   imageBase64: z.string().min(1).optional(),
   imageMimeType: z.string().optional(),
@@ -134,7 +134,7 @@ router.post("/command", async (req: Request, res: Response, next: NextFunction) 
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = CommandBody.safeParse(req.body ?? {});
-    if (!parsed.success) throw new BadRequestError("message is required.");
+    if (!parsed.success) throw new BadRequestError(parsed.error.issues.map(issue => issue.message).join(" "));
     const { message, imageBase64, imageMimeType, fileBase64, fileMimeType, fileName, lat, lon, clientNow, tz, conversationId } =
       parsed.data;
     const image = imageBase64

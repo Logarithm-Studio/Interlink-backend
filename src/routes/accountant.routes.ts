@@ -479,7 +479,7 @@ router.delete("/assistant/conversations/:id", async (req: Request, res: Response
 
 // Agentic command center — plan an action (or answer) from a natural-language command.
 const CommandBody = z.object({
-  message: z.string().min(1).max(2000),
+  message: z.string().trim().min(1, "Enter a message.").max(12000, "Keep the message within 12,000 characters."),
   conversationId: z.string().uuid().optional(),
   attachmentBase64: z.string().min(1).optional(),
   attachmentMimeType: z.string().min(1).optional(),
@@ -491,7 +491,7 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = CommandBody.safeParse(req.body ?? {});
-    if (!parsed.success) throw new BadRequestError("message is required.");
+    if (!parsed.success) throw new BadRequestError(parsed.error.issues.map(issue => issue.message).join(" "));
     const attachment = parsed.data.attachmentBase64
       ? {
           data: parsed.data.attachmentBase64,

@@ -48,6 +48,13 @@ export async function getAgentTaskContext(userId: string, taskId: string): Promi
 }
 
 export async function getAgentTask(userId: string, taskId?: string, conversationId?: string): Promise<AgentTask | null> {
+  // An expired approval never attempted a write. Preserve it as a receipt and
+  // release only the review state so the user can request a fresh plan.
+  const expired = await query<{ task_id: string }>(`UPDATE autolink_action_proposals p SET status='cancelled',
+    result='{"ok":false,"message":"Approval expired. No action was run. Continue to review a fresh plan."}'::jsonb,updated_at=now()
+    WHERE p.user_id=$1 AND p.status='pending' AND p.expires_at<=now()
+    AND EXISTS(SELECT 1 FROM autolink_tasks t WHERE t.id=p.task_id AND ($2::uuid IS NULL OR t.id=$2) AND ($3::uuid IS NULL OR t.conversation_id=$3)) RETURNING task_id`, [userId, taskId ?? null, conversationId ?? null]);
+  if (expired.rows.length) await query("UPDATE autolink_tasks SET status='ready',updated_at=now() WHERE user_id=$1 AND id=ANY($2::uuid[]) AND status='review'", [userId, expired.rows.map(row => row.task_id)]);
   // A planning process can disappear without performing a write. Release only that
   // read/planning lease; a running provider operation stays locked for human review.
   await query(`UPDATE autolink_tasks SET status='ready',updated_at=now() WHERE user_id=$1
@@ -102,17 +109,22 @@ export async function executeTaskProposal(userId: string, taskId: string, action
   const proposal = await query<{ execution_context: ProposalContext }>("SELECT execution_context FROM autolink_action_proposals WHERE id=$1 AND task_id=$2 AND user_id=$3", [actionId, taskId, userId]);
   const context = proposal.rows[0]?.execution_context ?? {};
   if (context.attachmentDigest && context.attachmentDigest !== attachmentDigest) throw new AppError("Attach the same original file before running this upload. The reviewed file cannot be replaced by a different attachment.", 409);
-  const claimed = await query<{ id: string; name: string; args: Record<string, unknown>; summary: string }>(
+  const claimed = await withTransaction(async client => {
+    await client.query(`SELECT c.id FROM accountant_conversations c JOIN autolink_tasks t ON t.conversation_id=c.id
+      WHERE t.id=$1 AND t.user_id=$2 AND c.user_id=$2 FOR UPDATE OF c`, [taskId, userId]);
+    const result = await client.query<{ id: string; name: string; args: Record<string, unknown>; summary: string }>(
     `UPDATE autolink_action_proposals SET status='running',updated_at=now() WHERE id=$1 AND task_id=$2 AND user_id=$3 AND status='pending' AND expires_at>now()
       AND EXISTS(SELECT 1 FROM autolink_tasks WHERE id=$2 AND user_id=$3 AND status='review') RETURNING id,name,args,summary`, [actionId, taskId, userId]);
+    if (result.rows[0]) await client.query("UPDATE autolink_tasks SET status='running',updated_at=now() WHERE id=$1 AND user_id=$2", [taskId, userId]);
+    return result;
+  });
   const row = claimed.rows[0];
   if (!row) {
     const saved = await query<{ status: string; result: { ok: boolean; message: string } | null }>("SELECT status,result FROM autolink_action_proposals WHERE id=$1 AND task_id=$2 AND user_id=$3", [actionId, taskId, userId]);
     if (!saved.rows[0]) throw new AppError("Action not found.", 404);
-    if (saved.rows[0].result) return { ...saved.rows[0].result, task: (await getAgentTask(userId, taskId))! };
+    if (saved.rows[0].result && saved.rows[0].status !== "cancelled") return { ...saved.rows[0].result, task: (await getAgentTask(userId, taskId))! };
     throw new AppError("This action is running, expired, or paused. Check its status before continuing; it has not been run again.", 409);
   }
-  await query("UPDATE autolink_tasks SET status='running',updated_at=now() WHERE id=$1 AND user_id=$2", [taskId, userId]);
   let result: { ok: boolean; message: string };
   try { result = await execute({ ...row, needsConfirm: true }, task.conversationId, context); }
   catch { result = { ok: false, message: "The action could not be confirmed. Check the destination before taking further action; no automatic retry will occur." }; }
@@ -134,8 +146,12 @@ export async function pauseAgentTask(userId: string, taskId: string): Promise<Ag
 export async function claimTaskContinuation(userId: string, taskId: string): Promise<AgentTask> {
   const task = await getAgentTask(userId, taskId);
   if (!task) throw new AppError("Task not found.", 404);
-  if (task.steps.length >= 12) throw new AppError("This task reached its 12-action limit. Review the results and start a new request for further work.", 409);
-  const claimed = await query("UPDATE autolink_tasks SET status='planning',updated_at=now() WHERE id=$1 AND user_id=$2 AND status='ready' RETURNING id", [taskId, userId]);
+  if (task.steps.filter(step => step.status !== "cancelled").length >= 12) throw new AppError("This task reached its 12-action limit. Review the results and start a new request for further work.", 409);
+  const claimed = await withTransaction(async client => {
+    await client.query(`SELECT c.id FROM accountant_conversations c JOIN autolink_tasks t ON t.conversation_id=c.id
+      WHERE t.id=$1 AND t.user_id=$2 AND c.user_id=$2 FOR UPDATE OF c`, [taskId, userId]);
+    return client.query("UPDATE autolink_tasks SET status='planning',updated_at=now() WHERE id=$1 AND user_id=$2 AND status='ready' RETURNING id", [taskId, userId]);
+  });
   if (!claimed.rows[0]) throw new AppError("This task is waiting for review or is already being continued.", 409);
   return task;
 }

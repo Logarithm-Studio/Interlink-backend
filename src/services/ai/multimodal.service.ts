@@ -13,6 +13,7 @@ import { runAgentTurn } from "./agentLoop";
 import { looksLikeAgentActionRequest } from "./agent-intent";
 import { prepareAssistantAttachment } from "./attachment.service";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
+import { AppError } from "../../utils/errors";
 import {
   ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME,
   ATTACHMENT_DIRECTIVE,
@@ -82,14 +83,17 @@ export async function transcribeAudio(
         { text: "Transcribe." },
       ],
       json: true,
-      maxOutputTokens: 512,
+      tier: "fast",
+      thinkingBudget: 0,
+      maxOutputTokens: 2048,
+      responseSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
     });
     const obj = JSON.parse(result.raw) as { text?: unknown };
     const text = typeof obj.text === "string" ? obj.text.trim() : "";
     return { text, isLive: true };
   } catch (err) {
     console.error("[multimodal] transcription failed:", err);
-    return { text: "", isLive: true };
+    throw new AppError("Voice transcription is temporarily unavailable. Try typing your request.", 503);
   }
 }
 
