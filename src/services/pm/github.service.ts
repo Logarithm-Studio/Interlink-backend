@@ -9,6 +9,26 @@ import { BadRequestError } from "../../utils/errors";
 const GITHUB_BASE = "https://api.github.com";
 const GITHUB_OAUTH = "https://github.com";
 
+export async function listIssueAssignees(userId: string, owner: string, repo: string): Promise<{ login: string }[]> {
+  const res = await ghFetch(userId, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/assignees?per_page=100`);
+  if (!res.ok) throw new BadRequestError("GitHub assignees could not be read. Check repository access and the connection.");
+  const users = await res.json() as { login: string }[];
+  return users.map(user => ({ login: user.login }));
+}
+
+export async function assignIssue(userId: string, owner: string, repo: string, issueNumber: number, assignee: string): Promise<{ number: number; assignees: string[]; url: string }> {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1 || !/^[a-z\d](?:[a-z\d-]{0,38})$/i.test(assignee)) throw new BadRequestError("A valid issue number and exact GitHub login are required.");
+  const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const allowed = await ghFetch(userId, `${base}/assignees/${encodeURIComponent(assignee)}`);
+  if (allowed.status !== 204) throw new BadRequestError("That GitHub user is not assignable in this repository. Choose a verified repository assignee.");
+  const res = await ghFetch(userId, `${base}/issues/${issueNumber}/assignees`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assignees: [assignee] }) });
+  if (!res.ok) throw new BadRequestError("GitHub could not confirm the assignment. Check the issue before trying again.");
+  const result = await res.json() as { number: number; assignees?: { login: string }[]; html_url?: string };
+  const assignees = (result.assignees ?? []).map(user => user.login);
+  if (!assignees.some(login => login.toLowerCase() === assignee.toLowerCase())) throw new BadRequestError("GitHub did not confirm the selected assignee. Check the issue before trying again.");
+  return { number: result.number, assignees, url: result.html_url ?? "" };
+}
+
 function clientId(): string {
   const id = process.env.GITHUB_CLIENT_ID;
   if (!id) throw new Error("GITHUB_CLIENT_ID is not configured.");

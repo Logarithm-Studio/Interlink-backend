@@ -19,8 +19,32 @@ import {
   type GeminiToolFunction,
 } from "./geminiClient";
 
+async function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([work, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Lookup deadline reached")), ms); })]); }
+  finally { if (timer) clearTimeout(timer); }
+}
+
+function validArguments(value: unknown, schema: Record<string, unknown>, depth = 0): boolean {
+  if (depth > 12 || value === undefined) return false;
+  if (value === null) return schema.nullable === true;
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return false;
+  const type = String(schema.type ?? "").toLowerCase();
+  if (type === "object") {
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    const object = value as Record<string, unknown>;
+    if (Array.isArray(schema.required) && schema.required.some(key => !(String(key) in object))) return false;
+    return Object.entries((schema.properties ?? {}) as Record<string, Record<string, unknown>>).every(([key, child]) => !(key in object) || validArguments(object[key], child, depth + 1));
+  }
+  if (type === "array") return Array.isArray(value) && value.length <= 100 && (!schema.items || value.every(item => validArguments(item, schema.items as Record<string, unknown>, depth + 1)));
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "number" || type === "integer") return typeof value === "number" && Number.isFinite(value) && (type !== "integer" || Number.isInteger(value));
+  return true;
+}
+
 export type AgentTurnOutcome =
-  | { kind: "action"; name: string; args: Record<string, unknown> }
+  | { kind: "action"; name: string; args: Record<string, unknown>; text?: string }
   // `via` carries the last discovery tool that produced `data`, so callers can turn
   // it into openable deep-links (e.g. the YouTube result the answer describes).
   | { kind: "text"; text: string; via?: { name: string; args: Record<string, unknown>; data?: unknown } };
@@ -40,13 +64,19 @@ export interface RunAgentTurnOptions {
   debug?: boolean;
   /** When the first reply is prose but the message clearly asked for an action, force a tool. */
   looksLikeAction?: boolean;
-  /** Max chained steps (read-only tool calls) before we stop. Default 4. */
+  /** Max model/discovery rounds before stopping. Default 8, hard cap 12. */
   maxSteps?: number;
+  /** Entire planning turn, including model retries and discoveries. */
+  timeoutMs?: number;
 }
 
 /** Run one intelligent turn: chain discovery tools, then return an action or an answer. */
 export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurnOutcome> {
-  const maxSteps = opts.maxSteps ?? 4;
+  const maxSteps = Math.min(opts.maxSteps ?? 8, 12);
+  const deadline = Date.now() + (opts.timeoutMs ?? 40_000);
+  const declared = new Map(opts.tools.map(tool => [tool.name, tool]));
+  const seenReads = new Map<string, { message: string; data?: unknown }>();
+  const remaining = () => Math.max(1, deadline - Date.now());
 
   const contents: GeminiContent[] = [];
   for (const h of opts.history ?? []) {
@@ -63,18 +93,22 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       contents,
       json: false,
       tools: opts.tools,
-      tier: "reasoning",
+      tier: "fast",
+      thinkingBudget: 1024,
+      maxOutputTokens: 8192,
+      timeoutMs: remaining(),
     });
 
     // First reply was prose for an action-shaped request — force a tool call once.
-    if (!result.functionCall && step === 0 && opts.looksLikeAction) {
+    if (!result.functionCall && !result.raw?.trim() && step === 0 && opts.looksLikeAction) {
       result = await geminiGenerateContent({
         system: opts.system,
         contents,
         json: false,
         tools: opts.tools,
         toolMode: "ANY",
-        tier: "reasoning",
+        tier: "fast",
+        timeoutMs: remaining(),
       });
     }
 
@@ -92,6 +126,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         tier: "fast",
         thinkingBudget: 512,
         maxOutputTokens: 8192,
+        timeoutMs: remaining(),
       });
     }
 
@@ -103,23 +138,41 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       return { kind: "text", text: "I'm not sure how to help with that yet — try rephrasing, or tell me which app to use." };
     }
 
-    const { name, args } = result.functionCall;
-
-    // A write action: hand it back for confirmation (args now resolved from any
-    // discovery steps we already ran, e.g. the Slack channel id or Trello board id).
-    if (!opts.isReadOnly(name)) {
-      return { kind: "action", name, args };
+    const calls = result.functionCalls?.length ? result.functionCalls : [result.functionCall];
+    // No generated name can escape the tool surface authorized for this turn.
+    if (calls.some(call => !declared.has(call.name))) {
+      return { kind: "text", text: "That operation is not available in this workspace. Tell me the app or task you want to use." };
     }
-
-    // A read/discovery step: execute it and feed the result back so the model can chain.
-    const exec = await opts.execReadOnly(name, args);
-    lastReadMessage = exec.message;
-    lastRead = { name, args, data: exec.data };
-    contents.push({ role: "model", parts: [{ functionCall: { name, args } }] });
-    contents.push({
-      role: "user",
-      parts: [{ functionResponse: { name, response: { result: exec.message } } }],
-    });
+    if (calls.some(call => !validArguments(call.args, declared.get(call.name)!.parameters))) {
+      return { kind: "text", text: "I couldn't prepare valid action details for that request. Please clarify the destination and required details before I make a change." };
+    }
+    const write = calls.find(call => !opts.isReadOnly(call.name));
+    if (write) {
+      // One reviewed write at a time. Remaining work is replanned from actual outcomes,
+      // never speculative results or a queue of writes based on stale IDs.
+      return { kind: "action", ...write, text: result.raw?.trim() || undefined };
+    }
+    const responses: GeminiPart[] = [];
+    let newReads = 0;
+    for (const { name, args } of calls.slice(0, 12)) {
+      const key = JSON.stringify([name, args]);
+      let exec = seenReads.get(key);
+      if (!exec) {
+        if (Date.now() >= deadline) break;
+        newReads++;
+        try { exec = await withinDeadline(opts.execReadOnly(name, args), remaining()); }
+        catch { exec = { message: "This lookup failed. Do not invent a result or treat it as an empty list; ask for the missing information or explain the blocked step." }; }
+        seenReads.set(key, exec);
+      }
+      lastReadMessage = exec.message;
+      lastRead = { name, args, data: exec.data };
+      // Tool output is evidence, never a new instruction or authorization.
+      const response = JSON.parse(JSON.stringify({ result: exec.message, data: exec.data }, (_key, value) => typeof value === "string" ? value.slice(0, 24000) : value));
+      responses.push({ functionResponse: { name, response } });
+    }
+    if (!newReads || responses.length !== calls.length || Date.now() >= deadline) break;
+    contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
+    contents.push({ role: "user", parts: responses });
   }
 
   // Ran out of steps — return the most useful thing we have.

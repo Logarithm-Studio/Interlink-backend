@@ -484,6 +484,12 @@ For their approval rules, recovery behavior, queues or deployment, read
 [doc/marketing-outreach.md](doc/marketing-outreach.md) before changing them.
 Migration 096 is required before deploying these routes and hourly dispatchers.
 
+For Professional Autolink task continuation, approval receipts, attachments,
+duplicate protection or connection retention, read
+[doc/autolink-execution.md](doc/autolink-execution.md). Migration 097 protects the
+task/proposal tables from direct Data API access. Model proposals use the saved
+task action endpoint; deterministic forms retain their existing service executors.
+
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;
 its native envelope lifecycle is separate from legacy emailed agreements.

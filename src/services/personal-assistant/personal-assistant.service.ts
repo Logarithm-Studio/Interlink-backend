@@ -96,8 +96,8 @@ import {
   summarizeComposioAction,
   connectedToolkitNames,
 } from "../composio/composio.service";
-import { getRepos as getGitHubRepos, getIssues as getGitHubIssues, getPullRequests as getGitHubPullRequests, createIssue as createGitHubIssue } from "../pm/github.service";
-import { getProjects as getJiraProjects, searchIssues as searchJiraIssues, createIssue as createJiraIssue } from "../jira/jira.service";
+import { getRepos as getGitHubRepos, getIssues as getGitHubIssues, getPullRequests as getGitHubPullRequests, createIssue as createGitHubIssue, listIssueAssignees, assignIssue as assignGitHubIssue } from "../pm/github.service";
+import { getProjects as getJiraProjects, searchIssues as searchJiraIssues, createIssue as createJiraIssue, findAssignableUsers, assignIssue as assignJiraIssue } from "../jira/jira.service";
 import { getBoards as getTrelloBoards, getListsForBoard, getCardsForBoard, createCard as createTrelloCard } from "../pm/trello.service";
 
 // ─── Profession-aware system prompts ─────────────────────────────────────────
@@ -227,6 +227,10 @@ one). Never robotic, never childish, never padded with disclaimers, and never a 
 // ─── Tool declarations ────────────────────────────────────────────────────────
 
 export const PERSONAL_TOOLS: GeminiToolFunction[] = [
+  { name: "list_github_assignees", description: "Read real assignable GitHub logins for a repository before delegating an issue. Results are bounded to 100 users.", parameters: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] } },
+  { name: "assign_github_issue", description: "Delegate an existing GitHub issue to an exact verified repository login. Requires user review; creating an issue and assigning it are separate steps.", parameters: { type: "object", properties: { repo: { type: "string" }, issueNumber: { type: "integer" }, assignee: { type: "string" } }, required: ["repo", "issueNumber", "assignee"] } },
+  { name: "find_jira_assignees", description: "Find actual assignable Jira users by person name and project. Resolve ambiguous names with the user before assignment.", parameters: { type: "object", properties: { projectKey: { type: "string" }, query: { type: "string" } }, required: ["projectKey", "query"] } },
+  { name: "assign_jira_issue", description: "Delegate an existing Jira issue to an exact account ID returned by find_jira_assignees. Requires user review and verifies the assignment afterwards.", parameters: { type: "object", properties: { issueKey: { type: "string" }, accountId: { type: "string" } }, required: ["issueKey", "accountId"] } },
   {
     name: "get_calendar_events",
     description: "Get the user's upcoming calendar events. Use when asked about schedule, calendar, upcoming meetings, etc.",
@@ -1982,6 +1986,26 @@ export async function executeAction(
         });
         return { ok: true, message: `Created GitHub issue #${issue.number}: ${issue.title}.`, data: issue };
       }
+      case "list_github_assignees": {
+        const repo = splitRepo(args.repo);
+        if (!repo) return { ok: false, message: "Specify the repository as owner/name." };
+        const data = await listIssueAssignees(userId, repo.owner, repo.repo);
+        return { ok: true, message: JSON.stringify({ assignees: data, limit: 100 }), data };
+      }
+      case "assign_github_issue": {
+        const repo = splitRepo(args.repo);
+        if (!repo) return { ok: false, message: "Specify the repository as owner/name." };
+        const data = await assignGitHubIssue(userId, repo.owner, repo.repo, Number(args.issueNumber), String(args.assignee ?? ""));
+        return { ok: true, message: `GitHub issue #${data.number} assigned to ${args.assignee}.`, data };
+      }
+      case "find_jira_assignees": {
+        const data = await findAssignableUsers(userId, String(args.projectKey ?? ""), String(args.query ?? ""));
+        return { ok: true, message: JSON.stringify({ assignees: data, limit: 30 }), data };
+      }
+      case "assign_jira_issue": {
+        const data = await assignJiraIssue(userId, String(args.issueKey ?? ""), String(args.accountId ?? ""));
+        return { ok: true, message: `Jira issue ${data.issueKey} assigned to ${data.displayName}.`, data };
+      }
       case "list_jira_projects": {
         const projects = await getJiraProjects(userId);
         const message = linesOrNone(projects, (p) => `- ${p.key} - ${p.name}`, "No Jira projects found.", 12);
@@ -2081,6 +2105,8 @@ export function summarizeAction(name: string, args: Record<string, unknown>): st
     case "list_github_issues": return `List GitHub issues in ${args.repo ?? "a repo"}`;
     case "list_github_pull_requests": return `List GitHub pull requests in ${args.repo ?? "a repo"}`;
     case "create_github_issue": return `Create GitHub issue "${args.title ?? ""}"`;
+    case "assign_github_issue": return `Assign ${args.repo} issue #${args.issueNumber} to ${args.assignee}.`;
+    case "assign_jira_issue": return `Assign Jira issue ${args.issueKey} to account ${args.accountId}.`;
     case "list_jira_projects": return "List Jira projects";
     case "search_jira_issues": return "Search Jira issues";
     case "create_jira_issue": return `Create Jira issue "${args.summary ?? ""}"`;
@@ -2202,7 +2228,7 @@ export function isReadOnlyAction(name: string): boolean {
   // Composio tools are classified by their action verb (GET_/LIST_/SEARCH_/…), defaulting
   // to WRITE — so an unrecognized connector action goes through user confirmation rather
   // than being auto-run mid-chain.
-  return READ_ONLY_ACTIONS.has(name) || isComposioReadOnlyTool(name);
+  return name === "list_github_assignees" || name === "find_jira_assignees" || READ_ONLY_ACTIONS.has(name) || isComposioReadOnlyTool(name);
 }
 
 export interface CommandOptions {

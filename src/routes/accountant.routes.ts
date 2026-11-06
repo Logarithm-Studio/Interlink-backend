@@ -8,6 +8,7 @@
 
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
+import { createHash } from "crypto";
 import { authMiddleware } from "../middleware/auth";
 import { AuthenticatedRequest } from "../types";
 import { BadRequestError, NotFoundError, UnauthorizedError } from "../utils/errors";
@@ -49,12 +50,14 @@ import {
 import {
   chat,
   command,
+  continueAgentTask,
   deleteConversation,
   executeAction,
   getChatHistory,
   getConversationMessages,
   listConversations,
 } from "../services/accountant/assistant.service";
+import { executeTaskProposal, getAgentTask, pauseAgentTask, resumeAgentTask } from "../services/accountant/agent-task.service";
 import { transcribeAudio } from "../services/ai/multimodal.service";
 import {
   listContractors,
@@ -417,7 +420,7 @@ router.post("/invoices/import/notion", async (req: Request, res: Response, next:
 
 // ─── Assistant ───────────────────────────────────────────────────────────────
 const ChatBody = z.object({
-  message: z.string().min(1).max(2000),
+  message: z.string().trim().min(1).max(12000),
   history: z
     .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() }))
     .optional(),
@@ -533,6 +536,52 @@ router.post("/assistant/execute", async (req: Request, res: Response, next: Next
   } catch (err) {
     mapSendError(err, next);
   }
+});
+
+router.get("/assistant/tasks/latest", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const conversationId = req.query.conversationId ? z.string().uuid().parse(req.query.conversationId) : undefined;
+    res.json({ task: await getAgentTask(user.id, undefined, conversationId) });
+  } catch (err) { next(err); }
+});
+
+router.get("/assistant/tasks/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const task = await getAgentTask(user.id, z.string().uuid().parse(req.params.id));
+    if (!task) throw new NotFoundError("Task");
+    res.json({ task });
+  } catch (err) { next(err); }
+});
+
+router.post("/assistant/tasks/:id/pause", async (req: Request, res: Response, next: NextFunction) => {
+  try { res.json({ task: await pauseAgentTask((req as AuthenticatedRequest).user.id, z.string().uuid().parse(req.params.id)) }); }
+  catch (err) { next(err); }
+});
+
+router.post("/assistant/tasks/:id/resume", async (req: Request, res: Response, next: NextFunction) => {
+  try { res.json({ task: await resumeAgentTask((req as AuthenticatedRequest).user.id, z.string().uuid().parse(req.params.id)) }); }
+  catch (err) { next(err); }
+});
+
+router.post("/assistant/tasks/:id/continue", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = CommandBody.omit({ message: true, conversationId: true }).parse(req.body ?? {});
+    const attachment = parsed.attachmentBase64 ? { data: parsed.attachmentBase64, mimeType: parsed.attachmentMimeType ?? "application/octet-stream", name: parsed.attachmentName } : undefined;
+    res.json(await continueAgentTask((req as AuthenticatedRequest).user.id, z.string().uuid().parse(req.params.id), parsed, attachment));
+  } catch (err) { next(err); }
+});
+
+router.post("/assistant/tasks/:id/actions/:actionId/execute", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const { tz, attachmentBase64, attachmentMimeType, attachmentName } = ExecuteBody.omit({ name: true, args: true, conversationId: true }).parse(req.body ?? {});
+    const attachment = attachmentBase64 ? { base64: attachmentBase64, mimeType: attachmentMimeType ?? "application/octet-stream", name: attachmentName ?? "Upload" } : undefined;
+    res.json(await executeTaskProposal(user.id, z.string().uuid().parse(req.params.id), z.string().uuid().parse(req.params.actionId),
+      (action, conversationId, context) => executeAction(user, action.name, action.args, attachment, context.tz, conversationId),
+      attachment ? createHash("sha256").update(Buffer.from(attachment.base64, "base64")).digest("hex") : undefined));
+  } catch (err) { mapSendError(err, next); }
 });
 
 // Voice → text (Gemini audio transcription) for the command bar.

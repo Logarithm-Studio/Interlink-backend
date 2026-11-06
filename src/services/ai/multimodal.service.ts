@@ -254,7 +254,7 @@ export async function planAgentActions(params: {
         if (!materialized.ok) return { answer: materialized.message, isLive: true };
         return { action: { name: "send_bulk_email", args: materialized.args }, isLive: true };
       }
-      return { action: { name: outcome.name, args: outcome.args }, isLive: true };
+      return { answer: outcome.text, action: { name: outcome.name, args: outcome.args }, isLive: true };
     }
     return { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
   } catch (err) {

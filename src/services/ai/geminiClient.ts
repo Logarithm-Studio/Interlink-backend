@@ -16,7 +16,7 @@ export type GeminiPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } }
   // Prior model tool call / our tool result — used to drive multi-step agent loops.
-  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: Record<string, unknown> } };
 
 /** One conversation turn. `model` turns carry the assistant's text/functionCall;
@@ -38,6 +38,9 @@ export interface GeminiResult {
   raw: string;
   /** Present when the model chose to call a declared function. */
   functionCall?: { name: string; args: Record<string, unknown> };
+  /** Preserve all parallel calls and signed model parts for subsequent turns. */
+  functionCalls?: { name: string; args: Record<string, unknown> }[];
+  modelParts?: GeminiPart[];
   model: string;
   latencyMs: number;
   groundingSources?: { uri: string; title: string }[];
@@ -74,7 +77,7 @@ export function isGeminiLive(): boolean {
 function toApiPart(p: GeminiPart): Record<string, unknown> {
   if ("text" in p) return { text: p.text };
   if ("inlineData" in p) return { inline_data: { mime_type: p.inlineData.mimeType, data: p.inlineData.data } };
-  if ("functionCall" in p) return { functionCall: { name: p.functionCall.name, args: p.functionCall.args } };
+  if ("functionCall" in p) return { functionCall: p.functionCall, ...(p.thoughtSignature ? { thoughtSignature: p.thoughtSignature } : {}) };
   return { functionResponse: { name: p.functionResponse.name, response: p.functionResponse.response } };
 }
 
@@ -177,6 +180,7 @@ export async function geminiGenerateContent(args: {
   const timeout = setTimeout(() => controller.abort(), args.timeoutMs ?? 30_000);
 
   let response: Response;
+  let payload: unknown;
   try {
     response = await fetch(url, {
       method: "POST",
@@ -184,21 +188,24 @@ export async function geminiGenerateContent(args: {
       signal: controller.signal,
       body: JSON.stringify(body),
     });
+    if (!response.ok) {
+      // Avoid echoing provider response bodies, which may contain private inputs.
+      await response.text();
+      throw new Error(`Gemini request failed (${response.status}). Please try again.`);
+    }
+    payload = await response.json();
   } finally {
     clearTimeout(timeout);
   }
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => "");
-    throw new Error(`Gemini API error ${response.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const data = (await response.json()) as {
+  const data = payload as {
     candidates?: {
       content?: {
         parts?: {
           text?: string;
           functionCall?: { name?: string; args?: Record<string, unknown> };
+          thoughtSignature?: string;
+          thought?: boolean;
         }[];
       };
       groundingMetadata?: {
@@ -211,7 +218,7 @@ export async function geminiGenerateContent(args: {
   };
 
   const parts = data.candidates?.[0]?.content?.parts ?? [];
-  const raw = parts.map((p) => p.text ?? "").join("");
+  const raw = parts.filter(p => !p.thought).map((p) => p.text ?? "").join("");
   const grounding = data.candidates?.[0]?.groundingMetadata;
   const groundingSources = (grounding?.groundingChunks ?? [])
     .map((chunk) => chunk.web)
@@ -219,17 +226,17 @@ export async function geminiGenerateContent(args: {
     .map((web) => ({ uri: web.uri!, title: web.title?.trim() || new URL(web.uri!).hostname }))
     .filter((source, index, all) => all.findIndex((candidate) => candidate.uri === source.uri) === index);
 
-  let functionCall: GeminiResult["functionCall"];
-  for (const p of parts) {
-    if (p.functionCall?.name) {
-      functionCall = { name: p.functionCall.name, args: p.functionCall.args ?? {} };
-      break;
-    }
-  }
+  const functionCalls = parts.flatMap(p => p.functionCall?.name ? [{ name: p.functionCall.name, args: p.functionCall.args ?? {} }] : []);
+  const modelParts: GeminiPart[] = parts.flatMap((p): GeminiPart[] => {
+    if (p.functionCall?.name) return [{ functionCall: { name: p.functionCall.name, args: p.functionCall.args ?? {} }, ...(p.thoughtSignature ? { thoughtSignature: p.thoughtSignature } : {}) }];
+    return p.text && !p.thought ? [{ text: p.text }] : [];
+  });
 
   return {
     raw,
-    functionCall,
+    functionCall: functionCalls[0],
+    functionCalls,
+    modelParts,
     model: data.modelVersion ?? model,
     latencyMs: Date.now() - start,
     groundingSources,

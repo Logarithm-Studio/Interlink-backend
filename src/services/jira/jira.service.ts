@@ -17,6 +17,27 @@ import { BadRequestError } from "../../utils/errors";
 const ATLASSIAN_AUTH = "https://auth.atlassian.com";
 const ATLASSIAN_API = "https://api.atlassian.com";
 
+export async function findAssignableUsers(userId: string, projectKey: string, search: string): Promise<{ accountId: string; displayName: string }[]> {
+  if (!projectKey.trim() || !search.trim()) throw new BadRequestError("Specify a Jira project and the person's name.");
+  const params = new URLSearchParams({ project: projectKey, query: search, maxResults: "30" });
+  const res = await jiraFetch(userId, `/rest/api/3/user/assignable/search?${params}`);
+  if (!res.ok) throw new BadRequestError("Assignable Jira users could not be read. Check project access and the connection.");
+  const users = await res.json() as { accountId: string; displayName: string; active?: boolean }[];
+  return users.filter(user => user.active !== false).map(({ accountId, displayName }) => ({ accountId, displayName }));
+}
+
+export async function assignIssue(userId: string, issueKey: string, accountId: string): Promise<{ issueKey: string; accountId: string; displayName: string }> {
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/i.test(issueKey) || !accountId.trim()) throw new BadRequestError("An exact Jira issue key and account ID are required.");
+  const route = `/rest/api/3/issue/${encodeURIComponent(issueKey)}`;
+  const res = await jiraFetch(userId, route + "/assignee", { method: "PUT", body: JSON.stringify({ accountId }) });
+  if (!res.ok) throw new BadRequestError("Jira could not confirm the assignment. Check the issue before trying again.");
+  const check = await jiraFetch(userId, route + "?fields=assignee");
+  if (!check.ok) throw new BadRequestError("Jira accepted the request but assignment read-back is unavailable. Check the issue; do not repeat the action.");
+  const result = await check.json() as { fields?: { assignee?: { accountId?: string; displayName?: string } } };
+  if (result.fields?.assignee?.accountId !== accountId) throw new BadRequestError("Jira did not confirm the selected assignee. Check the issue before trying again.");
+  return { issueKey, accountId, displayName: result.fields.assignee.displayName ?? accountId };
+}
+
 // offline_access is appended here (it is not a console-selectable scope) so
 // Atlassian returns a refresh token.
 const JIRA_SCOPES = [

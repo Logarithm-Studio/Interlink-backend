@@ -385,12 +385,12 @@ async function getOrCreateAuthConfig(
  * longer supported. Use POST /api/v3/connected_accounts/link" 400 the connect screen showed).
  */
 /**
- * Delete every existing connected account for this user+toolkit. Best-effort, never throws.
+ * Delete abandoned, inactive connection attempts for this user+toolkit. Never delete ACTIVE accounts.
  *
  * Repeated connect taps and abandoned OAuth flows otherwise leave a trail of EXPIRED/INITIATED
  * connected accounts, and Composio then rejects a new link with "multiple connected accounts
- * found for user … in auth config". Tapping Connect means "(re)connect from scratch", so we
- * clear the slate first — link then always creates exactly one.
+ * found for user … in auth config". Clear only those abandoned attempts before linking;
+ * cancelling a new consent flow must leave a working connection available.
  */
 async function purgeConnectedAccountsForToolkit(
   composio: Composio,
@@ -400,7 +400,7 @@ async function purgeConnectedAccountsForToolkit(
   try {
     const remote = await composio.connectedAccounts.list({ userIds: [userId] });
     const matches = (remote.items ?? []).filter(
-      (a) => a.toolkit?.slug?.toLowerCase() === toolkitSlug,
+      (a) => a.toolkit?.slug?.toLowerCase() === toolkitSlug && a.status !== "ACTIVE",
     );
     for (const a of matches) {
       try {
@@ -427,8 +427,8 @@ export async function connectToolkit(
 
   const authConfigId = await getOrCreateAuthConfig(composio, toolkitSlug);
 
-  // Clear any existing connected accounts for this user+toolkit so a retry can't accumulate
-  // duplicates and trip Composio's "multiple connected accounts" error.
+  // Only clear abandoned attempts. A cancelled browser flow must never destroy a
+  // working connection. Replacing an active account requires explicit disconnect.
   await purgeConnectedAccountsForToolkit(composio, userId, toolkitSlug);
 
   const request = await composio.connectedAccounts.link(userId, authConfigId);

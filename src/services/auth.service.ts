@@ -3,6 +3,11 @@ import { ConnectedAccount, GoogleAccountRole } from "../types";
 import { google } from "googleapis";
 import { encrypt, decrypt } from "../security/crypto";
 import { logger } from "../observability/logger";
+import { AppError } from "../utils/errors";
+
+function credentialStorageUnavailable(): AppError {
+  return new AppError("Connected-account credentials are temporarily unavailable on the server. Your connection has been retained; please try again later.", 503);
+}
 
 type Provider = "google" | "microsoft";
 
@@ -562,8 +567,9 @@ export async function getTokensByAccountId(
   try {
     return decryptGoogleRow(row);
   } catch {
-    await markReauthRequiredForAccount(accountId);
-    throw new ReauthRequiredError(row.user_id, "google");
+    // A missing/changed deployment encryption key is a server fault, not revocation.
+    // Preserve ciphertext so restoring the key restores the connection.
+    throw credentialStorageUnavailable();
   }
 }
 
@@ -591,8 +597,7 @@ export async function getTokens(
     try {
       return decryptGoogleRow(row);
     } catch {
-      await markReauthRequiredForAccount(row.id);
-      throw new ReauthRequiredError(userId, "google");
+      throw credentialStorageUnavailable();
     }
   }
 
@@ -639,8 +644,7 @@ export async function getTokens(
       row.enc_kid,
     );
   } catch {
-    await markReauthRequired(userId, provider);
-    throw new ReauthRequiredError(userId, provider);
+    throw credentialStorageUnavailable();
   }
 
   let refreshToken: string;
@@ -653,8 +657,7 @@ export async function getTokens(
       packed.kid,
     );
   } catch {
-    await markReauthRequired(userId, provider);
-    throw new ReauthRequiredError(userId, provider);
+    throw credentialStorageUnavailable();
   }
 
   return {
@@ -790,7 +793,17 @@ export async function deleteGoogleAccount(
 
 // ─── Token refresh ────────────────────────────────────────────────────────────
 
-async function refreshRow(account: ConnectedAccount): Promise<string> {
+const googleRefreshes = new Map<string, Promise<string>>();
+
+function refreshRow(account: ConnectedAccount): Promise<string> {
+  const existing = googleRefreshes.get(account.id);
+  if (existing) return existing;
+  const pending = refreshRowOnce(account).finally(() => { if (googleRefreshes.get(account.id) === pending) googleRefreshes.delete(account.id); });
+  googleRefreshes.set(account.id, pending);
+  return pending;
+}
+
+async function refreshRowOnce(account: ConnectedAccount): Promise<string> {
   // If token is still valid (with a 5-minute buffer), return it.
   const bufferMs = 5 * 60 * 1000;
   if (account.expiresAt.getTime() > Date.now() + bufferMs) {
@@ -816,7 +829,7 @@ async function refreshRow(account: ConnectedAccount): Promise<string> {
 
     await storeTokensForAccount(account.id, {
       accessToken: credentials.access_token,
-      refreshToken: account.refreshToken,
+      refreshToken: credentials.refresh_token ?? account.refreshToken,
       expiresAt: newExpiry,
     });
 
@@ -825,9 +838,7 @@ async function refreshRow(account: ConnectedAccount): Promise<string> {
     const msg = err instanceof Error ? err.message : String(err);
     const isPermanent =
       msg.includes("invalid_grant") ||
-      msg.includes("Token has been expired or revoked") ||
-      (err as { status?: number }).status === 401 ||
-      (err as { status?: number }).status === 403;
+      msg.includes("Token has been expired or revoked");
 
     if (isPermanent) {
       await markReauthRequiredForAccount(account.id);

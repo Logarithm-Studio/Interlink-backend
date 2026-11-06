@@ -167,6 +167,12 @@ JSON-only, Zod-validated, and cached in `ai_outputs`. **Dunning send** mirrors
 | POST | `/assistant/command` | Agentic command → answer/action. Supports `{ message, conversationId?, attachmentBase64?, attachmentMimeType?, attachmentName?, clientNow?, tz? }` |
 | POST | `/assistant/execute` | Execute a confirmed action. Supports `{ name, args, conversationId?, tz?, attachmentBase64?, attachmentMimeType?, attachmentName? }`. When supplied, the conversation must belong to this user; actual execution results are recorded for the next turn. |
 | POST | `/assistant/transcribe` | Voice → text (`{ audioBase64, mimeType? }` → Gemini audio) |
+| GET | `/assistant/tasks/latest` | Latest owned Professional task; optional `?conversationId=<uuid>` scopes restoration to a chat. Returns `{ task }`. |
+| GET | `/assistant/tasks/:id` | Owned task, actual step receipts and pending review payload. |
+| POST | `/assistant/tasks/:id/actions/:actionId/execute` | Execute the saved, unexpired proposal exactly once. Optional `{ tz?, attachmentBase64?, attachmentMimeType?, attachmentName? }`; saved timezone and file digest govern execution. Returns `{ ok, message, task }`. |
+| POST | `/assistant/tasks/:id/continue` | Continue a successful task from its original goal and real receipts. Optional client clock/timezone and original attachment fields. Returns the normal command result plus `task`; it never auto-confirms another write. |
+| POST | `/assistant/tasks/:id/pause` | Pause a waiting task; a delayed confirmation cannot execute it. |
+| POST | `/assistant/tasks/:id/resume` | Restore a paused task to review or continuation; does not perform its action. |
 | GET | `/tax/contractors` | Contractors + `needsW9` flag |
 | POST | `/tax/contractors/:id/request-w9` | AI-draft + send a W-9 request; mark `requested` |
 | POST | `/tax/contractors/:id/status` | `{ status:'missing'\|'requested'\|'received'\|'filed' }` |
