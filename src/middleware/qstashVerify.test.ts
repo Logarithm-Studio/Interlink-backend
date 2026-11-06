@@ -30,9 +30,10 @@ test("production worker verification separates missing configuration and binds r
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address() as { port: number };
-  async function post(path: string, signature?: string, input = body) {
+  async function post(path: string, signature?: string, input = body, expectedCode?: string) {
     const response = await fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(signature ? { "upstash-signature": signature } : {}) }, body: input });
-    await response.text();
+    const result = await response.json();
+    if (expectedCode) assert.equal(result.code, expectedCode);
     return response.status;
   }
   try {
@@ -42,9 +43,9 @@ test("production worker verification separates missing configuration and binds r
     process.env.QSTASH_NEXT_SIGNING_KEY = key + "-next";
     assert.equal(await post("/one", sign("/one")), 200);
     assert.equal(await post("/one", sign("/one", body, key + "-next")), 200);
-    assert.equal(await post("/one", sign("/one"), '{"probe":true}'), 401);
-    assert.equal(await post("/two", sign("/one")), 401, "a signed job cannot be replayed against another worker");
-    assert.equal(await post("/one", sign("/one", body, "wrong-key")), 401);
+    assert.equal(await post("/one", sign("/one"), '{"probe":true}', "WORKER_BODY_MISMATCH"), 401);
+    assert.equal(await post("/two", sign("/one"), body, "WORKER_DESTINATION_MISMATCH"), 401, "a signed job cannot be replayed against another worker");
+    assert.equal(await post("/one", sign("/one", body, "wrong-key"), body, "WORKER_SIGNATURE_INVALID"), 401);
     assert.equal(executions, 2);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

@@ -49,7 +49,13 @@ export async function verifyQStash(
   try {
     await receiver.verify({ signature, body: rawBody, url: origin + req.originalUrl });
     next();
-  } catch {
-    res.status(401).json({ error: "Invalid QStash signature" });
+  } catch (error) {
+    // Fixed diagnostic codes distinguish transport faults without disclosing
+    // JWTs, signing keys, URLs or body hashes from the SDK's error message.
+    const message = error instanceof Error ? error.message : "";
+    const code = message.startsWith("invalid subject:") ? "WORKER_DESTINATION_MISMATCH"
+      : message.startsWith("body hash does not match") ? "WORKER_BODY_MISMATCH"
+      : "WORKER_SIGNATURE_INVALID";
+    res.status(401).json({ error: "Invalid QStash signature", code });
   }
 }
