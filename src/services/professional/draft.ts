@@ -27,7 +27,16 @@ export async function draftEmail(params: {
         `Keep it concise, warm, and ready to send. Never invent facts not in the context.`,
       parts: [{ text: params.context }],
       json: true,
-      maxOutputTokens: 800,
+      // Thinking shares the output budget on 2.5 models. An 800-token cap could
+      // leave no complete JSON and silently replace real campaign copy with fallback.
+      tier: "fast",
+      maxOutputTokens: 2048,
+      thinkingBudget: 256,
+      responseSchema: {
+        type: "object",
+        properties: { subject: { type: "string" }, body: { type: "string" } },
+        required: ["subject", "body"],
+      },
     });
     const obj = JSON.parse(result.raw) as { subject?: unknown; body?: unknown };
     const subject = typeof obj.subject === "string" && obj.subject.trim() ? obj.subject.trim() : fallback.subject;

@@ -1,6 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { geminiGenerateContent } from "./geminiClient";
+import { draftEmail } from "../professional/draft";
+
+test("professional copy reserves output for complete structured draft content", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.GEMINI_API_KEY;
+  const originalProvider = process.env.PROFESSIONAL_AI_PROVIDER;
+  process.env.GEMINI_API_KEY = "test-key";
+  process.env.PROFESSIONAL_AI_PROVIDER = "gemini";
+  let request: { generationConfig: { maxOutputTokens: number; thinkingConfig: { thinkingBudget: number }; responseSchema: { required: string[] } } } | undefined;
+  globalThis.fetch = (async (_url, init) => {
+    request = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ subject: "Planning your next campaign", body: "A specific message grounded in the brief." }) }] } }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const result = await draftEmail({ role: "marketer", purpose: "campaign copy", context: "A planning workshop for small businesses." });
+    assert.equal(result.isFallback, false);
+    assert.equal(result.subject, "Planning your next campaign");
+    assert.ok(request);
+    assert.ok(request.generationConfig.maxOutputTokens - request.generationConfig.thinkingConfig.thinkingBudget >= 1500);
+    assert.deepEqual(request.generationConfig.responseSchema.required, ["subject", "body"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = originalKey;
+    if (originalProvider === undefined) delete process.env.PROFESSIONAL_AI_PROVIDER; else process.env.PROFESSIONAL_AI_PROVIDER = originalProvider;
+  }
+});
 
 test("Google Search grounding returns the answer, unique secure sources, search queries, and suggestion widget", async () => {
   const originalFetch = globalThis.fetch;

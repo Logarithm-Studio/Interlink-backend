@@ -58,6 +58,8 @@ test('Autolink execution history and saved Marketing reads use owned real record
       assert.equal(found.data.campaigns.length, 1);
       assert.equal(found.data.campaigns[0].id, own.campaign.id);
       assert.equal(found.data.campaigns[0].status, 'draft');
+      assert.equal(own.campaign.subject, 'Owned Autolink QA', 'Unavailable AI must retain the actual campaign topic.');
+      assert.equal(own.campaign.body, '', 'Unavailable AI must not insert an unrelated follow-up email as campaign copy.');
       assert.equal(found.data.campaigns[0].successMetric, '10 qualified leads');
       assert.equal((await read(a.userId, { campaignId: other.campaign.id })).data.campaigns.length, 0);
       await assert.rejects(() => read(a.userId, { campaignId: 'not-a-uuid' }));

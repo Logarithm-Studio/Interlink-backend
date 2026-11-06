@@ -364,7 +364,7 @@ export async function createMarketingCampaign(userId: string, brief: MarketingCa
     const result = await client.query(
       `INSERT INTO sales_marketing_campaigns (user_id, topic, audience, subject, body, recipient_count, objective, offer, success_metric, channels, goal_metric, goal_target, goal_currency, start_date, end_date, budget_cents)
        VALUES ($1,$2,$3,$4,$5,0,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING ${CAMPAIGN_COLS}`,
-      [userId, topic, audience?.trim() || null, copy.subject, copy.body, brief.objective?.trim() || null,
+      [userId, topic, audience?.trim() || null, copy.isFallback ? topic : copy.subject, copy.isFallback ? "" : copy.body, brief.objective?.trim() || null,
         brief.offer?.trim() || null, brief.successMetric?.trim() || null, brief.channels?.length ? brief.channels : ["email"],
         brief.goalMetric ?? null, brief.goalTarget ?? null, brief.goalCurrency ?? null,
         brief.startDate ?? null, brief.endDate ?? null, brief.budgetCents ?? null],
@@ -1324,7 +1324,8 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           successMetric: typeof args.successMetric === "string" ? args.successMetric : undefined,
           channels: Array.isArray(args.channels) ? args.channels.filter((value): value is string => typeof value === "string") : undefined,
         });
-        return { ok: true, message: `Saved campaign draft "${campaign.subject}" (ID: ${campaign.id}; status: ${campaign.status}). Review the copy and choose a Mailchimp audience in the Campaigns workspace before any delivery.`, data: { campaignId: campaign.id, status: campaign.status, subject: campaign.subject } };
+        const copyNotice = campaign.body.trim() ? "Review the copy" : "AI copy was unavailable. Write your campaign message";
+        return { ok: true, message: `Saved campaign draft "${campaign.subject}" (ID: ${campaign.id}; status: ${campaign.status}). ${copyNotice} and choose a Mailchimp audience in the Campaigns workspace before any delivery.`, data: { campaignId: campaign.id, status: campaign.status, subject: campaign.subject } };
       }
       case "enrich_lead": {
         const text = String(args.emailText ?? "").trim();

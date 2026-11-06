@@ -25,3 +25,11 @@ ID and status after saving a local campaign proposed `log_activity`. After the
 correction it returned the exact ID/status verified through a separate database
 query, with no action proposed. Live replay was service-level, not simulated
 model output. Native/emulator acceptance is recorded separately in the QA report.
+
+## Campaign copy generation
+
+Professional email drafts reserve enough output for complete structured JSON,
+including a bounded thinking budget. An unavailable model does not insert the
+generic follow-up fallback into a marketing campaign: the saved draft keeps its
+topic and an empty body for the marketer to complete. Autolink explicitly reports
+that copy was unavailable. Saved draft IDs and statuses remain queryable.
