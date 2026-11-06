@@ -83,6 +83,7 @@ function setupRoutes(app: Express) {
   // looked identical to one that had. That ambiguity cost a full debugging cycle. Vercel injects
   // VERCEL_GIT_COMMIT_SHA at build time; compare it against `git rev-parse HEAD`.
   app.get("/health", (_req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "no-store");
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),

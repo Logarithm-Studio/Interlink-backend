@@ -13,6 +13,9 @@ owned contact IDs and the durable task confirmation/receipt path; replay cannot
 create another plan. This action does not export, schedule outreach or send a
 signature request. Provider handoffs retain their separate destination/content
 review in the Marketing workspace.
+Proposal contact labels are resolved from owned records on the server; model text
+cannot replace the reviewed names or addresses. Foreign contacts are rejected
+before the proposal is shown, and ownership is checked again when saving.
 
 Commands in both modes accept trimmed text up to 12,000 characters. Empty messages,
 invalid task IDs and invalid schema values return 400 with validation details.

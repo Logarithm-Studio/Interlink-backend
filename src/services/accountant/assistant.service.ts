@@ -52,7 +52,7 @@ import {
 import { recordActivity } from "./activity.service";
 import { AppUser } from "../../types";
 import { AppError } from "../../utils/errors";
-import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
+import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan, reviewMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
 import { createAgentTask, saveTaskPlan, claimTaskContinuation, releaseTaskContinuation, getAgentTaskContext, getAgentTaskReceipts, readProfessionalTasks, PROFESSIONAL_TASK_READ_TOOLS, type AgentTask } from "./agent-task.service";
 
 const PROFESSIONAL_AGENT_RULES = [
@@ -513,10 +513,11 @@ async function planCommand(
           await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
           return { answer: exec.message, action: null, isLive: plan.isLive, conversationId: convId };
         }
+        const reviewedArgs = plan.action.name === "create_marketing_research_plan" ? await reviewMarketingResearchPlan(userId, plan.action.args) : plan.action.args;
         vAction = {
           id: randomUUID(),
           name: plan.action.name,
-          args: plan.action.args,
+          args: reviewedArgs,
           summary: summarizeProfessionalAction(plan.action.name, plan.action.args, vertical.summarizeAction),
           needsConfirm: true,
         };

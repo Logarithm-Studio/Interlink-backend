@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { query } from "../../../config/db";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
+import { AppError } from "../../../utils/errors";
 
 export const MARKETING_TOOLS: GeminiToolFunction[] = [{
   name: "read_marketing_campaigns",
@@ -40,6 +41,18 @@ export async function saveMarketingResearchPlan(userId: string, args: Record<str
   const { createResearchPlan, ResearchPlanInput } = await import("./research-plan.service");
   const plan = await createResearchPlan(userId, ResearchPlanInput.parse(args));
   return { ok: true, message: `Saved research plan "${plan.title}" with ${plan.contact_ids.length} selected contacts in Interlink. No external copy was made. Review Notion or Todoist destinations in Research & planning.`, data: { planId: plan.id, title: plan.title, objective: plan.objective, contactIds: plan.contact_ids } };
+}
+
+/** Resolve review labels from owned records, never model-supplied contact names. */
+export async function reviewMarketingResearchPlan(userId: string, args: Record<string, unknown>) {
+  const { ResearchPlanInput } = await import("./research-plan.service");
+  const input = ResearchPlanInput.parse(args);
+  const contactIds = [...new Set(input.contactIds)];
+  const found = await query<{ id: string; name: string; email: string | null; company: string | null }>(
+    "SELECT id,name,email,company FROM sales_contacts WHERE user_id=$1 AND id=ANY($2::uuid[])", [userId, contactIds]);
+  if (found.rows.length !== contactIds.length) throw new AppError("Select only contacts in your workspace.", 400);
+  const labels = new Map(found.rows.map(contact => [contact.id, [contact.name, contact.company, contact.email].filter(Boolean).join(" - ")]));
+  return { ...input, contactIds, contacts: contactIds.map(id => labels.get(id)).join("\n") };
 }
 
 const Input = z.object({ campaignId: z.string().uuid().optional(), query: z.string().trim().max(120).optional() });
