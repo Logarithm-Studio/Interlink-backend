@@ -38,12 +38,15 @@ export async function refreshQStashReceiver(): Promise<Receiver | null> {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(3000),
       });
-      if (!response.ok) return null;
+      if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "WORKER_PUBLISHER_UNAUTHORIZED" : "WORKER_KEY_LOOKUP_UNAVAILABLE");
       const keys = await response.json() as { current?: unknown; next?: unknown } | null;
-      if (typeof keys?.current !== "string" || !keys.current.trim() || typeof keys.next !== "string" || !keys.next.trim()) return null;
+      if (typeof keys?.current !== "string" || !keys.current.trim() || typeof keys.next !== "string" || !keys.next.trim()) throw new Error("WORKER_KEY_RESPONSE_INVALID");
       _receiver = new Receiver({ currentSigningKey: keys.current.trim(), nextSigningKey: keys.next.trim() });
       return _receiver;
-    } catch { return null; }
+    } catch (error) {
+      if (error instanceof Error && ["WORKER_PUBLISHER_UNAUTHORIZED", "WORKER_KEY_LOOKUP_UNAVAILABLE", "WORKER_KEY_RESPONSE_INVALID"].includes(error.message)) throw error;
+      throw new Error("WORKER_KEY_LOOKUP_UNAVAILABLE");
+    }
   })();
   try { return await keyRefreshInFlight; }
   finally { keyRefreshInFlight = null; }

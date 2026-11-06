@@ -6,6 +6,14 @@ email declaration is deliberately materialized into the reviewed bulk-mail actio
 by the spreadsheet planner. Connected Composio tools add a bounded, account-scoped
 surface. This inventory establishes bindings, not live acceptance of every provider.
 
+Marketing also exposes owned contacts, research plans, sequence status and agreement
+status through `read_marketing_workspace`. `create_marketing_research_plan` saves a
+reviewed shortlist through the existing Research & planning service. It uses exact
+owned contact IDs and the durable task confirmation/receipt path; replay cannot
+create another plan. This action does not export, schedule outreach or send a
+signature request. Provider handoffs retain their separate destination/content
+review in the Marketing workspace.
+
 Commands in both modes accept trimmed text up to 12,000 characters. Empty messages,
 invalid task IDs and invalid schema values return 400 with validation details.
 The shared planner limits discoveries and time, validates declared tool names and

@@ -62,6 +62,8 @@ function createMarketingProviders(providers) {
     }
     if(url.pathname==='/v1/search')return json({results:body.filter?.value==='data_source'?[{id:'sandbox-data-source',title:[{plain_text:'Sandbox briefs'}],parent:{database_id:'sandbox-database'},url:'https://www.notion.so/sandbox'}]:[{id:'sandbox-parent',url:'https://www.notion.so/sandbox',properties:{title:{title:[{plain_text:'Sandbox workspace'}]}},last_edited_time:new Date().toISOString()}],has_more:false});
     if(url.pathname==='/v1/data_sources/sandbox-data-source')return json({id:'sandbox-data-source',properties:{Name:{type:'title'},'Campaign ID':{type:'rich_text'},Objective:{type:'rich_text'}}});
+    if(method==='GET'&&url.pathname==='/v1/pages/sandbox-parent')return json({object:'page',id:'sandbox-parent',archived:false,in_trash:false});
+    if(method==='GET'&&url.pathname.startsWith('/v1/pages/')){const page=pages.get(url.pathname.split('/').at(-1));return page&&page.uid===uid?json({object:'page',...page,archived:false,in_trash:false}):json({message:'Unshared sandbox page'},404)}
     if(url.pathname.endsWith('/query')){const property=body.filter?.property,value=body.filter?.rich_text?.equals;return json({results:[...pages.values()].filter(x=>x.uid===uid&&x.properties?.[property]?.rich_text?.[0]?.text?.content===value),has_more:false})}
     if(url.pathname==='/v1/pages'&&method==='POST'){
       const page={id:crypto.randomUUID(),uid,url:'https://www.notion.so/sandbox-'+(++seq),properties:body.properties,parent:body.parent,last_edited_time:new Date().toISOString()};pages.set(page.id,page);

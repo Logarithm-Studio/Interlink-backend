@@ -3,7 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 import express from "express";
 import { verifyQStash } from "./qstashVerify";
-import { getQStashReceiver } from "../config/qstash";
+import { getQStashReceiver, refreshQStashReceiver } from "../config/qstash";
 
 test("production worker verification separates missing configuration and binds raw bytes to the destination", async () => {
   const saved = { ...process.env };
@@ -76,6 +76,13 @@ test("production worker verification separates missing configuration and binds r
     assert.equal(await post("/one", sign("/one", body, "attacker"), body, "WORKER_SIGNATURE_INVALID"), 401);
     assert.equal(keyReads, 1, "invalid callbacks cannot repeatedly fetch keys during the cooldown");
     assert.equal(executions, 4, "only fully verified jobs reach execution after key recovery");
+    const now = Date.now;
+    try {
+      Date.now = () => now() + 5 * 60_000 + 1;
+      global.fetch = async () => new Response("{}", { status: 401 });
+      await assert.rejects(refreshQStashReceiver(), /WORKER_PUBLISHER_UNAUTHORIZED/);
+    } finally { Date.now = now; }
+    assert.equal(await getQStashReceiver().verify({ signature: sign("/one", body, key + "-rotated"), body, url: process.env.API_BASE_URL + "/one" }), true, "a rejected key lookup never replaces already trusted keys");
   } finally {
     global.fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

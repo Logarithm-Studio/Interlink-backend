@@ -55,6 +55,8 @@ test('marketing workflows use simulated email, planning, CRM and analytics provi
     });
     await scenario('Notion schema discovery and mapped export avoid duplicate pages',async()=>{
       await s.connectNative(userId,'notion');
+      await s.load('services/notion/notion.service.js').assertPageAccessible(userId,'sandbox-parent');
+      await assert.rejects(s.load('services/notion/notion.service.js').assertPageAccessible(userId,'unshared-parent'),/unavailable/);
       const ds=await api(m+'/campaigns/'+campaign.id+'/notion-data-sources?q=Sandbox');assert.equal(ds.dataSources[0].id,'sandbox-data-source');
       const input={dataSourceId:'sandbox-data-source',databaseId:'sandbox-database',mapping:{campaignId:'Campaign ID',objective:'Objective'}};
       const first=await api(m+'/campaigns/'+campaign.id+'/notion-database','POST',input,201);assert.equal(first.export.status,'synced');

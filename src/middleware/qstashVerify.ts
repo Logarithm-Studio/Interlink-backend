@@ -53,13 +53,21 @@ export async function verifyQStash(
       if (!(error instanceof Error) || error.message !== "signature verification failed") throw error;
       const refreshed = await refreshQStashReceiver();
       if (!refreshed) throw error;
-      await refreshed.verify(request);
+      try { await refreshed.verify(request); }
+      catch (retryError) {
+        if (retryError instanceof Error && retryError.message === "signature verification failed") throw new Error("WORKER_AUTHENTICATED_KEY_MISMATCH");
+        throw retryError;
+      }
     }
     next();
   } catch (error) {
     // Fixed diagnostic codes distinguish transport faults without disclosing
     // JWTs, signing keys, URLs or body hashes from the SDK's error message.
     const message = error instanceof Error ? error.message : "";
+    if (["WORKER_PUBLISHER_UNAUTHORIZED", "WORKER_KEY_LOOKUP_UNAVAILABLE", "WORKER_KEY_RESPONSE_INVALID"].includes(message)) {
+      res.status(503).json({ error: "Worker signing keys could not be reconciled", code: message });
+      return;
+    }
     if (message === "crypto is not defined" || message === "CryptoKey is not defined") {
       res.status(503).json({ error: "Worker cryptography is unavailable", code: "WORKER_CRYPTO_UNAVAILABLE" });
       return;
@@ -68,6 +76,7 @@ export async function verifyQStash(
       : message.startsWith("body hash does not match") ? "WORKER_BODY_MISMATCH"
       : "WORKER_SIGNATURE_INVALID";
     const reason = message === "signature verification failed" ? "signature_mismatch"
+      : message === "WORKER_AUTHENTICATED_KEY_MISMATCH" ? "authenticated_key_mismatch"
       : message.includes('"exp" claim') || message.includes('"nbf" claim') ? "signature_time_invalid"
       : "verification_failed";
     res.status(401).json({ error: "Invalid QStash signature", code, reason });
