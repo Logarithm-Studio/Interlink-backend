@@ -43,8 +43,8 @@ test("production worker verification separates missing configuration and binds r
   try {
     assert.equal(await post("/one"), 401);
     assert.equal(await post("/one", sign("/one")), 503, "missing deployment keys are an unavailable worker, not an invalid caller");
-    process.env.QSTASH_CURRENT_SIGNING_KEY = key;
-    process.env.QSTASH_NEXT_SIGNING_KEY = key + "-next";
+    process.env.QSTASH_CURRENT_SIGNING_KEY = ` ${key}\n`;
+    process.env.QSTASH_NEXT_SIGNING_KEY = `\n${key}-next `;
     assert.equal(await post("/one", sign("/one")), 200);
     assert.equal(await post("/one", sign("/one", body, key + "-next")), 200);
     assert.equal(await post("/one", sign("/one"), '{"probe":true}', "WORKER_BODY_MISMATCH"), 401);
@@ -58,7 +58,7 @@ test("production worker verification separates missing configuration and binds r
     } finally { receiver.verify = verify; }
     assert.equal(executions, 2);
     let keyReads = 0;
-    process.env.QSTASH_TOKEN = "controlled-publisher-token";
+    process.env.QSTASH_TOKEN = "\ncontrolled-publisher-token ";
     global.fetch = async (input, init) => {
       if (String(input) !== "https://qstash.upstash.io/v2/keys") return originalFetch(input, init);
       keyReads++;

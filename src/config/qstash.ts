@@ -7,7 +7,7 @@ let nextKeyRefreshAt = 0;
 
 export function getQStashClient(): Client {
   if (_client) return _client;
-  const token = process.env.QSTASH_TOKEN;
+  const token = process.env.QSTASH_TOKEN?.trim();
   if (!token) throw new Error("QSTASH_TOKEN must be set");
   _client = new Client({ token });
   return _client;
@@ -15,8 +15,8 @@ export function getQStashClient(): Client {
 
 export function getQStashReceiver(): Receiver {
   if (_receiver) return _receiver;
-  const current = process.env.QSTASH_CURRENT_SIGNING_KEY;
-  const next = process.env.QSTASH_NEXT_SIGNING_KEY;
+  const current = process.env.QSTASH_CURRENT_SIGNING_KEY?.trim();
+  const next = process.env.QSTASH_NEXT_SIGNING_KEY?.trim();
   if (!current || !next) {
     throw new Error(
       "QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY must be set",
@@ -29,7 +29,7 @@ export function getQStashReceiver(): Receiver {
 /** Recover stale deployment keys from the publisher's authenticated account. */
 export async function refreshQStashReceiver(): Promise<Receiver | null> {
   if (keyRefreshInFlight) return keyRefreshInFlight;
-  const token = process.env.QSTASH_TOKEN;
+  const token = process.env.QSTASH_TOKEN?.trim();
   if (!token || Date.now() < nextKeyRefreshAt) return null;
   nextKeyRefreshAt = Date.now() + 5 * 60_000;
   keyRefreshInFlight = (async () => {
