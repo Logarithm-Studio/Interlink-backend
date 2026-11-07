@@ -154,3 +154,9 @@ reconciliation, deliberate retries, cross-user access and export replay.
 PGlite serializes its database connection; this does not certify production pool
 concurrency or database-role enforcement. Root `docs/qa/2026-10-25-workspace.md`
 records browser evidence and the remaining live-account acceptance checks.
+
+November 7 dependency follow-up: the lockfile advances body-parser 1.20.8 to
+1.20.9 (compressed-request DoS patch), gaxios 7.2.0 to 7.3.1 and qs 6.16.0 to
+6.16.2 within existing constraints. Build, unit and workflow sandbox verification
+must pass before deployment. Audit still reports Nodemailer and Zod advisories
+requiring major-version migration; this patch is not security-release acceptance.
