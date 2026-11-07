@@ -43,5 +43,20 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    assert.equal(round,3);assert.equal(plan.task.status,'review');assert.deepEqual(plan.action.args.contactIds,[contact.id]);assert.match(plan.action.args.contacts,/Mira Research QA/);
    assert.equal(await count(),1,'repairing a proposal must never save or execute it');
   });
+  await t.test('the assistant can inspect owned follow-ups and content without inventing their status',async()=>{
+   const leads=s.load('services/professional/marketing/leads.service.js');
+   const content=s.load('services/professional/marketing/content.service.js');
+   const own=await leads.createMarketingFollowup(uid,{contactId:contact.id,title:'Review launch fit',dueAt:new Date(Date.now()+86400000)});
+   const foreign=await leads.createMarketingFollowup(s.config.otherUserId,{contactId:other.id,title:'Private next step',dueAt:new Date()});
+   const draft=await content.createMarketingContent(uid,{title:'Launch draft',channel:'facebook',body:'A'.repeat(3000)});
+   const privateDraft=await content.createMarketingContent(s.config.otherUserId,{title:'Private draft',channel:'facebook',body:'Private'});
+   const read=s.load('services/professional/marketing/assistant-workflow.service.js').readMarketingWorkspace;
+   const followups=(await read(uid,{resource:'followups'})).data.records;
+   assert.ok(followups.some(row=>row.id===own.id&&row.status==='open'));
+   assert.ok(!followups.some(row=>row.id===foreign.id));
+   const drafts=(await read(uid,{resource:'content'})).data.records;
+   assert.ok(drafts.some(row=>row.id===draft.id&&row.status==='draft'&&row.body.length===2000));
+   assert.ok(!drafts.some(row=>row.id===privateDraft.id));
+  });
  } finally {await s.close()}
 });

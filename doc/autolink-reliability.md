@@ -68,3 +68,8 @@ Marketing snapshots include owned contact UUIDs. Invalid research-plan arguments
 return a tool repair hint inside the planning loop once, allowing owned-contact
 discovery before review. A repeated invalid proposal stops with no write; foreign
 UUIDs still fail the ownership check. This does not auto-confirm or execute a plan.
+
+The existing Marketing workspace reader also returns open follow-ups and saved
+content with actual workflow/provider status. Reads remain user-scoped and bounded
+to 20 records; content includes a 2000-character excerpt and a truncation flag.
+These reads do not imply a draft has been approved, published or sent.

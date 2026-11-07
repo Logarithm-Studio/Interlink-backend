@@ -9,8 +9,8 @@ export const MARKETING_TOOLS: GeminiToolFunction[] = [{
   parameters: { type: "object", properties: { campaignId: { type: "string", description: "Exact saved campaign UUID, if known." }, query: { type: "string", description: "Optional topic or subject phrase to find a campaign." } } },
 }, {
   name: "read_marketing_workspace",
-  description: "Read owned Marketing contacts, research plans, email sequences or agreements from Interlink. Returns actual record IDs and status; never sends, exports or schedules. Use contacts to resolve exact contact IDs before saving a research plan.",
-  parameters: { type: "object", properties: { resource: { type: "string", enum: ["contacts", "research_plans", "email_sequences", "agreements"] } }, required: ["resource"] },
+  description: "Read owned Marketing contacts, research plans, open follow-ups, content, email sequences or agreements from Interlink. Returns actual record IDs and status; never sends, exports or schedules. Use contacts to resolve exact contact IDs before saving a research plan. Content bodies are excerpts of up to 2000 characters.",
+  parameters: { type: "object", properties: { resource: { type: "string", enum: ["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"] } }, required: ["resource"] },
 }, {
   name: "create_marketing_research_plan",
   description: "Save a reviewed research shortlist and objective in Interlink. Use exact owned contact IDs from read_marketing_workspace; never invent contacts. Does not export to Notion/Todoist or send outreach. Those destinations require their own review in Research & planning.",
@@ -18,7 +18,7 @@ export const MARKETING_TOOLS: GeminiToolFunction[] = [{
 }];
 
 export async function readMarketingWorkspace(userId: string, args: Record<string, unknown>): Promise<{ message: string; data: unknown }> {
-  const { resource } = z.object({ resource: z.enum(["contacts", "research_plans", "email_sequences", "agreements"]) }).parse(args);
+  const { resource } = z.object({ resource: z.enum(["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"]) }).parse(args);
   let records: unknown[];
   if (resource === "contacts") {
     const { listContacts } = await import("../sales/sales.service");
@@ -29,6 +29,12 @@ export async function readMarketingWorkspace(userId: string, args: Record<string
   } else if (resource === "email_sequences") {
     const { listEmailSequences } = await import("./email-sequence.service");
     records = (await listEmailSequences(userId)).slice(0, 20).map(row => ({ id: row.id, contactId: row.contact_id, recipient: row.recipient_email, status: row.status, nextStep: row.next_step, dueAt: row.due_at, stepCount: row.steps.length, lastError: row.last_error }));
+  } else if (resource === "followups") {
+    const { listMarketingFollowups } = await import("./leads.service");
+    records = (await listMarketingFollowups(userId)).slice(0, 20).map(row => ({ id: row.id, title: row.title, contactName: row.contactName, status: row.status, dueAt: row.dueAt, todoistTaskId: row.todoistTaskId }));
+  } else if (resource === "content") {
+    const { listMarketingContent } = await import("./content.service");
+    records = (await listMarketingContent(userId)).slice(0, 20).map(row => ({ id: row.id, campaignId: row.campaignId, title: row.title, channel: row.channel, body: row.body.slice(0, 2000), bodyTruncated: row.body.length > 2000, status: row.status, scheduledAt: row.scheduledAt, publishedAt: row.publishedAt, providerItemId: row.providerItemId }));
   } else {
     const { listAgreements } = await import("./agreement.service");
     records = (await listAgreements(userId)).slice(0, 20).map(row => ({ id: row.id, title: row.title, status: row.status, signerName: row.signer_name, signerEmail: row.signer_email, envelopeId: row.envelope_id }));
