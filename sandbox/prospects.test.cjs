@@ -58,6 +58,10 @@ test('reviewed CRM prospect imports run through real auth and PostgreSQL', async
       assert.equal(first.contact.marketingOptIn, false);
       assert.equal(first.contact.marketingAttribution.crmRecordId, 'crm-101');
       assert.equal((await s.db.query('SELECT count(*)::int AS n FROM sales_contacts')).rows[0].n, 1);
+      const leadsResponse = await fetch(base + '/api/v1/marketing/leads', { headers: { authorization: 'Bearer ' + token } });
+      assert.equal(leadsResponse.status, 200);
+      const leads = (await leadsResponse.json()).leads;
+      assert.ok(leads.some(lead => lead.id === first.contact.id), 'a reviewed CRM prospect must be available for qualification and follow-up');
     });
     await t.test('Salesforce normalization and same-email dedup preserve existing contact', async () => {
       const sf = (await api('search', { provider: 'salesforce', query: 'QA Company', title: 'Director' }, 200)).prospects[0];

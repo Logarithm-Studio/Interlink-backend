@@ -185,7 +185,7 @@ export async function searchPages(userId: string, query: string): Promise<Notion
     method: "POST",
     body: JSON.stringify({ query, filter: { value: "page", property: "object" }, page_size: 20 }),
   });
-  if (!res.ok) return [];
+  if (!res.ok) throw new BadRequestError("Couldn't search Notion pages. Check the connection and that a destination page is shared with Interlink.");
   const data = (await res.json()) as {
     results?: {
       id?: string;

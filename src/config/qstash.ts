@@ -17,7 +17,7 @@ export function getQStashClient(): Client {
   if (_client) return _client;
   const token = process.env.QSTASH_TOKEN?.trim();
   if (!token) throw new Error("QSTASH_TOKEN must be set");
-  _client = new Client({ token, baseUrl: qstashUrl() });
+  _client = new Client({ token, baseUrl: qstashUrl(), devMode: false });
   return _client;
 }
 
@@ -30,7 +30,7 @@ export function getQStashReceiver(): Receiver {
       "QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY must be set",
     );
   }
-  _receiver = new Receiver({ currentSigningKey: current, nextSigningKey: next });
+  _receiver = new Receiver({ currentSigningKey: current, nextSigningKey: next, devMode: false });
   return _receiver;
 }
 
@@ -49,7 +49,7 @@ export async function refreshQStashReceiver(): Promise<Receiver | null> {
       if (!response.ok) throw new QStashKeyLookupError(response.status === 401 || response.status === 403 ? "WORKER_PUBLISHER_UNAUTHORIZED" : "WORKER_KEY_LOOKUP_UNAVAILABLE", { upstreamStatus: response.status });
       const keys = await response.json() as { current?: unknown; next?: unknown } | null;
       if (typeof keys?.current !== "string" || !keys.current.trim() || typeof keys.next !== "string" || !keys.next.trim()) throw new Error("WORKER_KEY_RESPONSE_INVALID");
-      _receiver = new Receiver({ currentSigningKey: keys.current.trim(), nextSigningKey: keys.next.trim() });
+      _receiver = new Receiver({ currentSigningKey: keys.current.trim(), nextSigningKey: keys.next.trim(), devMode: false });
       return _receiver;
     } catch (error) {
       if (error instanceof Error && ["WORKER_PUBLISHER_UNAUTHORIZED", "WORKER_KEY_LOOKUP_UNAVAILABLE", "WORKER_KEY_RESPONSE_INVALID"].includes(error.message)) throw error;

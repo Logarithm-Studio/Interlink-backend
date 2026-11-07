@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client } from "@upstash/qstash";
+import { getQStashClient } from "../src/config/qstash";
 
 type MarketingSchedule = {
   name: string;
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
 
   const token = process.env.QSTASH_TOKEN?.trim();
   if (!token) throw new Error("Set QSTASH_TOKEN before applying schedules.");
-  const client = new Client({ token });
+  const client = getQStashClient();
   for (const schedule of definitions) {
     const result = await client.schedules.create({
       destination: schedule.destination,

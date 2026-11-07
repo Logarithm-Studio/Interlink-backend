@@ -2,6 +2,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startSandbox } = require('./runtime.cjs');
 
+test('Notion search reports provider errors instead of claiming there are no shared pages', async () => {
+  const s = await startSandbox({ port: 4323 });
+  const originalFetch = global.fetch;
+  try {
+    await s.connectNative(s.config.userId, 'notion');
+    global.fetch = async (input, init) => String(input).startsWith('https://api.notion.com/v1/search')
+      ? new Response(JSON.stringify({ message: 'private provider details' }), { status: 503 })
+      : originalFetch(input, init);
+    await assert.rejects(s.load('services/notion/notion.service.js').searchPages(s.config.userId, 'Shared'), /Couldn.t search Notion pages/);
+    global.fetch = async () => new Response(JSON.stringify({ results: [] }));
+    assert.deepEqual(await s.load('services/notion/notion.service.js').searchPages(s.config.userId, 'Shared'), []);
+  } finally { global.fetch = originalFetch; await s.close(); }
+});
+
 test('a backend key/configuration fault never destroys saved Google credentials', async () => {
   const s = await startSandbox({ port: 4323 });
   const auth = s.load('services/auth.service.js');

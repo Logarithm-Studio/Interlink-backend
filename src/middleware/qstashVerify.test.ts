@@ -46,6 +46,7 @@ test("production worker verification separates missing configuration and binds r
     assert.equal(await post("/one", sign("/one")), 503, "missing deployment keys are an unavailable worker, not an invalid caller");
     process.env.QSTASH_CURRENT_SIGNING_KEY = ` ${key}\n`;
     process.env.QSTASH_NEXT_SIGNING_KEY = `\n${key}-next `;
+    process.env.QSTASH_DEV = "true";
     assert.equal(await post("/one", sign("/one")), 200);
     assert.equal(await post("/one", sign("/one", body, key + "-next")), 200);
     assert.equal(await post("/one", sign("/one"), '{"probe":true}', "WORKER_BODY_MISMATCH"), 401);

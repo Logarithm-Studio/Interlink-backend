@@ -683,7 +683,7 @@ export async function listMarketingLeads(userId: string): Promise<MarketingLead[
           WHERE user_id=c.user_id AND contact_id=c.id ORDER BY captured_at DESC LIMIT 1
        ) latest ON true
        LEFT JOIN sales_marketing_campaigns mc ON mc.id=latest.campaign_id AND mc.user_id=c.user_id
-      WHERE c.user_id=$1 AND (latest.contact_id IS NOT NULL OR c.source IN ('inbound','email') OR c.marketing_campaign_id IS NOT NULL)
+      WHERE c.user_id=$1 AND (latest.contact_id IS NOT NULL OR c.source IN ('inbound','email','hubspot_research','salesforce_research') OR c.marketing_campaign_id IS NOT NULL)
       ORDER BY COALESCE(latest.captured_at,c.created_at) DESC LIMIT 300`,
     [userId],
   );
