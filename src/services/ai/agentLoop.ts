@@ -60,6 +60,8 @@ export interface RunAgentTurnOptions {
   isReadOnly: (name: string) => boolean;
   /** Executes a read-only tool and returns a concise result to feed back to the model. */
   execReadOnly: (name: string, args: Record<string, unknown>) => Promise<{ message: string; data?: unknown }>;
+  /** Return a safe repair hint for invalid write arguments; never execute a write here. */
+  validateAction?: (name: string, args: Record<string, unknown>) => Promise<string | null>;
   /** When true, log agent step transitions for debugging "why did it do nothing" cases. */
   debug?: boolean;
   /** When the first reply is prose but the message clearly asked for an action, force a tool. */
@@ -86,6 +88,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
 
   let lastReadMessage: string | null = null;
   let lastRead: { name: string; args: Record<string, unknown>; data?: unknown } | undefined;
+  let repairAttempted = false;
 
   for (let step = 0; step < maxSteps; step++) {
     let result = await geminiGenerateContent({
@@ -148,6 +151,14 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
     }
     const write = calls.find(call => !opts.isReadOnly(call.name));
     if (write) {
+      const repairHint = await opts.validateAction?.(write.name, write.args);
+      if (repairHint) {
+        if (repairAttempted || Date.now() >= deadline) return { kind: "text", text: "I couldn't resolve the saved records for this action. No change was made. Please check the selected contacts in Research & planning." };
+        repairAttempted = true;
+        contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
+        contents.push({ role: "user", parts: calls.map(call => ({ functionResponse: { name: call.name, response: { error: repairHint, executed: false } } })) });
+        continue;
+      }
       // One reviewed write at a time. Remaining work is replanned from actual outcomes,
       // never speculative results or a queue of writes based on stale IDs.
       return { kind: "action", ...write, text: result.raw?.trim() || undefined };

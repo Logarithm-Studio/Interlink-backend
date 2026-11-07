@@ -63,3 +63,8 @@ Registered checks include `agentLoop.test.ts`, `geminiClient.test.ts`,
 recovery, attachment, connection and Marketing suites. PGlite serializes its SQL
 connection; sandbox concurrency is not a production-pool load certification.
 The app QA report records emulator evidence and live-provider limits separately.
+
+Marketing snapshots include owned contact UUIDs. Invalid research-plan arguments
+return a tool repair hint inside the planning loop once, allowing owned-contact
+discovery before review. A repeated invalid proposal stops with no write; foreign
+UUIDs still fail the ownership check. This does not auto-confirm or execute a plan.

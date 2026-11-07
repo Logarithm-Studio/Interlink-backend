@@ -1230,7 +1230,7 @@ async function buildSnapshot(userId: string): Promise<string> {
     "Deals:",
     ...deals.slice(0, 20).map((d) => `- ${d.title} | ${d.company ?? "—"} | ${fmt(d.amountCents)} | stage=${d.stage} | contact=${d.contactName ?? "—"}`),
     "Contacts:",
-    ...contacts.slice(0, 15).map((c) => `- ${c.name} | ${c.company ?? "—"} | ${c.email ?? "no-email"} | ${c.title ?? ""}${c.territory ? ` | ${c.territory}` : ""}`),
+    ...contacts.slice(0, 15).map((c) => `- ${c.name} | id=${c.id} | ${c.company ?? "—"} | ${c.email ?? "no-email"} | ${c.title ?? ""}${c.territory ? ` | ${c.territory}` : ""}`),
   ].join("\n");
 }
 

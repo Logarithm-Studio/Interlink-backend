@@ -52,7 +52,7 @@ import {
 import { recordActivity } from "./activity.service";
 import { AppUser } from "../../types";
 import { AppError } from "../../utils/errors";
-import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan, reviewMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
+import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan, reviewMarketingResearchPlan, validateMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
 import { createAgentTask, saveTaskPlan, claimTaskContinuation, releaseTaskContinuation, getAgentTaskContext, getAgentTaskReceipts, readProfessionalTasks, PROFESSIONAL_TASK_READ_TOOLS, type AgentTask } from "./agent-task.service";
 
 const PROFESSIONAL_AGENT_RULES = [
@@ -500,6 +500,7 @@ async function planCommand(
         history,
         isReadOnly: isReadOnlyProfessionalAction,
         execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
+        validateAction: (name, args) => name === "create_marketing_research_plan" ? validateMarketingResearchPlan(args) : Promise.resolve(null),
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {

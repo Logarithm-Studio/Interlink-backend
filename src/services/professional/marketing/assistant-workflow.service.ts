@@ -43,6 +43,11 @@ export async function saveMarketingResearchPlan(userId: string, args: Record<str
   return { ok: true, message: `Saved research plan "${plan.title}" with ${plan.contact_ids.length} selected contacts in Interlink. No external copy was made. Review Notion or Todoist destinations in Research & planning.`, data: { planId: plan.id, title: plan.title, objective: plan.objective, contactIds: plan.contact_ids } };
 }
 
+export async function validateMarketingResearchPlan(args: Record<string, unknown>): Promise<string | null> {
+  const { ResearchPlanInput } = await import("./research-plan.service");
+  return ResearchPlanInput.safeParse(args).success ? null : "Research plan identifiers or details are invalid. Read read_marketing_workspace with resource contacts and use its exact owned UUID contact IDs, not names or invented identifiers. Include the requested title and objective. Nothing in this batch was saved or executed.";
+}
+
 /** Resolve review labels from owned records, never model-supplied contact names. */
 export async function reviewMarketingResearchPlan(userId: string, args: Record<string, unknown>) {
   const { ResearchPlanInput } = await import("./research-plan.service");

@@ -65,6 +65,23 @@ test("unavailable tool names never reach an executor or approval", async () => {
   });
 });
 
+test("invalid write details get one repair attempt and never execute or reach approval", async () => {
+  await mockModel([[{ functionCall: { name: "create_plan", args: { contacts: ["unresolved"] } } }]], async requests => {
+    let validations = 0;
+    const outcome = await runAgentTurn({
+      system: "Prepare a reviewed plan", tools: [{ name: "create_plan", description: "Plan", parameters: { type: "object", properties: {} } }],
+      userParts: [{ text: "Create a plan for Mira" }], isReadOnly: () => false,
+      execReadOnly: async () => { throw new Error("A write must never execute as discovery"); },
+      validateAction: async () => { validations++; return "Resolve the owned contact identifier first."; },
+    });
+    assert.equal(outcome.kind, "text");
+    assert.equal(validations, 2);
+    assert.equal(requests.length, 2, "repeated invalid proposals must not loop");
+    assert.equal(requests[1].contents.at(-1).parts[0].functionResponse.response.executed, false);
+    assert.match(outcome.kind === "text" ? outcome.text : "", /No change was made/);
+  });
+});
+
 test("a repeated discovery stops without repeatedly calling the provider", async () => {
   await mockModel([[{ functionCall: { name: "list_people", args: {} } }]], async requests => {
     let reads = 0;

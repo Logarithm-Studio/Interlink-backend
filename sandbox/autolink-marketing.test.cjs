@@ -31,5 +31,17 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    await api('/command',{message:'Create another research plan for the chosen contact.'},400);
    assert.equal(await count(),1);
   });
+  await t.test('an unresolved contact identifier is repaired through owned discovery before review',async()=>{
+   let round=0;
+   model.geminiGenerateContent=async options=>{
+    round++;
+    const call=round===1?{name:'create_marketing_research_plan',args:{title:'Recovered research',objective:'Review buying signals.',contactIds:['Mira Research QA']}}:round===2?{name:'read_marketing_workspace',args:{resource:'contacts'}}:{name:'create_marketing_research_plan',args:{title:'Recovered research',objective:'Review buying signals.',contactIds:[contact.id]}};
+    if(round===2) assert.match(JSON.stringify(options.contents.at(-1)),/contact|identifier/i,'the invalid proposal must return a repairable tool result');
+    return {raw:'',functionCall:call,model:'fixture',latencyMs:1};
+   };
+   const plan=await api('/command',{message:'Create a research plan for Mira Research QA.'});
+   assert.equal(round,3);assert.equal(plan.task.status,'review');assert.deepEqual(plan.action.args.contactIds,[contact.id]);assert.match(plan.action.args.contacts,/Mira Research QA/);
+   assert.equal(await count(),1,'repairing a proposal must never save or execute it');
+  });
  } finally {await s.close()}
 });

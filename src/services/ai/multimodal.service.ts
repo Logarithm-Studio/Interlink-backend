@@ -183,6 +183,7 @@ export async function planAgentActions(params: {
    */
   isReadOnly?: (name: string) => boolean;
   execReadOnly?: (name: string, args: Record<string, unknown>) => Promise<{ message: string; data?: unknown }>;
+  validateAction?: (name: string, args: Record<string, unknown>) => Promise<string | null>;
 }): Promise<AgentPlan> {
   if (!isGeminiLive()) {
     return {
@@ -245,6 +246,7 @@ export async function planAgentActions(params: {
       history: params.history,
       isReadOnly: params.isReadOnly ?? (() => false),
       execReadOnly: params.execReadOnly ?? (async () => ({ message: "" })),
+      validateAction: params.validateAction,
       looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
     if (outcome.kind === "action") {
