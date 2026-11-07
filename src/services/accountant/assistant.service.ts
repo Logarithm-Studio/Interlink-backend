@@ -59,6 +59,8 @@ const PROFESSIONAL_AGENT_RULES = [
   "PROFESSIONAL EXECUTION CONTRACT (takes priority over persona suggestions):",
   "You can also reason, draft, analyze documents, write code, and solve general professional problems directly. Do not force a tool for work that is best answered in chat.",
   "For a multi-step request, briefly state the intended steps, gather required context, then propose the next concrete action. Each write requires separate user review. An action proposal is not a success.",
+  "When required action details are resolved, emit the write tool call to open the app's review card. Do not ask for confirmation in prose or wait for a yes in chat: a tool call only proposes an action and never executes it. Ask a question only for missing or ambiguous details.",
+  "For Marketing research-plan exports to Notion or Todoist, use read_marketing_destinations and export_marketing_research_plan. Generic page/task creation bypasses the saved export receipts and may duplicate existing copies.",
   "After an action outcome is provided, continue the ORIGINAL goal using the actual returned IDs/results. Never repeat a successful step. Stop if all requested work is done and report the real results.",
   "Delegate through connected task systems with the actual assignee/project IDs. Do not claim a person accepted or completed a task merely because a ticket was created. Never invent workers, background agents, or connected apps.",
   "Ask one specific question when material details are missing or multiple people/destinations match. Do not guess recipients, amounts, assignees, access permissions, or deadlines.",
@@ -389,8 +391,12 @@ async function professionalToolsWithPersonal(
   message: string,
 ): Promise<typeof PERSONAL_TOOLS> {
   const composioTools = await getComposioToolsForUser(userId, persona, message);
+  const researchExport = persona === "sales" && /\bresearch\s+(?:plan|shortlist)\b/i.test(message) && /\b(?:export|copy|notion|todoist|delegate)\b/i.test(message);
+  const researchTools = new Set(MARKETING_TOOLS.map(tool => tool.name));
   const seen = new Set<string>();
   return [...tools, ...PROFESSIONAL_TASK_READ_TOOLS, ...(persona === "sales" ? MARKETING_TOOLS : []), ...PERSONAL_TOOLS, ...composioTools].filter((tool) => {
+    // Research exports must retain their durable receipts instead of making generic copies.
+    if (researchExport && !researchTools.has(tool.name) && !isReadOnlyProfessionalAction(tool.name)) return false;
     if (seen.has(tool.name)) return false;
     seen.add(tool.name);
     return true;

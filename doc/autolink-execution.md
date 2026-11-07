@@ -102,6 +102,12 @@ fingerprint. Execution uses the same durable research-export service as the form
 Notion and Todoist each require their own confirmation. Existing copies retain
 their receipts; uncertain writes require reconciliation in Research & planning.
 The model cannot supply review labels or replace the saved action payload.
+For explicit research-plan export requests, planning keeps the native research
+write tools and read tools; unrelated writes are excluded from that task's tool
+surface. Start a separate request for unrelated changes. This prevents generic
+task/page creation from bypassing export receipts. Resolved actions emit the
+review card rather than asking for a yes in prose. A real Gemini check exposed
+both problems before this correction and passed both provider steps afterward.
 
 Verification evidence lives in the app's `docs/qa/` reports. The November 7 Vercel
 configuration repair restored signed QStash callbacks: both dispatchers returned

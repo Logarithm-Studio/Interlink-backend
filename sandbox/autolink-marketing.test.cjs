@@ -9,6 +9,7 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
  let phase=0, selected=contact.id;
  model.geminiGenerateContent = async options => {
   assert.match(options.system, /Campaign delivery and content publication have independent lifecycles/);
+  assert.match(options.system, /Do not ask for confirmation in prose/);
   assert(options.tools.some(tool=>tool.name==='read_marketing_workspace'));
   assert(options.tools.some(tool=>tool.name==='create_marketing_research_plan'));
   const call = phase++===0 ? {name:'read_marketing_workspace',args:{resource:'contacts'}} : phase===2 ? {name:'create_marketing_research_plan',args:{title:'Reviewed launch research',objective:'Confirm buying signals and prepare a reviewed outreach plan.',contactIds:[selected],contacts:'Forged contact label'}} : undefined;
@@ -50,11 +51,12 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    const saved=await plans.createResearchPlan(uid,{title:'Agent delegation QA',objective:'Review the launch audience.',contactIds:[contact.id]});
    const foreign=await plans.createResearchPlan(s.config.otherUserId,{title:'Private plan',objective:'Private',contactIds:[other.id]});
    let round=0;
-   model.geminiGenerateContent=async()=>{
+   model.geminiGenerateContent=async options=>{
+    assert(!options.tools.some(tool=>['create_todoist_task','create_notion_note','create_trello_card'].includes(tool.name)),'Research exports must use durable receipts rather than unrelated writes');
     const calls=[{name:'read_marketing_destinations',args:{provider:'notion',query:'Sandbox'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent',query:'Sandbox',destination:'Forged destination',fingerprint:'forged'}},{name:'read_marketing_destinations',args:{provider:'todoist'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'todoist',destinationId:'sandbox-project',contacts:'Forged contacts'}}];
     return{raw:round<4?'':'Both reviewed copies are saved.',functionCall:calls[round++],model:'fixture',latencyMs:1};
    };
-   const first=await api('/command',{message:'Export Agent delegation QA to Notion Sandbox workspace, then delegate it to Todoist Sandbox marketing.'});
+   const first=await api('/command',{message:'Export research plan Agent delegation QA to Notion Sandbox workspace, then delegate it to Todoist Sandbox marketing.'});
    assert.equal(first.action?.name,'export_marketing_research_plan','The native reviewed export tool must be available');
    assert.match(first.action.args.destination,/Sandbox workspace/);assert(!first.action.args.destination.includes('Forged'));
    assert.match(first.action.args.contacts,/Mira Research QA/);assert.equal(first.action.args.fingerprint,(await plans.previewResearchPlan(uid,saved.id)).fingerprint);
