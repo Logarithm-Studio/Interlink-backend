@@ -5,6 +5,12 @@ let _receiver: Receiver | null = null;
 let keyRefreshInFlight: Promise<Receiver | null> | null = null;
 let nextKeyRefreshAt = 0;
 
+export class QStashKeyLookupError extends Error {
+  constructor(code: string, readonly diagnostic: { upstreamStatus?: number; errorType?: string; causeCode?: string }) {
+    super(code);
+  }
+}
+
 export function getQStashClient(): Client {
   if (_client) return _client;
   const token = process.env.QSTASH_TOKEN?.trim();
@@ -38,14 +44,17 @@ export async function refreshQStashReceiver(): Promise<Receiver | null> {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(3000),
       });
-      if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "WORKER_PUBLISHER_UNAUTHORIZED" : "WORKER_KEY_LOOKUP_UNAVAILABLE");
+      if (!response.ok) throw new QStashKeyLookupError(response.status === 401 || response.status === 403 ? "WORKER_PUBLISHER_UNAUTHORIZED" : "WORKER_KEY_LOOKUP_UNAVAILABLE", { upstreamStatus: response.status });
       const keys = await response.json() as { current?: unknown; next?: unknown } | null;
       if (typeof keys?.current !== "string" || !keys.current.trim() || typeof keys.next !== "string" || !keys.next.trim()) throw new Error("WORKER_KEY_RESPONSE_INVALID");
       _receiver = new Receiver({ currentSigningKey: keys.current.trim(), nextSigningKey: keys.next.trim() });
       return _receiver;
     } catch (error) {
       if (error instanceof Error && ["WORKER_PUBLISHER_UNAUTHORIZED", "WORKER_KEY_LOOKUP_UNAVAILABLE", "WORKER_KEY_RESPONSE_INVALID"].includes(error.message)) throw error;
-      throw new Error("WORKER_KEY_LOOKUP_UNAVAILABLE");
+      const errorType = error instanceof Error && ["TypeError", "ReferenceError", "TimeoutError", "AbortError", "SyntaxError"].includes(error.name) ? error.name : "UnknownError";
+      const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : undefined;
+      const causeCode = typeof cause?.code === "string" && ["ENOTFOUND", "ECONNRESET", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET", "ERR_INVALID_CHAR", "ERR_INVALID_HTTP_TOKEN", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE"].includes(cause.code) ? cause.code : undefined;
+      throw new QStashKeyLookupError("WORKER_KEY_LOOKUP_UNAVAILABLE", { errorType, ...(causeCode ? { causeCode } : {}) });
     }
   })();
   try { return await keyRefreshInFlight; }

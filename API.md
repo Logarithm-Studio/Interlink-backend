@@ -407,7 +407,9 @@ once per five minutes per process. The original callback must still pass JWT,
 raw-body and destination verification. Failed lookups never authorize a job.
 Rejected publisher credentials, unavailable key lookups and malformed key replies
 return 503 with fixed `WORKER_PUBLISHER_UNAUTHORIZED`,
-`WORKER_KEY_LOOKUP_UNAVAILABLE` or `WORKER_KEY_RESPONSE_INVALID` codes. A callback
+`WORKER_KEY_LOOKUP_UNAVAILABLE` or `WORKER_KEY_RESPONSE_INVALID` codes. Lookup failures
+may include `diagnostic.upstreamStatus`, or a fixed `errorType` and allowlisted
+network `causeCode`; credentials and upstream response bodies are never returned. A callback
 that still fails after an authenticated key refresh returns 401 with reason
 `authenticated_key_mismatch`; no credentials or key fingerprints are exposed.
 `POST /calendar-sync`, `/triggers`, `/workflow`, `/conflicts`, `/notifications`, `/email`, `/dlq`, `/marketing-todoist-dispatch`, `/marketing-todoist-sync`, `/marketing-followup-reminder`, `/marketing-hubspot-monitor`, and `/marketing-social-publish`.

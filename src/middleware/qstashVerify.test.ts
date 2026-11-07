@@ -81,6 +81,20 @@ test("production worker verification separates missing configuration and binds r
       Date.now = () => now() + 5 * 60_000 + 1;
       global.fetch = async () => new Response("{}", { status: 401 });
       await assert.rejects(refreshQStashReceiver(), /WORKER_PUBLISHER_UNAUTHORIZED/);
+      Date.now = () => now() + 10 * 60_000 + 2;
+      global.fetch = async () => new Response("private upstream details", { status: 429 });
+      await assert.rejects(refreshQStashReceiver(), error => {
+        assert.equal((error as Error).message, "WORKER_KEY_LOOKUP_UNAVAILABLE");
+        assert.deepEqual((error as Error & { diagnostic: unknown }).diagnostic, { upstreamStatus: 429 });
+        return true;
+      });
+      Date.now = () => now() + 15 * 60_000 + 3;
+      global.fetch = async () => { throw Object.assign(new TypeError("secret must not appear"), { cause: { code: "ERR_INVALID_CHAR" } }); };
+      await assert.rejects(refreshQStashReceiver(), error => {
+        assert.equal((error as Error).message, "WORKER_KEY_LOOKUP_UNAVAILABLE");
+        assert.deepEqual((error as Error & { diagnostic: unknown }).diagnostic, { errorType: "TypeError", causeCode: "ERR_INVALID_CHAR" });
+        return true;
+      });
     } finally { Date.now = now; }
     assert.equal(await getQStashReceiver().verify({ signature: sign("/one", body, key + "-rotated"), body, url: process.env.API_BASE_URL + "/one" }), true, "a rejected key lookup never replaces already trusted keys");
   } finally {

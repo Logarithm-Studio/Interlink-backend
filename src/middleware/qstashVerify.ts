@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { getQStashReceiver, refreshQStashReceiver } from "../config/qstash";
+import { getQStashReceiver, refreshQStashReceiver, QStashKeyLookupError } from "../config/qstash";
 import { resolveWorkerOrigin } from "../config/workerOrigin";
 
 /**
@@ -65,7 +65,7 @@ export async function verifyQStash(
     // JWTs, signing keys, URLs or body hashes from the SDK's error message.
     const message = error instanceof Error ? error.message : "";
     if (["WORKER_PUBLISHER_UNAUTHORIZED", "WORKER_KEY_LOOKUP_UNAVAILABLE", "WORKER_KEY_RESPONSE_INVALID"].includes(message)) {
-      res.status(503).json({ error: "Worker signing keys could not be reconciled", code: message });
+      res.status(503).json({ error: "Worker signing keys could not be reconciled", code: message, ...(error instanceof QStashKeyLookupError ? { diagnostic: error.diagnostic } : {}) });
       return;
     }
     if (message === "crypto is not defined" || message === "CryptoKey is not defined") {
