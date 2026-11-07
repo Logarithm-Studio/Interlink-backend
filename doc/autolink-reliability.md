@@ -73,3 +73,8 @@ The existing Marketing workspace reader also returns open follow-ups and saved
 content with actual workflow/provider status. Reads remain user-scoped and bounded
 to 20 records; content includes a 2000-character excerpt and a truncation flag.
 These reads do not imply a draft has been approved, published or sent.
+Campaign delivery and content publication are independent lifecycles; the agent
+must not invent a parent-campaign delivery prerequisite for approved social copy.
+Connector/record/document text is explicitly untrusted in the shared prompt.
+This instruction supplements the deterministic ownership and review gates; it
+does not make model reasoning or prompt-injection resistance infallible.

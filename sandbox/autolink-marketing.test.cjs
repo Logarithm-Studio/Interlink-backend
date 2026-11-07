@@ -8,6 +8,7 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
  const model = s.load('services/ai/geminiClient.js'); model.isGeminiLive = () => true;
  let phase=0, selected=contact.id;
  model.geminiGenerateContent = async options => {
+  assert.match(options.system, /Campaign delivery and content publication have independent lifecycles/);
   assert(options.tools.some(tool=>tool.name==='read_marketing_workspace'));
   assert(options.tools.some(tool=>tool.name==='create_marketing_research_plan'));
   const call = phase++===0 ? {name:'read_marketing_workspace',args:{resource:'contacts'}} : phase===2 ? {name:'create_marketing_research_plan',args:{title:'Reviewed launch research',objective:'Confirm buying signals and prepare a reviewed outreach plan.',contactIds:[selected],contacts:'Forged contact label'}} : undefined;
