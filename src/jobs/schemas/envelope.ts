@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Standard envelope wrapping every BullMQ job payload.
+ * Standard envelope wrapping every QStash job payload.
  * All producers must conform to this schema.
  * All processors must validate incoming data against this schema.
  */
@@ -10,7 +10,7 @@ export const JobEnvelopeSchema = z.object({
   requestId: z.string().uuid(),
   idempotencyKey: z.string().min(1),
   userId: z.string().uuid(),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
 });
 
 export type JobEnvelope = z.infer<typeof JobEnvelopeSchema>;

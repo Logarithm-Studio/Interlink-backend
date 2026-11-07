@@ -286,7 +286,7 @@ router.get("/slack/channels", async (req: Request, res: Response, next: NextFunc
 
 // Run one of the PM PRD workflows. Delegates to the vertical so logic lives in one place.
 const PM_WORKFLOWS = new Set(["prd_to_tickets", "sprint_interruption", "release_notes", "status_sync", "scope_creep_check"]);
-const WorkflowBody = z.record(z.unknown());
+const WorkflowBody = z.record(z.string(), z.unknown());
 router.post("/workflows/:name", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;

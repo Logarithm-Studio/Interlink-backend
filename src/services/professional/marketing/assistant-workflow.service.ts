@@ -13,9 +13,53 @@ export const MARKETING_TOOLS: GeminiToolFunction[] = [{
   parameters: { type: "object", properties: { resource: { type: "string", enum: ["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"] } }, required: ["resource"] },
 }, {
   name: "create_marketing_research_plan",
-  description: "Save a reviewed research shortlist and objective in Interlink. Use exact owned contact IDs from read_marketing_workspace; never invent contacts. Does not export to Notion/Todoist or send outreach. Those destinations require their own review in Research & planning.",
+  description: "Save a reviewed research shortlist and objective in Interlink. Use exact owned contact IDs from read_marketing_workspace; never invent contacts. Does not export or send outreach. Exporting to Notion or Todoist requires a separate export_marketing_research_plan review after this step succeeds.",
   parameters: { type: "object", properties: { title: { type: "string" }, objective: { type: "string" }, contactIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 } }, required: ["title", "objective", "contactIds"] },
+}, {
+  name: "read_marketing_destinations",
+  description: "Discover actual accessible Notion parent pages or Todoist projects for a research-plan export. Use the returned exact ID; never invent a destination. Read only.",
+  parameters: { type: "object", properties: { provider: { type: "string", enum: ["notion", "todoist"] }, query: { type: "string", description: "Optional destination title search." } }, required: ["provider"] },
+}, {
+  name: "export_marketing_research_plan",
+  description: "Export an existing owned research plan to one discovered Notion parent page or Todoist project. Requires its own human review of the actual destination, objective and contacts. Reuses existing export receipts; uncertain writes require manual reconciliation, never blind retries. Discover exact plan and destination IDs first. No outreach is sent.",
+  parameters: { type: "object", properties: { planId: { type: "string" }, provider: { type: "string", enum: ["notion", "todoist"] }, destinationId: { type: "string" }, query: { type: "string", description: "The destination search used for discovery, if any." } }, required: ["planId", "provider", "destinationId"] },
 }];
+
+const DestinationInput = z.object({ provider: z.enum(["notion", "todoist"]), query: z.string().trim().max(120).optional() });
+const ExportInput = DestinationInput.extend({ planId: z.string().uuid(), destinationId: z.string().trim().min(1).max(200) });
+
+export async function readMarketingDestinations(userId: string, args: Record<string, unknown>) {
+  const { researchPlanDestinations } = await import("./research-plan.service");
+  const input = DestinationInput.parse(args);
+  const destinations = (await researchPlanDestinations(userId, input.provider, input.query ?? ""))
+    .filter(row => !input.query || row.title.toLowerCase().includes(input.query.toLowerCase())).slice(0, 30);
+  const data = { provider: input.provider, destinations, limit: 30, source: "Connected provider" };
+  return { message: JSON.stringify(data), data };
+}
+
+export function validateMarketingExport(args: Record<string, unknown>): string | null {
+  return ExportInput.safeParse(args).success ? null : "Read owned research plans and read_marketing_destinations first. Use their exact plan UUID and destination ID, with provider notion or todoist. Nothing was exported.";
+}
+
+export async function reviewMarketingExport(userId: string, args: Record<string, unknown>) {
+  const { previewResearchPlan, researchPlanDestinations } = await import("./research-plan.service");
+  const input = ExportInput.parse(args);
+  const preview = await previewResearchPlan(userId, input.planId);
+  const destination = (await researchPlanDestinations(userId, input.provider, input.query ?? "")).find(row => row.id === input.destinationId);
+  if (!destination) throw new AppError("Choose a destination available in your connected account.", 400);
+  return { ...input, title: preview.plan.title, objective: preview.plan.objective, destination: destination.title,
+    contacts: preview.contacts.map(contact => [contact.name, contact.title, contact.company, contact.email].filter(Boolean).join(" - ")).join("\n"), fingerprint: preview.fingerprint };
+}
+
+export async function exportMarketingResearchPlan(userId: string, args: Record<string, unknown>) {
+  const { exportResearchPlan } = await import("./research-plan.service");
+  const input = ExportInput.extend({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).parse(args);
+  const exports = (await exportResearchPlan(userId, input.planId, input.provider, input.destinationId, input.fingerprint))
+    .filter(row => row.provider === input.provider && row.destination_id === input.destinationId);
+  const ok = exports.length > 0 && exports.every(row => row.status === "synced");
+  return { ok, message: ok ? `Research plan copied to ${input.provider}; existing copies were retained. No outreach was sent.` : "The export needs provider review in Research & planning. Check the existing receipt before retrying; a copy may already exist.",
+    data: { planId: input.planId, provider: input.provider, exports: exports.map(row => ({ id: row.id, status: row.status, externalId: row.external_id, url: row.external_url })) } };
+}
 
 export async function readMarketingWorkspace(userId: string, args: Record<string, unknown>): Promise<{ message: string; data: unknown }> {
   const { resource } = z.object({ resource: z.enum(["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"]) }).parse(args);

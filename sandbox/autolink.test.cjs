@@ -53,7 +53,7 @@ test('Autolink execution history and saved Marketing reads use owned real record
     await t.test('campaign lookup returns real IDs and status while excluding another user', async () => {
       const own = await api('/api/v1/sales/campaigns', { topic: 'Owned Autolink QA', objective: 'Get ten leads', successMetric: '10 qualified leads', channels: ['email'] });
       const other = await api('/api/v1/sales/campaigns', { topic: 'Private other campaign' }, b.token);
-      const read = s.load('services/professional/marketing/assistant-read.service.js').readMarketingCampaigns;
+      const read = s.load('services/professional/marketing/assistant-workflow.service.js').readMarketingCampaigns;
       const found = await read(a.userId, { query: 'Owned Autolink QA' });
       assert.equal(found.data.campaigns.length, 1);
       assert.equal(found.data.campaigns[0].id, own.campaign.id);

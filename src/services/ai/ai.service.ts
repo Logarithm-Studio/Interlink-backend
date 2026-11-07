@@ -656,7 +656,7 @@ interface ProfessionalJsonArgs<T> {
   user: string;
   // Input typed as `unknown` so schemas with `.default()` (whose input differs
   // from their output `T`) remain assignable.
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>;
+  schema: z.ZodType<T, unknown>;
   fallback: () => T;
   maxOutputTokens?: number;
   rateLimitBucket: string;

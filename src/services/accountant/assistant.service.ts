@@ -52,7 +52,7 @@ import {
 import { recordActivity } from "./activity.service";
 import { AppUser } from "../../types";
 import { AppError } from "../../utils/errors";
-import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan, reviewMarketingResearchPlan, validateMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
+import { MARKETING_TOOLS, readMarketingCampaigns, readMarketingWorkspace, saveMarketingResearchPlan, reviewMarketingResearchPlan, validateMarketingResearchPlan, readMarketingDestinations, validateMarketingExport, reviewMarketingExport, exportMarketingResearchPlan } from "../professional/marketing/assistant-workflow.service";
 import { createAgentTask, saveTaskPlan, claimTaskContinuation, releaseTaskContinuation, getAgentTaskContext, getAgentTaskReceipts, readProfessionalTasks, PROFESSIONAL_TASK_READ_TOOLS, type AgentTask } from "./agent-task.service";
 
 const PROFESSIONAL_AGENT_RULES = [
@@ -405,6 +405,7 @@ function summarizeProfessionalAction(
   if (isComposioToolName(name)) return summarizeComposioAction(name, args);
   if (PERSONAL_TOOL_NAMES.has(name)) return summarizePersonalAction(name, args);
   if (name === "create_marketing_research_plan") return `Save research plan "${String(args.title ?? "")}" with the selected contacts in Interlink. No external export or outreach.`;
+  if (name === "export_marketing_research_plan") return `Copy research plan "${String(args.title ?? "")}" to ${String(args.provider)}: ${String(args.destination)}. No outreach will be sent.`;
   return verticalSummary ? verticalSummary(name, args) : summarizeAction(name, args);
 }
 
@@ -425,6 +426,7 @@ async function runReadOnlyPersonalAction(
 ): Promise<{ message: string }> {
   try {
     if (name === "read_marketing_campaigns") return await readMarketingCampaigns(userId, args);
+    if (name === "read_marketing_destinations") return await readMarketingDestinations(userId, args);
     if (name === "read_marketing_workspace") return await readMarketingWorkspace(userId, args);
     if (name === "read_professional_tasks") return await readProfessionalTasks(userId, args);
     return await executePersonalAction(userId, name, args);
@@ -436,7 +438,7 @@ async function runReadOnlyPersonalAction(
 }
 
 function isReadOnlyProfessionalAction(name: string): boolean {
-  return name === "read_professional_tasks" || name === "read_marketing_campaigns" || name === "read_marketing_workspace" || isReadOnlyPersonalAction(name);
+  return name === "read_marketing_destinations" || name === "read_professional_tasks" || name === "read_marketing_campaigns" || name === "read_marketing_workspace" || isReadOnlyPersonalAction(name);
 }
 
 async function loadRecentHistory(
@@ -500,7 +502,7 @@ async function planCommand(
         history,
         isReadOnly: isReadOnlyProfessionalAction,
         execReadOnly: (name, args) => runReadOnlyPersonalAction(userId, name, args),
-        validateAction: (name, args) => name === "create_marketing_research_plan" ? validateMarketingResearchPlan(args) : Promise.resolve(null),
+        validateAction: (name, args) => name === "create_marketing_research_plan" ? validateMarketingResearchPlan(args) : Promise.resolve(name === "export_marketing_research_plan" ? validateMarketingExport(args) : null),
       });
       let vAction: PendingAction | null = null;
       if (plan.action) {
@@ -514,12 +516,12 @@ async function planCommand(
           await query(`UPDATE accountant_conversations SET updated_at = now() WHERE id = $1`, [convId]).catch(() => {});
           return { answer: exec.message, action: null, isLive: plan.isLive, conversationId: convId };
         }
-        const reviewedArgs = plan.action.name === "create_marketing_research_plan" ? await reviewMarketingResearchPlan(userId, plan.action.args) : plan.action.args;
+        const reviewedArgs = plan.action.name === "create_marketing_research_plan" ? await reviewMarketingResearchPlan(userId, plan.action.args) : plan.action.name === "export_marketing_research_plan" ? await reviewMarketingExport(userId, plan.action.args) : plan.action.args;
         vAction = {
           id: randomUUID(),
           name: plan.action.name,
           args: reviewedArgs,
-          summary: summarizeProfessionalAction(plan.action.name, plan.action.args, vertical.summarizeAction),
+          summary: summarizeProfessionalAction(plan.action.name, reviewedArgs, vertical.summarizeAction),
           needsConfirm: true,
         };
       }
@@ -638,6 +640,7 @@ async function executeActionOnce(
   // Non-finance personas dispatch to their vertical's tool executor.
   const persona = await getProfessionalPersona(user.id);
   if (persona !== "finance") {
+    if (persona === "sales" && name === "export_marketing_research_plan") return exportMarketingResearchPlan(user.id, args);
     if (persona === "sales" && name === "create_marketing_research_plan") return saveMarketingResearchPlan(user.id, args);
     if (PERSONAL_TOOL_NAMES.has(name)) return executePersonalAction(user.id, name, args, { attachment, tz });
     const vertical = getVertical(persona);

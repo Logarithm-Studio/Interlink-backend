@@ -44,6 +44,38 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    assert.equal(round,3);assert.equal(plan.task.status,'review');assert.deepEqual(plan.action.args.contactIds,[contact.id]);assert.match(plan.action.args.contacts,/Mira Research QA/);
    assert.equal(await count(),1,'repairing a proposal must never save or execute it');
   });
+  await t.test('native Notion and Todoist delegation uses separate owned, fingerprint-bound reviews',async()=>{
+   await s.connectNative(uid,'notion');await s.connectNative(uid,'todoist');
+   const plans=s.load('services/professional/marketing/research-plan.service.js');
+   const saved=await plans.createResearchPlan(uid,{title:'Agent delegation QA',objective:'Review the launch audience.',contactIds:[contact.id]});
+   const foreign=await plans.createResearchPlan(s.config.otherUserId,{title:'Private plan',objective:'Private',contactIds:[other.id]});
+   let round=0;
+   model.geminiGenerateContent=async()=>{
+    const calls=[{name:'read_marketing_destinations',args:{provider:'notion',query:'Sandbox'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent',query:'Sandbox',destination:'Forged destination',fingerprint:'forged'}},{name:'read_marketing_destinations',args:{provider:'todoist'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'todoist',destinationId:'sandbox-project',contacts:'Forged contacts'}}];
+    return{raw:round<4?'':'Both reviewed copies are saved.',functionCall:calls[round++],model:'fixture',latencyMs:1};
+   };
+   const first=await api('/command',{message:'Export Agent delegation QA to Notion Sandbox workspace, then delegate it to Todoist Sandbox marketing.'});
+   assert.equal(first.action?.name,'export_marketing_research_plan','The native reviewed export tool must be available');
+   assert.match(first.action.args.destination,/Sandbox workspace/);assert(!first.action.args.destination.includes('Forged'));
+   assert.match(first.action.args.contacts,/Mira Research QA/);assert.equal(first.action.args.fingerprint,(await plans.previewResearchPlan(uid,saved.id)).fingerprint);
+   assert.equal(s.marketing.pages.size,0);assert.equal(s.marketing.tasks.size,0,'Discovery and proposals must never export');
+   const route='/tasks/'+first.task.id+'/actions/'+first.action.id+'/execute';
+   assert.equal((await api(route,{})).ok,true);await api(route,{});assert.equal(s.marketing.pages.size,1);
+   const next=await api('/tasks/'+first.task.id+'/continue',{});
+   assert.equal(next.action.name,'export_marketing_research_plan');assert.equal(next.action.args.provider,'todoist');assert.match(next.action.args.destination,/Sandbox marketing/);
+   assert.equal(s.marketing.tasks.size,0,'The second provider needs its own confirmation');
+   const secondRoute='/tasks/'+first.task.id+'/actions/'+next.action.id+'/execute';
+   assert.equal((await api(secondRoute,{})).ok,true);await api(secondRoute,{});assert.equal(s.marketing.tasks.size,1);
+   const done=await api('/tasks/'+first.task.id+'/continue',{});assert.equal(done.task.status,'answered');
+   assert.equal((await plans.listResearchExports(uid,saved.id)).filter(row=>row.status==='synced').length,2);
+   model.geminiGenerateContent=async()=>({raw:'',functionCall:{name:'export_marketing_research_plan',args:{planId:foreign.id,provider:'notion',destinationId:'sandbox-parent'}},model:'fixture',latencyMs:1});
+   await api('/command',{message:'Export the chosen research plan.'},404);assert.equal(s.marketing.pages.size,1);
+   model.geminiGenerateContent=async()=>({raw:'',functionCall:{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent'}},model:'fixture',latencyMs:1});
+   const stale=await api('/command',{message:'Export Agent delegation QA to Notion.'});
+   await contacts.updateContact(uid,contact.id,{company:'Changed after review'});
+   const rejected=await api('/tasks/'+stale.task.id+'/actions/'+stale.action.id+'/execute',{});
+   assert.equal(rejected.ok,false);assert.equal(s.marketing.pages.size,1,'A changed shortlist must not export from old review');
+  });
   await t.test('the assistant can inspect owned follow-ups and content without inventing their status',async()=>{
    const leads=s.load('services/professional/marketing/leads.service.js');
    const content=s.load('services/professional/marketing/content.service.js');

@@ -514,7 +514,7 @@ router.post("/assistant/command", async (req: Request, res: Response, next: Next
 const ExecuteBody = z.object({
   name: z.string().min(1),
   conversationId: z.string().uuid().optional(),
-  args: z.record(z.unknown()).optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
   tz: z.string().optional(),
   attachmentBase64: z.string().min(1).optional(),
   attachmentMimeType: z.string().min(1).optional(),
@@ -623,8 +623,8 @@ router.get("/automations", async (req: Request, res: Response, next: NextFunctio
 const UpdateAutomationBody = z.object({
   enabled: z.boolean().optional(),
   autonomy: z.enum(["off", "suggest", "auto"]).optional(),
-  config: z.record(z.unknown()).optional(),
-  guardrails: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  guardrails: z.record(z.string(), z.unknown()).optional(),
 });
 router.put("/automations/:type", async (req: Request, res: Response, next: NextFunction) => {
   try {

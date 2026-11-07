@@ -102,7 +102,7 @@ router.get("/databases", async (req: Request, res: Response, next: NextFunction)
   }
 });
 
-const QueryBody = z.object({ filter: z.record(z.unknown()).optional() });
+const QueryBody = z.object({ filter: z.record(z.string(), z.unknown()).optional() });
 
 router.post("/databases/:id/query", async (req: Request, res: Response, next: NextFunction) => {
   try {

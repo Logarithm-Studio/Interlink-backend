@@ -287,6 +287,7 @@ export async function getCompletedTasks(userId: string, since: Date, until = new
 export async function createTask(
   userId: string,
   data: { content: string; description?: string; dueString?: string; dueDatetime?: string; priority?: number; projectId?: string },
+  requestId?: string,
 ): Promise<TodoistTask> {
   const body = {
     content: data.content,
@@ -296,6 +297,24 @@ export async function createTask(
     priority: data.priority ?? 1,
     project_id: data.projectId,
   };
+  // Sync command UUIDs deduplicate across server instances and lost responses.
+  if (requestId) {
+    const { due_string, due_datetime, ...args } = body;
+    const response = await todoistFetch(userId, "/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ commands: JSON.stringify([{ type: "item_add", uuid: requestId, temp_id: requestId, args: { ...args, due: due_datetime ? { date: due_datetime } : due_string ? { string: due_string } : undefined } }]) }).toString(),
+    });
+    if (!response.ok) throw new Error(`Failed to create Todoist task (${response.status}).${await readError(response)}`);
+    const receipt = await response.json() as { sync_status?: Record<string, unknown>; temp_id_mapping?: Record<string, unknown> };
+    const id = receipt.temp_id_mapping?.[requestId];
+    if (receipt.sync_status?.[requestId] !== "ok" || typeof id !== "string") throw new Error("Todoist did not confirm the task copy. Check Todoist before retrying.");
+    const readback = await todoistFetch(userId, `/tasks/${encodeURIComponent(id)}`);
+    if (!readback.ok) throw new Error("Todoist task copy needs reconciliation. Check Todoist before retrying.");
+    const task = mapTask(await readback.json() as Record<string, unknown>);
+    if (!task || task.id !== id) throw new Error("Todoist task copy did not return a matching id.");
+    return task;
+  }
   const res = await todoistFetch(userId, "/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

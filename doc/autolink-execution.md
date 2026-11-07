@@ -95,10 +95,20 @@ prevent genuine provider revocation/expiry. Preserve encryption keys across
 deployments and update Android installations with matching signing identity and
 `adb install -r`. Never use uninstall or app-data clearing as an update procedure.
 
-Verification and emulator evidence live in the app's
-`docs/qa/2026-11-06-autolink.md`. Production QStash signature acceptance remains
-separate; the fresh malformed signed probe still returned 401 and schedules stay
-paused. No real provider write acceptance is implied by isolated-provider tests.
+Marketing adds `read_marketing_destinations` and
+`export_marketing_research_plan` to the existing owned-workspace tools. The server
+resolves destination and contact labels, then binds review to the current plan
+fingerprint. Execution uses the same durable research-export service as the form;
+Notion and Todoist each require their own confirmation. Existing copies retain
+their receipts; uncertain writes require reconciliation in Research & planning.
+The model cannot supply review labels or replace the saved action payload.
+
+Verification evidence lives in the app's `docs/qa/` reports. The November 7 Vercel
+configuration repair restored signed QStash callbacks: both dispatchers returned
+200, a real Todoist completion reconciled successfully twice, and unsigned or
+invalid signatures still returned 401. Only the two Marketing schedules were
+resumed after these checks. Simulated-provider tests remain separate from live
+delivery/signature/publication acceptance.
 
 Provider contracts: [GitHub assignees](https://docs.github.com/en/rest/issues/assignees),
 [Jira assignment](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-assignee-put),

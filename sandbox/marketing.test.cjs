@@ -53,6 +53,26 @@ test('marketing workflows use simulated email, planning, CRM and analytics provi
       const sync=await api(url+'/todoist-sync','POST',{confirmed:true});assert.equal(sync.result.completed,true);
       assert.ok((await api(m+'/followups?status=completed')).followups.some(f=>f.id===followup.id));
     });
+    await scenario('two server instances cannot duplicate one Todoist follow-up copy',async()=>{
+      const row=(await api(m+'/followups','POST',{contactId:contact.id,title:'Concurrent QA follow-up',dueAt:new Date(Date.now()+86400000).toISOString()})).followup;
+      const file=require.resolve('../dist/services/professional/marketing/leads.service.js'),saved=require.cache[file];
+      const first=s.load('services/professional/marketing/leads.service.js');delete require.cache[file];
+      const second=s.load('services/professional/marketing/leads.service.js');
+      const originalFetch=global.fetch,before=s.marketing.tasks.size;
+      let arrivals=0,release;const barrier=new Promise(resolve=>{release=resolve});
+      global.fetch=async(input,init)=>{
+        const url=new URL(String(input));
+        if(url.hostname==='api.todoist.com'&&init?.method==='POST'&&['/api/v1/tasks','/api/v1/sync'].includes(url.pathname)){
+          if(++arrivals===2)release();await barrier;
+        }
+        return originalFetch(input,init);
+      };
+      try{
+        const copies=await Promise.all([first.exportMarketingFollowupToTodoist(userId,row.id),second.exportMarketingFollowupToTodoist(userId,row.id)]);
+        assert.equal(copies[0].taskId,copies[1].taskId,'Independent instances must receive the same provider task');
+        assert.equal(s.marketing.tasks.size,before+1,'Only one external task may be created');
+      }finally{global.fetch=originalFetch;require.cache[file]=saved;}
+    });
     await scenario('Notion schema discovery and mapped export avoid duplicate pages',async()=>{
       await s.connectNative(userId,'notion');
       await s.load('services/notion/notion.service.js').assertPageAccessible(userId,'sandbox-parent');

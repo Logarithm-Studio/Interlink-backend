@@ -55,7 +55,7 @@ const WorkflowActionBodySchema = z.object({
    * Optional additional data provided by the user (e.g. a reschedule time
    * selected from a picker).
    */
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   /**
    * Signed token (Step 17: HMAC-signed, includes nonce + expiry).
    * Accepted but not yet validated — signature verification added in Step 17.

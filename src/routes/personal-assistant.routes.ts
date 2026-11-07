@@ -153,7 +153,7 @@ router.post("/command", async (req: Request, res: Response, next: NextFunction) 
 
 const ExecuteBody = z.object({
   name: z.string().min(1),
-  args: z.record(z.unknown()).optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
   lat: z.number().optional(),
   lon: z.number().optional(),
   tz: z.string().optional(),

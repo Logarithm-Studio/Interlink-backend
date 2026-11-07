@@ -1,6 +1,6 @@
 const crypto=require('node:crypto');
 function createMarketingProviders(providers) {
-  const mail=new Map(),crm={contacts:new Map(),deals:new Map()},tasks=new Map(),pages=new Map(),requests=[];
+  const mail=new Map(),crm={contacts:new Map(),deals:new Map()},tasks=new Map(),taskCommands=new Map(),pages=new Map(),requests=[];
   const faults=new Map();let seq=0;
   const ok=data=>({status:200,data});
   const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
@@ -46,13 +46,23 @@ function createMarketingProviders(providers) {
     if(!['api.todoist.com','api.notion.com'].includes(url.hostname))return undefined;
     const headers=new Headers(init.headers),authorization=headers.get('authorization')||'';
     if(!authorization.startsWith('Bearer sandbox-native-'))return json({message:'Invalid simulated provider token'},401);
-    const uid=authorization.slice('Bearer sandbox-native-'.length),method=init.method||'GET',body=init.body?JSON.parse(init.body):{};
+    const uid=authorization.slice('Bearer sandbox-native-'.length),method=init.method||'GET',body=init.body?(url.pathname==='/api/v1/sync'?{commands:JSON.parse(new URLSearchParams(init.body).get('commands')||'[]')}:JSON.parse(init.body)):{};
     requests.push({uid,provider:url.hostname,endpoint:url.pathname,method,body});
     const fault=faults.get(method+':'+url.pathname);faults.delete(method+':'+url.pathname);
     if(fault==='denied')return json({message:'Simulated provider permission denied'},403);
     if(url.hostname==='api.todoist.com'){
       const p=url.pathname.replace('/api/v1','');
       if(p==='/projects')return json({results:[{id:'sandbox-project',name:'Sandbox marketing',color:'blue',is_favorite:true}],next_cursor:null});
+      if(p==='/sync'&&method==='POST'){
+        const sync_status={},temp_id_mapping={};
+        for(const command of body.commands){
+          if(command.type!=='item_add')return json({message:'Unsupported sandbox command'},400);
+          const key=uid+':'+command.uuid;let id=taskCommands.get(key);
+          if(!id){const args=command.args;id='task-'+(++seq);tasks.set(id,{...args,id,uid,project_id:args.project_id||'sandbox-project',added_at:new Date().toISOString(),is_completed:false,checked:false,labels:[]});taskCommands.set(key,id);}
+          sync_status[command.uuid]='ok';temp_id_mapping[command.temp_id]=id;
+        }
+        return json({sync_status,temp_id_mapping});
+      }
       if(p==='/tasks'&&method==='POST'){
         const record={id:'task-'+(++seq),uid,content:body.content,description:body.description,project_id:body.project_id||'sandbox-project',priority:body.priority,added_at:new Date().toISOString(),is_completed:false,checked:false,labels:[]};tasks.set(record.id,record);return json(record);
       }
@@ -71,6 +81,6 @@ function createMarketingProviders(providers) {
     }
     return json({message:'Unsupported sandbox Notion request'},404);
   }
-  return {proxy,fetchAdapter,mail,crm,tasks,pages,requests,faults,clear:()=>{mail.clear();crm.contacts.clear();crm.deals.clear();tasks.clear();pages.clear();requests.length=0;faults.clear()}};
+  return {proxy,fetchAdapter,mail,crm,tasks,pages,requests,faults,clear:()=>{mail.clear();crm.contacts.clear();crm.deals.clear();tasks.clear();taskCommands.clear();pages.clear();requests.length=0;faults.clear()}};
 }
 module.exports={createMarketingProviders};

@@ -77,7 +77,7 @@ const CreateBody = z.object({
     "sales_contact", "sales_deal", "support_ticket",
     "re_listing", "re_lead", "re_showing", "re_lease", "hr_candidate", "hr_opening",
   ]),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
 });
 
 router.post("/entities", async (req: Request, res: Response, next: NextFunction) => {
@@ -233,7 +233,7 @@ router.post("/activity/:id/dismiss", async (req: Request, res: Response, next: N
 // ─── Direct entity action (tapped from the dashboard, no AI round-trip) ─────
 const ActionBody = z.object({
   name: z.string().min(1),
-  args: z.record(z.unknown()).optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
 });
 router.post("/action", async (req: Request, res: Response, next: NextFunction) => {
   try {

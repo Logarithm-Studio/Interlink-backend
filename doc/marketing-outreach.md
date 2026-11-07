@@ -155,8 +155,16 @@ PGlite serializes its database connection; this does not certify production pool
 concurrency or database-role enforcement. Root `docs/qa/2026-10-25-workspace.md`
 records browser evidence and the remaining live-account acceptance checks.
 
-November 7 dependency follow-up: the lockfile advances body-parser 1.20.8 to
-1.20.9 (compressed-request DoS patch), gaxios 7.2.0 to 7.3.1 and qs 6.16.0 to
-6.16.2 within existing constraints. Build, unit and workflow sandbox verification
-must pass before deployment. Audit still reports Nodemailer and Zod advisories
-requiring major-version migration; this patch is not security-release acceptance.
+November 7 follow-up: independent API instances now use the follow-up UUID as a
+Todoist Sync command UUID when making a planning copy. Provider idempotency
+prevents the two-instance race from creating duplicate tasks; existing marker
+reconciliation and the saved mapping remain in place. A barrier-based race test
+reproduced the old duplicate and passes with the fix. Real Todoist parallel calls
+also returned one matching task, subsequently completed for background-worker QA.
+
+Dependency follow-up retains the earlier body-parser/gaxios/qs patches and
+migrates Nodemailer to 10.3.1 and Zod to 4.6.7. Zod record schemas and generic
+types were adapted to the current API. Node 20 or newer is required; Vercel uses
+Node 24. Build, 135 unit tests (one existing skip), and 105 sandbox tests pass.
+Production dependency audit reports five moderate advisories, zero high or
+critical; this is not a clean security audit or universal provider acceptance.

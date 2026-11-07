@@ -93,7 +93,7 @@ const WaitForInputStepSchema = z.object({
     /** Route taken when the timeout fires without user input. */
     timeoutNextStepId: z.string().optional(),
     /** Map from actionKey → nextStepId. */
-    routes: z.record(z.string()).default({}),
+    routes: z.record(z.string(), z.string()).default({}),
   }),
 });
 
@@ -106,7 +106,7 @@ const BranchStepSchema = z.object({
   id: z.string().min(1),
   type: z.literal("branch"),
   config: z.object({
-    routes: z.record(z.string()), // { routeKey: nextStepId }
+    routes: z.record(z.string(), z.string()), // { routeKey: nextStepId }
     defaultNextStepId: z.string().optional(),
     /** Ordered list of conditions — first matching key determines the route. */
     rules: z
@@ -209,7 +209,7 @@ const EmailSendStepSchema = z.object({
 const GenericStepSchema = z.object({
   id: z.string().min(1),
   type: z.string().min(1),
-  config: z.record(z.unknown()).optional().default({}),
+  config: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
 /**

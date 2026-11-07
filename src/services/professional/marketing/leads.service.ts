@@ -544,7 +544,7 @@ export async function exportMarketingFollowupToTodoist(userId: string, followupI
     const task = await createTodoistTask(userId, {
       content: String(row.title), description, dueDatetime: new Date(row.due_at).toISOString(), priority: 2,
       ...(projectId ? { projectId } : {}),
-    });
+    }, followupId);
     await persistTodoistTaskLink(userId, followupId, task.id, false, false);
     return { taskId: task.id, created: true };
   })();
