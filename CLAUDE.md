@@ -37,6 +37,8 @@ endpoints (see job pipeline below).
 - [vercel.json](vercel.json) rewrites all paths to `/api` (serverless). [railway.json](railway.json)
   runs the (no-op) worker.
 - Copy [.env.example](.env.example) to `.env`. Required vars are enforced in `server.ts`
+  QStash publishing and signing-key recovery share `QSTASH_URL` (default EU regional
+  endpoint); a different region requires that region's token and signing keys.
   (DATABASE_URL, SUPABASE_*, ENCRYPTION_KEY, GOOGLE_*, SMTP_*, QSTASH_*, API_BASE_URL, and
   one of EMAIL_VERIFICATION_TOKEN_SECRET / ACTION_SIGNING_SECRET).
 - Path alias: `@/*` → `src/*`.

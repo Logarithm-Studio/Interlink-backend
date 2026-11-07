@@ -16,6 +16,7 @@ test("production worker verification separates missing configuration and binds r
   delete process.env.QSTASH_CURRENT_SIGNING_KEY;
   delete process.env.QSTASH_NEXT_SIGNING_KEY;
   delete process.env.QSTASH_TOKEN;
+  delete process.env.QSTASH_URL;
   const key = "controlled-worker-signing-key";
   const body = '{ "probe": true }';
   function sign(path: string, input = body, secret = key) {
@@ -60,7 +61,7 @@ test("production worker verification separates missing configuration and binds r
     let keyReads = 0;
     process.env.QSTASH_TOKEN = "\ncontrolled-publisher-token ";
     global.fetch = async (input, init) => {
-      if (String(input) !== "https://qstash.upstash.io/v2/keys") return originalFetch(input, init);
+      if (String(input) !== "https://qstash-eu-central-1.upstash.io/v2/keys") return originalFetch(input, init);
       keyReads++;
       assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer controlled-publisher-token");
       await new Promise(resolve => setTimeout(resolve, 20));

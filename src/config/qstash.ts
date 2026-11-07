@@ -5,6 +5,8 @@ let _receiver: Receiver | null = null;
 let keyRefreshInFlight: Promise<Receiver | null> | null = null;
 let nextKeyRefreshAt = 0;
 
+const qstashUrl = () => (process.env.QSTASH_URL?.trim() || "https://qstash-eu-central-1.upstash.io").replace(/\/$/, "");
+
 export class QStashKeyLookupError extends Error {
   constructor(code: string, readonly diagnostic: { upstreamStatus?: number; errorType?: string; causeCode?: string }) {
     super(code);
@@ -15,7 +17,7 @@ export function getQStashClient(): Client {
   if (_client) return _client;
   const token = process.env.QSTASH_TOKEN?.trim();
   if (!token) throw new Error("QSTASH_TOKEN must be set");
-  _client = new Client({ token });
+  _client = new Client({ token, baseUrl: qstashUrl() });
   return _client;
 }
 
@@ -40,7 +42,7 @@ export async function refreshQStashReceiver(): Promise<Receiver | null> {
   nextKeyRefreshAt = Date.now() + 5 * 60_000;
   keyRefreshInFlight = (async () => {
     try {
-      const response = await fetch("https://qstash.upstash.io/v2/keys", {
+      const response = await fetch(`${qstashUrl()}/v2/keys`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(3000),
       });
