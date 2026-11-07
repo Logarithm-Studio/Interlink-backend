@@ -6,7 +6,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "test": "node --test --test-concurrency=1 social.test.cjs marketing.test.cjs prospects.test.cjs outreach.test.cjs autolink.test.cjs connections.test.cjs agent-tasks.test.cjs delegation.test.cjs gmail-delivery.test.cjs autolink-recovery.test.cjs autolink-marketing.test.cjs",
+    "test": "node --test --test-concurrency=1 social.test.cjs marketing.test.cjs prospects.test.cjs outreach.test.cjs autolink.test.cjs connections.test.cjs agent-tasks.test.cjs delegation.test.cjs gmail-delivery.test.cjs autolink-recovery.test.cjs autolink-marketing.test.cjs professional-workflows.test.cjs",
     "start": "node runtime.cjs"
   }
 }

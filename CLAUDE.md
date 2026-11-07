@@ -494,6 +494,9 @@ task/proposal tables from direct Data API access. Model proposals use the saved
 task action endpoint; deterministic forms retain their existing service executors.
 Planner outages return 503 and retain a ready continuation task. Consult that
 contract when changing mixed research/export goals or owned-record discovery.
+Unfinished Professional chats retain their goal across corrections and invalidate
+replaced approvals. Autolink follow-up, routing and agreement adapters separate
+drafting, sending, meetings and signatures; consult that contract before changing them.
 
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;

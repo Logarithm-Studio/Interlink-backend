@@ -53,7 +53,8 @@ export const AGENT_TOOLS: GeminiToolFunction[] = [
       type: "object",
       properties: {
         clientName: { type: "string", description: "The client's name." },
-        amount: { type: "number", description: "Invoice amount in dollars, e.g. 5000 for $5,000." },
+        amount: { type: "number", description: "Invoice amount in major currency units, e.g. 5000 for BDT 5,000.00." },
+        currency: { type: "string", description: "Three-letter currency code. Preserve the user's currency; default USD only when unspecified." },
         clientEmail: { type: "string", description: "Client email — recommended so reminders can be sent later." },
         dueDate: { type: "string", description: "Due date as YYYY-MM-DD (optional; defaults to ~14 days out)." },
         invoiceNumber: { type: "string", description: "Optional invoice number; auto-generated if omitted." },
@@ -185,7 +186,7 @@ export function summarizeAction(
   switch (name) {
     case "create_invoice":
       return `Add an invoice for ${args.clientName ?? "a client"}${
-        Number.isFinite(Number(args.amount)) ? ` of $${Number(args.amount).toLocaleString()}` : ""
+        Number.isFinite(Number(args.amount)) ? ` of ${String(args.currency ?? "USD").toUpperCase()} ${Number(args.amount).toLocaleString()}` : ""
       }${args.dueDate ? ` due ${args.dueDate}` : ""}.`;
     case "send_reminder":
       return `Send a${args.tone ? ` ${args.tone}` : ""} payment reminder to ${args.clientName ?? "the selected client"}.`;

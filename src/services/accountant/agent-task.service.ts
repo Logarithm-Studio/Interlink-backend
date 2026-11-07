@@ -40,10 +40,10 @@ export interface AgentTask {
   action: PendingAction | null;
 }
 
-export interface ProposalContext { tz?: string; attachmentDigest?: string; sourceAttachmentDigest?: string }
+export interface ProposalContext { tz?: string; clientNow?: string; attachmentDigest?: string; sourceAttachmentDigest?: string }
 
 export async function getAgentTaskContext(userId: string, taskId: string): Promise<ProposalContext> {
-  const res = await query<{ execution_context: ProposalContext }>("SELECT execution_context FROM autolink_action_proposals WHERE task_id=$1 AND user_id=$2 ORDER BY created_at,id LIMIT 1", [taskId, userId]);
+  const res = await query<{ execution_context: ProposalContext }>("SELECT execution_context FROM autolink_action_proposals WHERE task_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [taskId, userId]);
   return res.rows[0]?.execution_context ?? {};
 }
 
@@ -60,7 +60,7 @@ export async function getAgentTask(userId: string, taskId?: string, conversation
   await query(`UPDATE autolink_tasks SET status='ready',updated_at=now() WHERE user_id=$1
     AND ($2::uuid IS NULL OR id=$2) AND ($3::uuid IS NULL OR conversation_id=$3)
     AND status='planning' AND updated_at<now()-interval '2 minutes'
-    AND EXISTS(SELECT 1 FROM autolink_action_proposals p WHERE p.task_id=autolink_tasks.id AND p.status='succeeded')
+    AND EXISTS(SELECT 1 FROM autolink_action_proposals p WHERE p.task_id=autolink_tasks.id AND p.status IN ('succeeded','cancelled'))
     AND NOT EXISTS(SELECT 1 FROM autolink_action_proposals p WHERE p.task_id=autolink_tasks.id AND p.status IN ('pending','running','review'))`, [userId, taskId ?? null, conversationId ?? null]);
   const res = await query<{ id: string; conversationId: string; goal: string; status: AgentTask["status"]; answer: string | null }>(
     `SELECT id,conversation_id AS "conversationId",goal,status,answer FROM autolink_tasks
@@ -88,6 +88,8 @@ export async function saveTaskPlan(userId: string, taskId: string, plan: Command
     const locked = await client.query("SELECT id FROM autolink_tasks WHERE id=$1 AND user_id=$2 FOR UPDATE", [taskId, userId]);
     if (!locked.rows[0]) throw new AppError("Task not found.", 404);
     if (plan.action) {
+      const count = await client.query<{ n: string }>("SELECT count(*) AS n FROM autolink_action_proposals WHERE task_id=$1 AND status<>'cancelled'", [taskId]);
+      if (Number(count.rows[0].n) >= 12) throw new AppError("This task reached its 12-action limit. Review the results and start a new request for further writes.", 409);
       const prior = await client.query(`SELECT id FROM autolink_action_proposals WHERE task_id=$1 AND
         (status IN ('pending','running','review') OR (name=$2 AND args=$3::jsonb AND status='succeeded')) LIMIT 1`, [taskId, plan.action.name, JSON.stringify(plan.action.args)]);
       if (prior.rows[0]) throw new AppError("This step already ran or needs review. Check its result before creating another action.", 409);
@@ -146,7 +148,6 @@ export async function pauseAgentTask(userId: string, taskId: string): Promise<Ag
 export async function claimTaskContinuation(userId: string, taskId: string): Promise<AgentTask> {
   const task = await getAgentTask(userId, taskId);
   if (!task) throw new AppError("Task not found.", 404);
-  if (task.steps.filter(step => step.status !== "cancelled").length >= 12) throw new AppError("This task reached its 12-action limit. Review the results and start a new request for further work.", 409);
   const claimed = await withTransaction(async client => {
     await client.query(`SELECT c.id FROM accountant_conversations c JOIN autolink_tasks t ON t.conversation_id=c.id
       WHERE t.id=$1 AND t.user_id=$2 AND c.user_id=$2 FOR UPDATE OF c`, [taskId, userId]);
@@ -167,4 +168,21 @@ export async function resumeAgentTask(userId: string, taskId: string): Promise<A
 
 export async function releaseTaskContinuation(userId: string, taskId: string): Promise<void> {
   await query("UPDATE autolink_tasks SET status='ready',updated_at=now() WHERE id=$1 AND user_id=$2 AND status='planning'", [taskId, userId]);
+}
+
+/** New instructions replace only unexecuted approvals; uncertain/running work stays locked. */
+export async function reviseAgentTask(userId: string, task: AgentTask, message: string): Promise<AgentTask> {
+  const goal = `${task.goal}\n\nLatest user instructions (override earlier unfinished details): ${message}`;
+  if (goal.length > 12000) throw new AppError("This task's instructions reached 12,000 characters. Start a new chat with the updated goal.", 400);
+  await withTransaction(async client => {
+    await client.query("SELECT id FROM accountant_conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [task.conversationId, userId]);
+    const updated = await client.query(`UPDATE autolink_tasks SET status='planning',goal=$3,updated_at=now()
+      WHERE id=$1 AND user_id=$2 AND goal=$4 AND status IN ('review','ready','paused')
+      AND NOT EXISTS(SELECT 1 FROM autolink_action_proposals WHERE task_id=$1 AND status IN ('running','review')) RETURNING id`, [task.id, userId, goal, task.goal]);
+    if (!updated.rows[0]) throw new AppError("This task has running or unconfirmed work. Check its result before changing the instructions, or start a new chat for unrelated work.", 409);
+    await client.query(`UPDATE autolink_action_proposals SET status='cancelled',updated_at=now(),
+      result='{"ok":false,"message":"Replaced by newer instructions. This step was never executed."}'::jsonb
+      WHERE task_id=$1 AND user_id=$2 AND status='pending'`, [task.id, userId]);
+  });
+  return { ...task, goal, status: "planning", action: null };
 }

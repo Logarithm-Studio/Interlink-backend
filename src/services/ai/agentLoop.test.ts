@@ -99,3 +99,38 @@ test("signed parallel calls are preserved in the next model round", async () => 
     assert.deepEqual(requests[1].contents.at(-2).parts[0], signed);
   });
 });
+
+test("a mixed discovery/write batch resolves real IDs before returning a review", async () => {
+  await mockModel([
+    [{ functionCall: { name: "list_people", args: {} } }, { functionCall: { name: "assign_task", args: { person: "guessed" } } }],
+    [{ functionCall: { name: "assign_task", args: { person: "actual-person" } } }],
+  ], async requests => {
+    let reads = 0;
+    const outcome = await runAgentTurn({ system: "Resolve before assigning", tools: [
+      { name: "list_people", description: "People", parameters: { type: "object", properties: {} } },
+      { name: "assign_task", description: "Assign", parameters: { type: "object", properties: { person: { type: "string" } }, required: ["person"] } },
+    ], userParts: [{ text: "Assign the actual person" }], isReadOnly: name => name === "list_people", execReadOnly: async () => { reads++; return { message: "Actual person", data: { id: "actual-person" } }; } });
+    assert.equal(reads, 1);
+    assert.equal(outcome.kind, "action");
+    if (outcome.kind === "action") assert.equal(outcome.args.person, "actual-person");
+    assert.equal(requests[1].contents.at(-1).parts[1].functionResponse.response.executed, false);
+  });
+});
+
+test("independent read calls start together and retain model response order", async () => {
+  await mockModel([
+    [{ functionCall: { name: "list_people", args: {} } }, { functionCall: { name: "list_projects", args: {} } }],
+    [{ text: "Resolved both." }],
+  ], async requests => {
+    const started = new Set<string>();let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const work = runAgentTurn({ system: "Resolve both", tools: ["list_people", "list_projects"].map(name => ({ name, description: name, parameters: { type: "object", properties: {} } })), userParts: [{ text: "Read people and projects" }], isReadOnly: () => true,
+      execReadOnly: async name => { started.add(name); if (started.size === 2) release(); await gate; return { message: name, data: { name } }; } });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([work, new Promise<void>(resolve => { timer = setTimeout(resolve, 100); })]);
+      assert.equal(started.size, 2, "One slow discovery must not hold the other read back");
+    } finally { clearTimeout(timer);release();await work; }
+    assert.deepEqual(requests[1].contents.at(-1).parts.map((part: any) => part.functionResponse.name), ["list_people", "list_projects"]);
+  });
+});

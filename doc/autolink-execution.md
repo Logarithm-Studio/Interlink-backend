@@ -1,5 +1,61 @@
 # Autolink execution and saved work
 
+## Professional workflow corrections (November 8)
+
+New instructions in an unfinished Professional chat revise its owned task. The
+original goal, completed receipts and added instructions remain together. Under
+the conversation lock, pending approvals are cancelled before replanning; a late
+tap on a replaced review cannot execute it. Running or uncertain writes cannot
+be rewritten. A planner outage leaves the revised goal ready for continuation.
+An abandoned revision planning lease also expires safely when only cancelled or
+successful receipts remain. File-bound corrected uploads retain their digest;
+continuations read the latest saved request clock and attachment context.
+The client retains the original attachment and restores saved task state on error.
+Use a new chat for unrelated work while a task is unfinished.
+
+The 12-step limit applies to write proposals, permitting a final read/summary after
+twelve successful writes. Continuation retains the original client clock/timezone
+so a request spanning midnight does not reinterpret relative dates. Referring to
+the saved invoice is distinct from explicitly referring to an attached document.
+
+Mixed read/write model batches execute discovery first. The proposed write is
+returned to the model as unexecuted and must be proposed again using the actual
+results. Independent reads overlap, repeated reads coalesce, and signed model
+parts and response ordering remain intact. Every write still requires review.
+
+Sales/Marketing Autolink resolves owned contact/deal/rep labels, rejects ambiguous
+names and checks a reviewed deal stage again before changing it. Discovery adds
+deals and reps. Contact/deal/invoice creation returns actual IDs; currency and
+minor units remain explicit, and Sales and Finance snapshots group totals by currency.
+Finance client ledgers separate currencies and expose bounded unpaid invoice IDs;
+individual invoices and flagged expenses retain their own currency.
+Linked opportunities use the existing owned Marketing opportunity service.
+
+Autolink's `draft_followup`, `meeting_followup` and `reengage_deal` prepare actual recipient/subject/
+body without sending or changing a deal stage. Unavailable AI copy is a failure,
+not fallback outreach. Sending exact copy requires a separate `send_gmail` review.
+`route_lead` saves the explicitly selected owned representative as routing metadata;
+it does not guess a rep, invent a meeting time or imply human acceptance.
+`generate_contract` prepares a local editable agreement from supplied requirements
+and signer details. DocuSign preparation/sending remains in Agreements, with its
+existing separate confirmation and uncertainty guards. These are Autolink adapter
+contracts; legacy standalone Sales REST/automation helpers retain their own paths.
+
+Finance reminder planning/execution rejects ambiguous client-name matches rather
+than selecting the first unpaid invoice. Exact owned invoice IDs remain supported.
+Currency-aware invoice creation retains the confirmed amount, currency and saved ID.
+
+Plain English requests starting with draft/outline/brainstorm/write use read tools
+only unless they also request a persistent action (for example saving to Notion).
+Negative instructions such as "do not send" do not enable write tools. Drafts stay
+in chat; connecting a notes app is not itself a request to save a page. This scope
+selection improves common drafting requests; ownership/review remain mandatory
+for all writes and natural-language intent is not a universal success guarantee.
+
+No Personal task architecture, provider, dependency, database schema or migration
+was changed by this pass. The shared agent-loop/review fixes also apply wherever
+those shared components are used.
+
 Autolink proposes a write, the user reviews it, and the execute endpoint runs the
 existing owned service. A proposal is not a completed action. The app now passes
 the current conversation ID to execution so the next turn receives the actual

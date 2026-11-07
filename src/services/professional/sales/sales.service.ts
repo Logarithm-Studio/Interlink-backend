@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { buildSalesOverview, type SalesCurrencyAmount } from "./sales-overview.model";
+import { buildSalesOverview, salesAmountsByCurrency, formatSalesAmounts, type SalesCurrencyAmount } from "./sales-overview.model";
 import { query, withTransaction } from "../../../config/db";
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
@@ -612,15 +612,21 @@ export async function getContact(userId: string, id: string): Promise<SalesConta
   const res = await query(`SELECT ${CONTACT_COLS} FROM sales_contacts WHERE id = $1 AND user_id = $2`, [id, userId]);
   return res.rows[0] ? mapContact(res.rows[0] as never) : null;
 }
-async function findContactByName(userId: string, name: string): Promise<SalesContact | null> {
+async function findContactByName(userId: string, name: string, id?: string): Promise<SalesContact | null> {
+  if (id) return getContact(userId, id);
   const all = await listContacts(userId);
   const n = name.trim().toLowerCase();
-  return all.find((c) => c.name.toLowerCase() === n) ?? all.find((c) => c.name.toLowerCase().includes(n)) ?? null;
+  if (!n) return null;
+  const exact = all.filter(c => c.name.toLowerCase() === n);
+  const matches = exact.length ? exact : all.filter(c => c.name.toLowerCase().includes(n));
+  if (matches.length > 1) throw new AppError("Multiple contacts match. Choose the exact contact ID before continuing.", 400);
+  return matches[0] ?? null;
 }
 export async function createContact(
   userId: string,
   data: { name: string; email?: string; company?: string; title?: string; phone?: string; notes?: string; territory?: string; domain?: string; industry?: string; source?: string; marketingOptIn?: boolean; marketingCampaignId?: string; marketingAttribution?: Record<string, string> },
 ): Promise<SalesContact> {
+  if (!data.name.trim()) throw new AppError("Enter a contact name.", 400);
   const res = await query(
     `WITH inserted AS (
        INSERT INTO sales_contacts (user_id, name, email, company, title, phone, notes, territory, domain, industry, source, marketing_opt_in, marketing_campaign_id, marketing_attribution)
@@ -691,15 +697,23 @@ async function getDealContact(userId: string, deal: SalesDeal): Promise<SalesCon
   if (deal.contactId) return getContact(userId, deal.contactId);
   return deal.contactName ? findContactByName(userId, deal.contactName) : null;
 }
-async function findDealByTitle(userId: string, title: string): Promise<SalesDeal | null> {
+async function findDealByTitle(userId: string, title: string, id?: string): Promise<SalesDeal | null> {
+  if (id) return getDeal(userId, id);
   const all = await listDeals(userId);
   const t = title.trim().toLowerCase();
-  return all.find((d) => d.title.toLowerCase() === t) ?? all.find((d) => d.title.toLowerCase().includes(t)) ?? null;
+  if (!t) return null;
+  const exact = all.filter(d => d.title.toLowerCase() === t);
+  const matches = exact.length ? exact : all.filter(d => d.title.toLowerCase().includes(t));
+  if (matches.length > 1) throw new AppError("Multiple deals match. Choose the exact deal ID before continuing.", 400);
+  return matches[0] ?? null;
 }
 export async function createDeal(
   userId: string,
   data: { title: string; contactName?: string; company?: string; amountCents?: number; currency?: string; stage?: DealStage; closeDate?: string; notes?: string; source?: string },
 ): Promise<SalesDeal> {
+  if (!data.title.trim()) throw new AppError("Enter a deal title.", 400);
+  if (data.amountCents !== undefined && (!Number.isSafeInteger(data.amountCents) || data.amountCents < 0)) throw new AppError("Use a nonnegative whole amount in minor units.", 400);
+  if (data.currency && !/^[A-Z]{3}$/.test(data.currency)) throw new AppError("Use a three-letter uppercase currency code.", 400);
   const res = await query(
     `INSERT INTO sales_deals (user_id, title, contact_name, company, amount_cents, currency, stage, close_date, notes, source, last_activity_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now()) RETURNING ${DEAL_COLS}`,
@@ -748,15 +762,15 @@ export async function createMarketingOpportunity(userId: string, data: {
 }
 export async function updateDeal(
   userId: string, id: string,
-  patch: { stage?: DealStage; amountCents?: number; notes?: string; ownerRep?: string; contactName?: string },
+  patch: { stage?: DealStage; expectedStage?: DealStage; amountCents?: number; notes?: string; ownerRep?: string; contactName?: string },
 ): Promise<SalesDeal | null> {
   return withTransaction(async (client) => {
     const res = await client.query(
       `UPDATE sales_deals SET
          stage=COALESCE($3,stage), amount_cents=COALESCE($4,amount_cents), notes=COALESCE($5,notes),
          owner_rep=COALESCE($6,owner_rep), contact_name=COALESCE($7,contact_name), last_activity_at=now(), updated_at=now()
-       WHERE id=$1 AND user_id=$2 RETURNING ${DEAL_COLS}`,
-      [id, userId, patch.stage ?? null, patch.amountCents ?? null, patch.notes ?? null, patch.ownerRep ?? null, patch.contactName ?? null],
+       WHERE id=$1 AND user_id=$2 AND ($8::text IS NULL OR stage=$8) RETURNING ${DEAL_COLS}`,
+      [id, userId, patch.stage ?? null, patch.amountCents ?? null, patch.notes ?? null, patch.ownerRep ?? null, patch.contactName ?? null, patch.expectedStage ?? null],
     );
     const row = res.rows[0];
     if (!row) return null;
@@ -1158,8 +1172,8 @@ export async function routeLead(user: AppUser, contactName: string): Promise<{ o
 }
 
 // ─── Workflow: pipeline cleaning (re-engage) ─────────────────────────────────────
-async function reengageDeal(user: AppUser, dealTitle: string): Promise<{ ok: boolean; message: string }> {
-  const deal = await findDealByTitle(user.id, dealTitle);
+async function reengageDeal(user: AppUser, dealTitle: string, dealId?: string): Promise<{ ok: boolean; message: string; data?: unknown }> {
+  const deal = await findDealByTitle(user.id, dealTitle, dealId);
   if (!deal) return { ok: false, message: "Couldn't find that deal." };
   const contact = await getDealContact(user.id, deal);
   if (!contact?.email) return { ok: false, message: "Add a contact with an email before re-engaging this deal. No message was sent or stage changed." };
@@ -1170,14 +1184,7 @@ async function reengageDeal(user: AppUser, dealTitle: string): Promise<{ ok: boo
     context: `Deal: ${deal.title} (${deal.company ?? ""}), currently ${deal.stage}.`,
   });
   if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "AI copy is unavailable. Prepare and review the message in Email Marketing; no message was sent or stage changed." };
-  // Recheck consent after drafting, immediately before attempting delivery.
-  const approved = await getContact(user.id, contact.id);
-  if (!approved?.marketingOptIn || approved.email !== contact.email) return { ok: false, message: "Contact permission or address changed. Review the prospect before sending." };
-  await sendProfessionalEmail({ user, to: contact.email, subject: draft.subject, body: draft.body, tag: "sales_reengage" });
-  await updateDeal(user.id, deal.id, { stage: "nurture" });
-  await logActivity(user.id, { dealId: deal.id, kind: "reengaged", note: "Re-engagement sent; moved to nurture" });
-  await recordActivity({ userId: user.id, persona: PERSONA, kind: "deal_reengaged", title: `Re-engaged ${deal.title}`, detail: "moved to nurture", entityType: "sales_deal", entityId: deal.id });
-  return { ok: true, message: `Re-engaged "${deal.title}"; moved to nurture.` };
+  return { ok: true, message: `Prepared re-engagement copy for "${deal.title}". No email or stage change. Review delivery and any stage change separately.`, data: { dealId: deal.id, contactId: contact.id, toEmail: contact.email, subject: draft.subject, body: draft.body, status: "draft" } };
 }
 
 async function planPipelineCleaning(userId: string): Promise<AutomationProposal[]> {
@@ -1223,12 +1230,11 @@ async function buildSnapshot(userId: string): Promise<string> {
     listDeals(userId), listContacts(userId), listContracts(userId), salesConnectionsLine(userId),
   ]);
   const open = deals.filter((d) => d.stage !== "won" && d.stage !== "lost");
-  const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US")}`;
   return [
     connLine,
-    `Open pipeline: ${fmt(open.reduce((s, d) => s + d.amountCents, 0))} across ${open.length} deal(s). Contacts: ${contacts.length}. Contracts out: ${contracts.filter((c) => c.status === "sent").length}.`,
+    `Open pipeline: ${formatSalesAmounts(salesAmountsByCurrency(open))} across ${open.length} deal(s). Contacts: ${contacts.length}. Contracts out: ${contracts.filter((c) => c.status === "sent").length}.`,
     "Deals:",
-    ...deals.slice(0, 20).map((d) => `- ${d.title} | ${d.company ?? "—"} | ${fmt(d.amountCents)} | stage=${d.stage} | contact=${d.contactName ?? "—"}`),
+    ...deals.slice(0, 20).map((d) => `- ${d.title} | id=${d.id} | ${d.company ?? "—"} | ${formatSalesAmounts([d])} | stage=${d.stage} | contact=${d.contactName ?? "—"}`),
     "Contacts:",
     ...contacts.slice(0, 15).map((c) => `- ${c.name} | id=${c.id} | ${c.company ?? "—"} | ${c.email ?? "no-email"} | ${c.title ?? ""}${c.territory ? ` | ${c.territory}` : ""}`),
   ].join("\n");
@@ -1240,14 +1246,14 @@ const SYSTEM_PROMPT = [
   "Answer questions using ONLY the DATA SNAPSHOT and actual tool results, or perform an action by calling a function when the user asks.",
   "Core workflows you can run:",
   "- Lead enrichment: when the user pastes/attaches an email, call enrich_lead to extract and add/update the contact.",
-  "- Post-meeting follow-up: given a call transcript (text or attached file), extract the client's pain points and call meeting_followup for the relevant deal — it emails a follow-up and advances the stage.",
-  "- Contract generation: generate_contract drafts a proposal from a deal and emails it for signature; mark_contract_signed closes the deal won.",
-  "- DocuSign requests use the Marketing Contracts & signatures workspace: collect actual scope, commercial terms and signer first; prepare an unsent draft for review. generate_contract is a legacy direct-email action, not DocuSign: use it only when the user explicitly requests an emailed agreement. Never infer that sending or signing happened from a prepared draft.",
-  "- Inbound routing: route_lead assigns a lead to a rep by territory and schedules an intro meeting.",
-  "- Pipeline hygiene: reengage_deal revives a stalled deal, advance_stage moves a deal, and post_pipeline_to_slack / sync_pipeline_to_trello share the pipeline.",
+  "- Post-meeting follow-up: meeting_followup prepares exact copy for the selected deal. Sending needs a separate send_gmail review of recipient/subject/body. Stage changes need a separate advance_stage review.",
+  "- Contract generation: generate_contract prepares an editable local agreement using actual requirements and signer details. It does not send mail or request a signature.",
+  "- DocuSign preparation and sending use the Marketing Contracts & signatures workspace with separate reviews. Never infer that sending or signing happened from a prepared draft.",
+  "- Inbound routing: read the owned reps, then route_lead with the selected exact repId. It saves routing metadata only. A meeting needs separate schedule_meet review with the actual time and attendees.",
+  "- Pipeline hygiene: reengage_deal prepares re-engagement copy without sending or changing stage; advance_stage moves a deal in a separate review, and post_pipeline_to_slack / sync_pipeline_to_trello share the pipeline.",
   "- Campaigns: draft_campaign creates a saved email draft for review. Never send a campaign from chat; the marketer reviews audience and copy in the Campaigns workspace and sends explicitly there.",
   "Campaign delivery and content publication have independent lifecycles. A linked email campaign being draft does not block separately approved social content from publication. Never invent dependencies between them. State each item's actual status, provider receipt and missing approval/destination separately; approval or a planned date does not prove delivery.",
-  "Resolve deals and contacts by their name from the snapshot; never invent contacts, companies, or numbers.",
+  "Resolve exact owned deal/contact IDs from the snapshot or read_marketing_workspace. Ask which record when names are ambiguous. Preserve currency and contact links; never invent contacts, companies, numbers, assignees or deadlines.",
   "You never send anything without confirmation — the app asks the user to confirm each write action before it executes.",
   "For marketing work, use only connected tools shown in the connected-app context. Prefer Mailchimp for subscriber audiences, unsubscribe handling, campaign delivery, and engagement reports; prefer Google Analytics and Search Console for owned-site performance; use Facebook Pages and Instagram only for the connected professional accounts; use Canva for brand assets.",
   "When reporting performance, state the source, account/property, and date range; distinguish observed metrics from recommendations. Never invent results or infer causation from correlation. Never change ad budgets, targeting, or live posts without an explicit action confirmation.",
@@ -1255,18 +1261,45 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 const STAGES = ["lead", "qualified", "proposal", "negotiation", "won", "lost", "nurture"];
+
+export async function reviewSalesAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (["advance_stage", "meeting_followup", "reengage_deal", "generate_contract", "mark_contract_signed"].includes(name)) {
+    const deal = await findDealByTitle(userId, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
+    if (!deal) throw new AppError("Choose a deal available in your workspace.", 400);
+    return { ...args, dealId: deal.id, dealTitle: deal.title, ...(name === "advance_stage" ? { reviewedStage: deal.stage } : {}) };
+  }
+  if (["draft_followup", "route_lead"].includes(name) || (name === "create_deal" && args.contactId)) {
+    const contact = await findContactByName(userId, String(args.contactName ?? ""), typeof args.contactId === "string" ? args.contactId : undefined);
+    if (!contact) throw new AppError("Choose a contact available in your workspace.", 400);
+    if (name === "route_lead") {
+      const rep = (await listReps(userId)).find(item => item.id === args.repId);
+      if (!rep) throw new AppError("Choose an exact representative from your workspace roster.", 400);
+      return { ...args, contactId: contact.id, contactName: contact.name, repId: rep.id, repName: rep.name };
+    }
+    return { ...args, contactId: contact.id, contactName: contact.name, ...(name === "create_deal" ? { currency: String(args.currency ?? "USD").trim().toUpperCase() } : {}) };
+  }
+  return args;
+}
+
+export async function validateSalesAction(userId: string, name: string, args: Record<string, unknown>): Promise<string | null> {
+  try { await reviewSalesAction(userId, name, args); return null; }
+  catch (error) {
+    if (!(error instanceof AppError) || error.statusCode >= 500) throw error;
+    return `${error.message} Read read_marketing_workspace contacts, deals or reps and use exact owned IDs. Ask which candidate if names are ambiguous. Nothing was executed.`;
+  }
+}
 const TOOLS: GeminiToolFunction[] = [
   { name: "create_contact", description: "Add a new sales contact/prospect.", parameters: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, company: { type: "string" }, title: { type: "string" } }, required: ["name"] } },
-  { name: "create_deal", description: "Create a new deal/opportunity.", parameters: { type: "object", properties: { title: { type: "string" }, contactName: { type: "string" }, company: { type: "string" }, amountCents: { type: "number" }, stage: { type: "string", enum: STAGES } }, required: ["title"] } },
-  { name: "advance_stage", description: "Move a deal to a new pipeline stage.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, stage: { type: "string", enum: STAGES } }, required: ["dealTitle", "stage"] } },
-  { name: "draft_followup", description: "Draft and send a follow-up email to a contact.", parameters: { type: "object", properties: { contactName: { type: "string" }, note: { type: "string" } }, required: ["contactName"] } },
+  { name: "create_deal", description: "Create a deal in the requested currency. Use contactId to link an owned Marketing contact; linked opportunities start qualified and later stage changes need another review.", parameters: { type: "object", properties: { title: { type: "string" }, contactId: { type: "string" }, contactName: { type: "string" }, company: { type: "string" }, amountCents: { type: "integer", description: "Nonnegative amount in minor units, e.g. 250000 for BDT 2500.00." }, currency: { type: "string", description: "Three-letter currency code. Preserve the user's currency; default USD only when unspecified." }, stage: { type: "string", enum: STAGES } }, required: ["title"] } },
+  { name: "advance_stage", description: "Move an owned deal to a new stage. Prefer its exact dealId; ambiguous titles are rejected.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" }, stage: { type: "string", enum: STAGES } }, required: ["stage"] } },
+  { name: "draft_followup", description: "Prepare a follow-up draft for an owned contact without sending. Returns exact recipient, subject and body. Sending needs a separate send_gmail review with this exact copy. Prefer contactId; ambiguous names are rejected.", parameters: { type: "object", properties: { contactId: { type: "string" }, contactName: { type: "string" }, note: { type: "string" } } } },
   { name: "draft_campaign", description: "Create a saved marketing email draft for human review. Preserve the user's objective, success criterion and chosen channels. This never sends email.", parameters: { type: "object", properties: { topic: { type: "string" }, audience: { type: "string", description: "Optional audience or company/title/territory filter." }, objective: { type: "string" }, successMetric: { type: "string", description: "The user's exact desired outcome, e.g. 10 qualified leads; this is a plan, not measured results." }, channels: { type: "array", items: { type: "string" } } }, required: ["topic"] } },
   { name: "enrich_lead", description: "Extract & enrich a lead from a pasted or attached email; creates/updates a contact.", parameters: { type: "object", properties: { emailText: { type: "string", description: "The email text to parse (if pasted)." } } } },
-  { name: "meeting_followup", description: "After a call: send a follow-up that addresses pain points and advance the deal.", parameters: { type: "object", properties: { dealTitle: { type: "string" }, painPoints: { type: "array", items: { type: "string" } }, summary: { type: "string" } }, required: ["dealTitle"] } },
-  { name: "generate_contract", description: "Generate a proposal/contract from a deal and email it for signature.", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
-  { name: "mark_contract_signed", description: "Mark a deal's contract as signed (moves the deal to won).", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
-  { name: "route_lead", description: "Assign a lead to a rep by territory and schedule an intro meeting.", parameters: { type: "object", properties: { contactName: { type: "string" } }, required: ["contactName"] } },
-  { name: "reengage_deal", description: "Send a re-engagement email for a stalled deal and move it to nurture.", parameters: { type: "object", properties: { dealTitle: { type: "string" } }, required: ["dealTitle"] } },
+  { name: "meeting_followup", description: "Prepare post-meeting follow-up copy for an owned deal. Does not send or change stage. Sending and stage changes require separate reviews.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" }, painPoints: { type: "array", items: { type: "string" } }, summary: { type: "string" } } } },
+  { name: "generate_contract", description: "Prepare an editable local agreement from an owned deal and actual requirements/signer. Does not email or create/send a signature envelope. DocuSign preparation and sending use the Agreements workspace with separate reviews.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" }, requirements: { type: "string" }, signerName: { type: "string" }, signerEmail: { type: "string" } }, required: ["requirements", "signerName", "signerEmail"] } },
+  { name: "mark_contract_signed", description: "Record the user's reported contract signature for an owned deal (moves it to won). This does not verify a provider signature. Prefer exact dealId.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" } } } },
+  { name: "route_lead", description: "Assign an owned Marketing contact to the exact repId from read_marketing_workspace resource reps. Saves routing metadata only. A meeting needs separate schedule_meet review with explicit time and attendees.", parameters: { type: "object", properties: { contactId: { type: "string" }, contactName: { type: "string" }, repId: { type: "string" } }, required: ["repId"] } },
+  { name: "reengage_deal", description: "Prepare re-engagement copy for an owned stalled deal with recorded marketing permission. Does not send or change stage. Prefer exact dealId. Delivery and stage changes require separate reviews.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" } } } },
   { name: "sync_pipeline_to_trello", description: "Push your open deals to your Trello board as cards (one per stage list).", parameters: { type: "object", properties: {} } },
   { name: "import_from_trello", description: "Pull cards from your Trello board and create deals for any that aren't in the pipeline yet.", parameters: { type: "object", properties: {} } },
   { name: "post_pipeline_to_slack", description: "Post a pipeline digest to a Slack channel.", parameters: { type: "object", properties: { channel: { type: "string", description: "Channel name or id (defaults to a channel you're in)." } } } },
@@ -1278,14 +1311,14 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
     case "create_contact": return `Add contact ${args.name ?? ""}${args.company ? ` (${args.company})` : ""}.`;
     case "create_deal": return `Create deal "${args.title ?? ""}"${args.company ? ` for ${args.company}` : ""}.`;
     case "advance_stage": return `Move "${args.dealTitle ?? "deal"}" to ${args.stage}.`;
-    case "draft_followup": return `Draft & send a follow-up to ${args.contactName ?? "the contact"}.`;
+    case "draft_followup": return `Prepare a follow-up draft for ${args.contactName ?? "the selected contact"}. No email will be sent.`;
     case "draft_campaign": return `Create a campaign draft about ${args.topic ?? "your product"}${args.audience ? ` for ${args.audience}` : " for your contacts"}.`;
     case "enrich_lead": return `Enrich a lead from the email.`;
-    case "meeting_followup": return `Send a post-meeting follow-up for "${args.dealTitle ?? "the deal"}".`;
-    case "generate_contract": return `Generate & send a contract for "${args.dealTitle ?? "the deal"}".`;
+    case "meeting_followup": return `Prepare post-meeting follow-up copy for "${args.dealTitle ?? "the selected deal"}". No email or stage change.`;
+    case "generate_contract": return `Prepare a local agreement for "${args.dealTitle ?? "the selected deal"}". No email or signature request.`;
     case "mark_contract_signed": return `Mark "${args.dealTitle ?? "the deal"}"'s contract signed.`;
-    case "route_lead": return `Route ${args.contactName ?? "the lead"} to a rep & schedule a meeting.`;
-    case "reengage_deal": return `Re-engage "${args.dealTitle ?? "the deal"}" (→ nurture).`;
+    case "route_lead": return `Assign ${args.contactName ?? "the selected contact"} to the selected rep in Interlink. No meeting or message.`;
+    case "reengage_deal": return `Prepare re-engagement copy for "${args.dealTitle ?? "the selected deal"}". No email or stage change.`;
     case "sync_pipeline_to_trello": return `Sync your open deals to your Trello board.`;
     case "import_from_trello": return `Import new cards from your Trello board as deals.`;
     case "post_pipeline_to_slack": return `Post a pipeline digest to Slack${args.channel ? ` (#${String(args.channel).replace(/^#/, "")})` : ""}.`;
@@ -1300,29 +1333,37 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       case "create_contact": {
         const c = await createContact(user.id, { name: String(args.name ?? "").trim(), email: args.email ? String(args.email) : undefined, company: args.company ? String(args.company) : undefined, title: args.title ? String(args.title) : undefined, source: "assistant" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "contact_created", title: `Added contact ${c.name}`, entityType: "sales_contact", entityId: c.id });
-        return { ok: true, message: `Added ${c.name}.` };
+        return { ok: true, message: `Added ${c.name} (ID: ${c.id}).`, data: c };
       }
       case "create_deal": {
-        const d = await createDeal(user.id, { title: String(args.title ?? "").trim(), contactName: args.contactName ? String(args.contactName) : undefined, company: args.company ? String(args.company) : undefined, amountCents: typeof args.amountCents === "number" ? args.amountCents : undefined, stage: args.stage as DealStage | undefined, source: "assistant" });
+        if (!String(args.title ?? "").trim()) return { ok: false, message: "Enter a deal title." };
+        const currency = typeof args.currency === "string" ? args.currency.trim().toUpperCase() : "USD";
+        if (!/^[A-Z]{3}$/.test(currency) || (args.amountCents !== undefined && (!Number.isSafeInteger(args.amountCents) || Number(args.amountCents) < 0))) throw new AppError("Provide a valid currency and nonnegative whole amount in minor units.", 400);
+        if (args.contactId && args.stage && args.stage !== "qualified") throw new AppError("Linked Marketing opportunities start qualified. Change their stage in a separate reviewed step.", 400);
+        const d = args.contactId
+          ? await createMarketingOpportunity(user.id, { title: String(args.title ?? "").trim(), contactId: String(args.contactId), amountCents: args.amountCents as number | undefined, currency })
+          : await createDeal(user.id, { title: String(args.title ?? "").trim(), contactName: args.contactName ? String(args.contactName) : undefined, company: args.company ? String(args.company) : undefined, amountCents: args.amountCents as number | undefined, currency, stage: args.stage as DealStage | undefined, source: "assistant" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "deal_created", title: `Created deal ${d.title}`, entityType: "sales_deal", entityId: d.id });
-        return { ok: true, message: `Created deal "${d.title}".` };
+        return { ok: true, message: `Created deal "${d.title}" (ID: ${d.id}; ${d.currency}; stage: ${d.stage}).`, data: d };
       }
       case "advance_stage": {
-        const match = await findDealByTitle(user.id, String(args.dealTitle ?? ""));
+        const match = await findDealByTitle(user.id, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
         if (!match) return { ok: false, message: "Couldn't find that deal." };
-        await updateDeal(user.id, match.id, { stage: args.stage as DealStage });
+        if (!STAGES.includes(String(args.stage))) return { ok: false, message: "Choose a supported pipeline stage." };
+        if (args.reviewedStage && match.stage !== args.reviewedStage) return { ok: false, message: "This deal changed after review. Read its current stage and prepare a fresh review before changing it." };
+        const updated = await updateDeal(user.id, match.id, { stage: args.stage as DealStage, expectedStage: match.stage });
+        if (!updated) return { ok: false, message: "This deal changed after review. Read its current stage and prepare a fresh review before changing it." };
         await logActivity(user.id, { dealId: match.id, kind: "stage_changed", note: `→ ${args.stage}` });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "deal_advanced", title: `${match.title} → ${args.stage}`, entityType: "sales_deal", entityId: match.id });
         return { ok: true, message: `Moved "${match.title}" to ${args.stage}.` };
       }
       case "draft_followup": {
-        const c = await findContactByName(user.id, String(args.contactName ?? ""));
+        const c = await findContactByName(user.id, String(args.contactName ?? ""), typeof args.contactId === "string" ? args.contactId : undefined);
         if (!c) return { ok: false, message: "Couldn't find that contact." };
         if (!c.email) return { ok: false, message: `No email on file for ${c.name}.` };
         const draft = await draftEmail({ role: "sales representative", purpose: "a warm, concise follow-up email to a prospect", context: `Contact: ${c.name}${c.company ? `, ${c.company}` : ""}${c.title ? `, ${c.title}` : ""}. ${args.note ? `Note: ${args.note}` : ""}` });
-        await sendProfessionalEmail({ user, to: c.email, subject: draft.subject, body: draft.body, tag: "sales_followup" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "followup_sent", title: `Follow-up sent to ${c.name}`, detail: draft.subject, entityType: "sales_contact", entityId: c.id });
-        return { ok: true, message: `Follow-up sent to ${c.name}.` };
+        if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "Follow-up copy is unavailable. Nothing was sent. Try drafting again or write the message in Email Marketing." };
+        return { ok: true, message: `Prepared a follow-up draft for ${c.name}. No email was sent. Review the exact recipient and copy before a separate send.`, data: { contactId: c.id, toEmail: c.email, subject: draft.subject, body: draft.body, status: "draft" } };
       }
       case "draft_campaign": {
         const campaign = await createMarketingCampaign(user.id, {
@@ -1343,24 +1384,34 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Enriched ${contact.name}${contact.company ? ` (${contact.company})` : ""}.` };
       }
       case "meeting_followup": {
-        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""));
+        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
         if (!deal) return { ok: false, message: "Couldn't find that deal." };
         const painPoints = Array.isArray(args.painPoints) ? (args.painPoints as unknown[]).map(String) : [];
-        return meetingFollowupCore(user, deal, { painPoints, summary: String(args.summary ?? "") });
+        const contact = await getDealContact(user.id, deal);
+        if (!contact) return { ok: false, message: "Choose an owned contact for this deal before drafting a follow-up." };
+        return executeTool(user, "draft_followup", { contactId: contact.id, note: `Deal: ${deal.title}. Meeting summary: ${String(args.summary ?? "")}. Pain points: ${painPoints.join("; ")}` });
       }
       case "generate_contract": {
-        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""));
+        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
         if (!deal) return { ok: false, message: "Couldn't find that deal." };
-        const r = await generateContract(user, deal.id);
-        return { ok: r.ok, message: r.message };
+        const requirements = String(args.requirements ?? "").trim(), signerName = String(args.signerName ?? "").trim(), signerEmail = String(args.signerEmail ?? "").trim();
+        if (!requirements || !signerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signerEmail)) return { ok: false, message: "Provide the actual agreement requirements, signer name and signer email before preparing a local draft." };
+        const agreement = await (await import("../marketing/agreement.service")).createAgreement(user.id, { dealId: deal.id, requirements, signerName, signerEmail });
+        return { ok: true, message: `Prepared local agreement ${agreement.id}. Review its document and signer in Agreements before DocuSign preparation or sending. No email or signature request was sent.`, data: agreement };
       }
       case "mark_contract_signed": {
-        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""));
+        const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
         if (!deal) return { ok: false, message: "Couldn't find that deal." };
         return markContractSigned(user, deal.id);
       }
-      case "route_lead": return routeLead(user, String(args.contactName ?? ""));
-      case "reengage_deal": return reengageDeal(user, String(args.dealTitle ?? ""));
+      case "route_lead": {
+        const contact = await findContactByName(user.id, String(args.contactName ?? ""), typeof args.contactId === "string" ? args.contactId : undefined);
+        const rep = (await listReps(user.id)).find(item => item.id === args.repId);
+        if (!contact || !rep) return { ok: false, message: "Choose an exact owned contact and representative before routing. No meeting was scheduled." };
+        await (await import("../marketing/leads.service")).assignMarketingLead(user.id, contact.id, rep.id);
+        return { ok: true, message: `Assigned ${contact.name} to ${rep.name} in Interlink. This is routing metadata; no meeting, message or human acceptance is implied.`, data: { contactId: contact.id, repId: rep.id } };
+      }
+      case "reengage_deal": return reengageDeal(user, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
       case "sync_pipeline_to_trello": return syncPipelineToTrello(user);
       case "import_from_trello": return importDealsFromTrello(user);
       case "post_pipeline_to_slack": return postPipelineDigestToSlack(user, args.channel ? String(args.channel) : undefined);

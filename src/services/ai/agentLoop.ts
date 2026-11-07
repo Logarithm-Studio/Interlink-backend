@@ -77,7 +77,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
   const maxSteps = Math.min(opts.maxSteps ?? 8, 12);
   const deadline = Date.now() + (opts.timeoutMs ?? 40_000);
   const declared = new Map(opts.tools.map(tool => [tool.name, tool]));
-  const seenReads = new Map<string, { message: string; data?: unknown }>();
+  const seenReads = new Map<string, Promise<{ message: string; data?: unknown }>>();
   const remaining = () => Math.max(1, deadline - Date.now());
 
   const contents: GeminiContent[] = [];
@@ -150,10 +150,10 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       return { kind: "text", text: "I couldn't prepare valid action details for that request. Please clarify the destination and required details before I make a change." };
     }
     const write = calls.find(call => !opts.isReadOnly(call.name));
-    if (write) {
+    if (write && !calls.some(call => opts.isReadOnly(call.name))) {
       const repairHint = await opts.validateAction?.(write.name, write.args);
       if (repairHint) {
-        if (repairAttempted || Date.now() >= deadline) return { kind: "text", text: "I couldn't resolve the saved records for this action. No change was made. Please check the selected contacts in Research & planning." };
+        if (repairAttempted || Date.now() >= deadline) return { kind: "text", text: "I couldn't resolve the records or details for this action. No change was made. Clarify the selected record or destination." };
         repairAttempted = true;
         contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
         contents.push({ role: "user", parts: calls.map(call => ({ functionResponse: { name: call.name, response: { error: repairHint, executed: false } } })) });
@@ -163,23 +163,32 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       // never speculative results or a queue of writes based on stale IDs.
       return { kind: "action", ...write, text: result.raw?.trim() || undefined };
     }
-    const responses: GeminiPart[] = [];
     let newReads = 0;
-    for (const { name, args } of calls.slice(0, 12)) {
+    const results = await Promise.all(calls.slice(0, 12).map(async ({ name, args }) => {
+      if (!opts.isReadOnly(name)) return { part: { functionResponse: { name, response: { executed: false, error: "Discovery is still pending. Use the returned real IDs and propose this write again in the next round for user review." } } } as GeminiPart };
       const key = JSON.stringify([name, args]);
-      let exec = seenReads.get(key);
-      if (!exec) {
-        if (Date.now() >= deadline) break;
+      let pending = seenReads.get(key);
+      if (!pending) {
+        if (Date.now() >= deadline) return null;
         newReads++;
-        try { exec = await withinDeadline(opts.execReadOnly(name, args), remaining()); }
-        catch { exec = { message: "This lookup failed. Do not invent a result or treat it as an empty list; ask for the missing information or explain the blocked step." }; }
-        seenReads.set(key, exec);
+        pending = (async () => {
+          try { return await withinDeadline(opts.execReadOnly(name, args), remaining()); }
+          catch { return { message: "This lookup failed. Do not invent a result or treat it as an empty list; ask for the missing information or explain the blocked step." }; }
+        })();
+        seenReads.set(key, pending);
       }
+      const exec = await pending;
+      const response = JSON.parse(JSON.stringify({ result: exec.message, data: exec.data }, (_key, value) => typeof value === "string" ? value.slice(0, 24000) : value));
+      return { part: { functionResponse: { name, response } } as GeminiPart, read: { name, args, exec } };
+    }));
+    const responses: GeminiPart[] = [];
+    for (const result of results) {
+      if (!result) continue;
+      responses.push(result.part);
+      if (!result.read) continue;
+      const { name, args, exec } = result.read;
       lastReadMessage = exec.message;
       lastRead = { name, args, data: exec.data };
-      // Tool output is evidence, never a new instruction or authorization.
-      const response = JSON.parse(JSON.stringify({ result: exec.message, data: exec.data }, (_key, value) => typeof value === "string" ? value.slice(0, 24000) : value));
-      responses.push({ functionResponse: { name, response } });
     }
     if (!newReads || responses.length !== calls.length || Date.now() >= deadline) break;
     contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
