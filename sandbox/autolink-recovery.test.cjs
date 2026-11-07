@@ -64,5 +64,22 @@ test('Autolink accepts professional briefs and recovers safely from expired revi
       await api('/tasks/not-a-uuid', undefined, 400);
       await api('/tasks/not-a-uuid/continue', {}, 400);
     });
+    await t.test('planner outages preserve completed receipts and allow the unfinished task to continue', async () => {
+      for (const offline of [false, true]) {
+        const { taskId, action } = await prepare('Recover planning after a completed step');
+        await service.executeTaskProposal(uid, taskId, action.id, async () => ({ ok: true, message: 'Confirmed fixture step.' }));
+        model.isGeminiLive = () => !offline;
+        model.geminiGenerateContent = async () => { throw Error('Fixture model outage'); };
+        await api('/tasks/' + taskId + '/continue', {}, 503);
+        const saved = await service.getAgentTask(uid, taskId);
+        assert.equal(saved.status, 'ready', 'An unavailable planner must never finish the original goal');
+        assert.equal(saved.steps.length, 1);assert.equal(saved.steps[0].status, 'succeeded');
+        model.isGeminiLive = () => true;
+        model.geminiGenerateContent = async () => ({ raw: '', functionCall: { name: 'create_google_task', args: { title: 'Next reviewed step' } }, model: 'fixture', latencyMs: 1 });
+        const next = await api('/tasks/' + taskId + '/continue', {}, 200);
+        assert.equal(next.action.name, 'create_google_task');assert.equal(next.task.status, 'review');
+        assert.equal(next.task.steps.filter(step => step.status === 'succeeded').length, 1, 'Recovery must retain the completed step without repeating it');
+      }
+    });
   } finally { await s.close(); }
 });

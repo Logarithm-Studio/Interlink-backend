@@ -60,6 +60,13 @@ operation remains locked if its outcome was not recorded; check the destination
 before starting replacement work. Existing deterministic form execution remains
 on `/assistant/execute`, with each service's existing approval/uncertainty rules.
 
+An unavailable or failed planner returns HTTP 503. During continuation the task
+returns to `ready`, preserving its successful receipts and the Continue control.
+A model outage is never saved as an answered task. Retrying continuation plans
+from the existing receipts; it does not execute a previous proposal again.
+Owned snapshots, connection discovery, history and tool discovery load concurrently
+before planning. This removes serial prerequisite waits without changing approvals.
+
 Original attachment bytes remain in client memory during a task and are supplied
 again for continuation. The server checks their digest. After process loss the user
 must reattach the original file when the remaining work needs it; completed steps
@@ -102,12 +109,23 @@ fingerprint. Execution uses the same durable research-export service as the form
 Notion and Todoist each require their own confirmation. Existing copies retain
 their receipts; uncertain writes require reconciliation in Research & planning.
 The model cannot supply review labels or replace the saved action payload.
-For explicit research-plan export requests, planning keeps the native research
-write tools and read tools; unrelated writes are excluded from that task's tool
-surface. Start a separate request for unrelated changes. This prevents generic
-task/page creation from bypassing export receipts. Resolved actions emit the
+For explicit research-plan export requests, competing Notion/Todoist write tools
+stay unavailable until that provider has a successful native export receipt in
+the same task. Unrelated tools remain available, so a mixed export/Calendar goal
+can continue through separate reviews. A completed export releases that provider's
+generic tools for separately requested work. Continuation scopes tools from the
+original goal and saved receipt statuses, excluding receipt text from routing.
+Resolved actions emit the
 review card rather than asking for a yes in prose. A real Gemini check exposed
 both problems before this correction and passed both provider steps afterward.
+
+`read_marketing_workspace` supports `query`, `recordId` and `cursor` for contacts
+and research plans. Search runs before the 25-contact/20-plan limit across owned
+records, rather than searching a previously truncated list. `hasMore` and
+`nextCursor` permit bounded continuation; timestamp/UUID ordering retains full
+PostgreSQL timestamp precision. Search treats percent/underscore as literal text.
+Follow-ups, content, sequences and agreements remain recent-record reads; the tool
+reports this scope and rejects unsupported search/pagination arguments.
 
 Verification evidence lives in the app's `docs/qa/` reports. The November 7 Vercel
 configuration repair restored signed QStash callbacks: both dispatchers returned

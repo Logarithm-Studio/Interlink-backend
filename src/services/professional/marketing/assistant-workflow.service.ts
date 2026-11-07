@@ -9,8 +9,8 @@ export const MARKETING_TOOLS: GeminiToolFunction[] = [{
   parameters: { type: "object", properties: { campaignId: { type: "string", description: "Exact saved campaign UUID, if known." }, query: { type: "string", description: "Optional topic or subject phrase to find a campaign." } } },
 }, {
   name: "read_marketing_workspace",
-  description: "Read owned Marketing contacts, research plans, open follow-ups, content, email sequences or agreements from Interlink. Returns actual record IDs and status; never sends, exports or schedules. Use contacts to resolve exact contact IDs before saving a research plan. Content bodies are excerpts of up to 2000 characters.",
-  parameters: { type: "object", properties: { resource: { type: "string", enum: ["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"] } }, required: ["resource"] },
+  description: "Read owned Marketing contacts, research plans, open follow-ups, content, email sequences or agreements. Use query or recordId to find contacts/research plans beyond the first page; cursor continues those lists using nextCursor from the response. Other resources return recent records only. Resolve exact contact IDs before saving a research plan. Content bodies are excerpts of up to 2000 characters. Never sends, exports or schedules.",
+  parameters: { type: "object", properties: { resource: { type: "string", enum: ["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"] }, query: { type: "string" }, recordId: { type: "string" }, cursor: { type: "object", properties: { createdAt: { type: "string" }, id: { type: "string" } }, required: ["createdAt", "id"] } }, required: ["resource"] },
 }, {
   name: "create_marketing_research_plan",
   description: "Save a reviewed research shortlist and objective in Interlink. Use exact owned contact IDs from read_marketing_workspace; never invent contacts. Does not export or send outreach. Exporting to Notion or Todoist requires a separate export_marketing_research_plan review after this step succeeds.",
@@ -62,15 +62,26 @@ export async function exportMarketingResearchPlan(userId: string, args: Record<s
 }
 
 export async function readMarketingWorkspace(userId: string, args: Record<string, unknown>): Promise<{ message: string; data: unknown }> {
-  const { resource } = z.object({ resource: z.enum(["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"]) }).parse(args);
+  const { resource, query: search, recordId, cursor } = z.object({ resource: z.enum(["contacts", "research_plans", "followups", "content", "email_sequences", "agreements"]), query: z.string().trim().max(120).optional(), recordId: z.string().uuid().optional(), cursor: z.object({ createdAt: z.iso.datetime({ offset: true }), id: z.string().uuid() }).optional() }).parse(args);
+  if (resource === "contacts" || resource === "research_plans") {
+    const limit = resource === "contacts" ? 25 : 20;
+    // Identifiers are fixed here; all model-supplied values remain SQL parameters.
+    const table = resource === "contacts" ? "sales_contacts" : "sales_marketing_research_plans";
+    const columns = resource === "contacts" ? 'id,name,email,company,title,marketing_opt_in AS "marketingOptIn"' : 'id,title,objective,contact_ids';
+    const searchable = resource === "contacts" ? "concat_ws(' ',name,email,company,title)" : "concat_ws(' ',title,objective)";
+    // A JS Date truncates microseconds and can skip records sharing a cursor millisecond.
+    const found = await query<{ id: string; createdAt: string }>(`SELECT ${columns},to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt" FROM ${table}
+      WHERE user_id=$1 AND ($2::uuid IS NULL OR id=$2)
+        AND ($3::text IS NULL OR strpos(lower(${searchable}),lower($3))>0)
+        AND ($4::timestamptz IS NULL OR (created_at,id)<($4::timestamptz,$5::uuid))
+      ORDER BY created_at DESC,id DESC LIMIT $6`, [userId, recordId ?? null, search || null, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1]);
+    const records = found.rows.slice(0, limit), last = records.at(-1);
+    const data = { resource, records, limit, hasMore: found.rows.length > limit, nextCursor: found.rows.length > limit && last ? { createdAt: last.createdAt, id: last.id } : null, source: "Interlink owned Marketing records" };
+    return { message: JSON.stringify(data), data };
+  }
+  if (search || recordId || cursor) throw new AppError("Search and pagination are available for contacts and research plans. Other resources return recent records only.", 400);
   let records: unknown[];
-  if (resource === "contacts") {
-    const { listContacts } = await import("../sales/sales.service");
-    records = (await listContacts(userId)).slice(0, 25);
-  } else if (resource === "research_plans") {
-    const { listResearchPlans } = await import("./research-plan.service");
-    records = (await listResearchPlans(userId)).slice(0, 20);
-  } else if (resource === "email_sequences") {
+  if (resource === "email_sequences") {
     const { listEmailSequences } = await import("./email-sequence.service");
     records = (await listEmailSequences(userId)).slice(0, 20).map(row => ({ id: row.id, contactId: row.contact_id, recipient: row.recipient_email, status: row.status, nextStep: row.next_step, dueAt: row.due_at, stepCount: row.steps.length, lastError: row.last_error }));
   } else if (resource === "followups") {
@@ -83,7 +94,7 @@ export async function readMarketingWorkspace(userId: string, args: Record<string
     const { listAgreements } = await import("./agreement.service");
     records = (await listAgreements(userId)).slice(0, 20).map(row => ({ id: row.id, title: row.title, status: row.status, signerName: row.signer_name, signerEmail: row.signer_email, envelopeId: row.envelope_id }));
   }
-  const data = { resource, records, limit: resource === "contacts" ? 25 : 20, source: "Interlink owned Marketing records" };
+  const data = { resource, records, limit: 20, source: "Interlink owned Marketing records" };
   return { message: JSON.stringify(data), data };
 }
 

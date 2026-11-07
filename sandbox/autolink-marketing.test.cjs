@@ -52,7 +52,8 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    const foreign=await plans.createResearchPlan(s.config.otherUserId,{title:'Private plan',objective:'Private',contactIds:[other.id]});
    let round=0;
    model.geminiGenerateContent=async options=>{
-    assert(!options.tools.some(tool=>['create_todoist_task','create_notion_note','create_trello_card'].includes(tool.name)),'Research exports must use durable receipts rather than unrelated writes');
+    if(round<2)assert(!options.tools.some(tool=>['create_todoist_task','create_notion_note','create_trello_card'].includes(tool.name)),'Pending research exports must use durable receipts');
+    else if(round<4)assert(!options.tools.some(tool=>tool.name==='create_todoist_task'),'Todoist must retain its native export review until confirmed');
     const calls=[{name:'read_marketing_destinations',args:{provider:'notion',query:'Sandbox'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent',query:'Sandbox',destination:'Forged destination',fingerprint:'forged'}},{name:'read_marketing_destinations',args:{provider:'todoist'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'todoist',destinationId:'sandbox-project',contacts:'Forged contacts'}}];
     return{raw:round<4?'':'Both reviewed copies are saved.',functionCall:calls[round++],model:'fixture',latencyMs:1};
    };
@@ -92,6 +93,70 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    const drafts=(await read(uid,{resource:'content'})).data.records;
    assert.ok(drafts.some(row=>row.id===draft.id&&row.status==='draft'&&row.body.length===2000));
    assert.ok(!drafts.some(row=>row.id===privateDraft.id));
+  });
+  await t.test('research export scope preserves unrelated tools and releases generic tools after a confirmed export',async()=>{
+   const plans=s.load('services/professional/marketing/research-plan.service.js');
+   const saved=await plans.createResearchPlan(uid,{title:'Mixed workflow QA',objective:'Review the launch.',contactIds:[contact.id]});
+   let round=0;
+   model.geminiGenerateContent=async options=>{
+    assert(options.tools.some(tool=>tool.name==='schedule_meet'),'Research scope must preserve Calendar for mixed goals');
+    assert(options.tools.some(tool=>tool.name==='create_google_task'),'Research scope must preserve unrelated task systems');
+    if(round++===0){
+     assert(!options.tools.some(tool=>tool.name==='create_notion_note'),'The pending Notion export must use its native receipt');
+     return {raw:'',functionCall:{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent'}},model:'fixture',latencyMs:1};
+    }
+    assert(options.tools.some(tool=>tool.name==='create_notion_note'),'After the export, a separately requested note must be available');
+    return {raw:'',functionCall:{name:'schedule_meet',args:{title:'Review export',startTime:'2026-11-08T10:00:00',endTime:'2026-11-08T10:30:00',timeZone:'Asia/Dhaka'}},model:'fixture',latencyMs:1};
+   };
+   const first=await api('/command',{message:'Export research plan Mixed workflow QA to Notion Sandbox workspace, then schedule a Calendar review and create a separate Notion meeting note.'});
+   assert.equal(first.action.name,'export_marketing_research_plan');
+   assert.equal((await api('/tasks/'+first.task.id+'/actions/'+first.action.id+'/execute',{})).ok,true);
+   const next=await api('/tasks/'+first.task.id+'/continue',{});
+   assert.equal(next.action.name,'schedule_meet');assert.equal(next.task.status,'review');
+   assert.equal(next.task.steps.filter(step=>step.status==='succeeded').length,1,'Calendar still requires its own review');
+  });
+  await t.test('older contacts and research plans remain discoverable by search, ID and pagination',async()=>{
+   const read=s.load('services/professional/marketing/assistant-workflow.service.js').readMarketingWorkspace;
+   const plans=s.load('services/professional/marketing/research-plan.service.js');
+   const target=await plans.createResearchPlan(uid,{title:'Older 100% launch',objective:'Find this exact owned plan.',contactIds:[contact.id]});
+   for(let i=0;i<55;i++){
+    await contacts.createContact(uid,{name:'Recent prospect '+i,email:'recent'+i+'@sandbox.invalid'});
+    await plans.createResearchPlan(uid,{title:'Recent plan '+i,objective:'Newer fixture.',contactIds:[contact.id]});
+   }
+   const match=(await read(uid,{resource:'contacts',query:'Mira Research QA'})).data;
+   assert.equal(match.records.length,1);assert.equal(match.records[0].id,contact.id);
+   const found=(await read(uid,{resource:'research_plans',query:'100% launch'})).data;
+   assert.deepEqual(found.records.map(row=>row.id),[target.id]);
+   assert.deepEqual((await read(uid,{resource:'research_plans',recordId:target.id})).data.records.map(row=>row.id),[target.id]);
+   assert.equal((await read(uid,{resource:'contacts',recordId:other.id})).data.records.length,0,'Exact IDs must remain owner scoped');
+   await s.db.query("UPDATE sales_contacts SET created_at='2026-11-07T12:34:56.123456Z' WHERE user_id=$1",[uid]);
+   const first=(await read(uid,{resource:'contacts'})).data, second=(await read(uid,{resource:'contacts',cursor:first.nextCursor})).data;
+   assert.equal(first.hasMore,true);assert.equal(first.records.length,25);assert.equal(second.records.length,25);
+   assert(!first.records.some(row=>second.records.some(next=>row.id===next.id)),'Pages must be stable and disjoint');
+   assert.equal((await read(uid,{resource:'research_plans',query:'%'})).data.records.length,1,'Search treats percent as literal text');
+   await assert.rejects(read(uid,{resource:'contacts',recordId:'not-a-uuid'}),/UUID|uuid/);
+  });
+  await t.test('independent planning context loads overlap rather than serializing provider latency',async()=>{
+   const vertical=s.load('services/professional/registry.js').getVertical('sales');
+   const personal=s.load('services/personal-assistant/personal-assistant.service.js');
+   const composio=s.load('services/composio/composio.service.js');
+   const original=[vertical.buildSnapshot,personal.connectedAppsSummary,composio.getComposioToolsForUser];
+   const started=new Set();let release,allStarted;
+   const gate=new Promise(resolve=>{release=resolve}), ready=new Promise(resolve=>{allStarted=resolve});
+   const load=async(name,value)=>{started.add(name);if(started.size===3)allStarted();await gate;return value};
+   vertical.buildSnapshot=()=>load('snapshot','Owned fixture snapshot.');
+   personal.connectedAppsSummary=()=>load('connections','Connected apps: none.');
+   composio.getComposioToolsForUser=()=>load('tools',[]);
+   model.geminiGenerateContent=async()=>({raw:'Context loaded.',model:'fixture',latencyMs:1});
+   const pending=api('/command',{message:'Summarize my workspace.'});
+   let timer;
+   try{
+    await Promise.race([ready,new Promise(resolve=>{timer=setTimeout(resolve,300)})]);
+    assert.equal(started.size,3,'A slow snapshot must not delay connection or tool discovery');
+   }finally{
+    clearTimeout(timer);release();await pending;
+    [vertical.buildSnapshot,personal.connectedAppsSummary,composio.getComposioToolsForUser]=original;
+   }
   });
  } finally {await s.close()}
 });

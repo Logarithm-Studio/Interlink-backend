@@ -14,6 +14,7 @@ import { looksLikeAgentActionRequest } from "./agent-intent";
 import { prepareAssistantAttachment } from "./attachment.service";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
 import { AppError } from "../../utils/errors";
+import { logger } from "../../observability/logger";
 import {
   ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME,
   ATTACHMENT_DIRECTIVE,
@@ -186,11 +187,7 @@ export async function planAgentActions(params: {
   validateAction?: (name: string, args: Record<string, unknown>) => Promise<string | null>;
 }): Promise<AgentPlan> {
   if (!isGeminiLive()) {
-    return {
-      answer:
-        "The AI service is offline right now. You can still take actions from the dashboard.",
-      isLive: false,
-    };
+    throw new AppError("The AI service is offline. Your saved steps are retained. Try again shortly or use the dashboard.", 503);
   }
 
   // Use the same attachment preparation in both assistant modes. It extracts spreadsheets,
@@ -264,7 +261,7 @@ export async function planAgentActions(params: {
     }
     return { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
   } catch (err) {
-    console.error("[multimodal] agent planning failed:", err);
-    return { answer: "Sorry, I couldn't process that just now.", isLive: true };
+    logger.warn("[multimodal] agent planning failed", { error: err instanceof Error ? err.name : "UnknownError" });
+    throw new AppError("The AI service could not finish planning. Your saved steps are retained. Try continuing again; no new action was executed.", 503);
   }
 }

@@ -9,8 +9,8 @@ export const PROFESSIONAL_TASK_READ_TOOLS: GeminiToolFunction[] = [{
   parameters: { type: "object", properties: { taskId: { type: "string" } } },
 }];
 
-export async function getAgentTaskReceipts(userId: string, taskId: string): Promise<unknown[]> {
-  const res = await query(`SELECT id,name,args,summary,status,result FROM autolink_action_proposals WHERE task_id=$1 AND user_id=$2 ORDER BY created_at,id`, [taskId, userId]);
+export async function getAgentTaskReceipts(userId: string, taskId: string): Promise<{ id: string; name: string; args: Record<string, unknown>; summary: string; status: string; result: { ok: boolean; message: string } | null }[]> {
+  const res = await query<{ id: string; name: string; args: Record<string, unknown>; summary: string; status: string; result: { ok: boolean; message: string } | null }>(`SELECT id,name,args,summary,status,result FROM autolink_action_proposals WHERE task_id=$1 AND user_id=$2 ORDER BY created_at,id`, [taskId, userId]);
   return res.rows;
 }
 
