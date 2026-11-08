@@ -100,7 +100,8 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       contents,
       json: false,
       tools: opts.tools,
-      toolMode: opts.finalizeTools?.length ? "ANY" : "AUTO",
+      // The full catalog can exceed Gemini's constrained-decoding state limit.
+      toolMode: "AUTO",
       tier: "fast",
       thinkingBudget: 1024,
       maxOutputTokens: 8192,
@@ -114,7 +115,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         contents,
         json: false,
         tools: opts.tools,
-        toolMode: "ANY",
+        toolMode: opts.finalizeTools?.length ? "AUTO" : "ANY",
         tier: "fast",
         timeoutMs: remaining(),
       });
@@ -130,7 +131,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         contents,
         json: false,
         tools: opts.tools,
-        toolMode: opts.looksLikeAction ? "ANY" : "AUTO",
+        toolMode: opts.looksLikeAction && !opts.finalizeTools?.length ? "ANY" : "AUTO",
         tier: "fast",
         thinkingBudget: 512,
         maxOutputTokens: 8192,
@@ -148,7 +149,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         });
         const call = final.functionCall;
         const declaration = opts.finalizeTools.find(tool => tool.name === call?.name);
-        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, via: lastRead };
+        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, args: call.name === "complete_professional_task" ? { ...call.args, answer: text } : call.args, via: lastRead };
       }
       if (text) return { kind: "text", text, via: lastRead };
       // Model executed discovery but produced no closing prose — relay the last result.
@@ -162,6 +163,12 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       return { kind: "text", text: "That operation is not available in this workspace. Tell me the app or task you want to use." };
     }
     if (calls.some(call => !validArguments(call.args, declared.get(call.name)!.parameters))) {
+      if (!repairAttempted && Date.now() < deadline) {
+        repairAttempted = true;
+        contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
+        contents.push({ role: "user", parts: calls.map(call => ({ functionResponse: { name: call.name, response: { executed: false, error: `The supplied arguments do not match this schema: ${JSON.stringify(declared.get(call.name)!.parameters)}. Correct the field names and types using known details; ask for missing facts instead of guessing.` } } })) });
+        continue;
+      }
       return { kind: "text", text: "I couldn't prepare valid action details for that request. Please clarify the destination and required details before I make a change." };
     }
     const write = calls.find(call => !opts.isReadOnly(call.name));

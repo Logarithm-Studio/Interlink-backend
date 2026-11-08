@@ -22,12 +22,38 @@ replies. The paused question card says "Needs your answer"; manual pause retains
 Resume. Answer in the composer to continue the same task.
 
 The physical-phone pass also reproduced an initial prose question that bypassed
-task creation. Professional turns now request function output from the first model
-call, including the question/completion functions. A bounded status-only repair
+task creation. Professional turns include the question/completion functions from
+the first model call. The full catalog uses AUTO: forcing its combined schemas
+exceeded Gemini's constrained-decoding state limit in live Marketing checks.
+Only the two-function status repair uses ANY. A bounded status-only repair
 still handles unexpected prose on initial turns as well as continuations. Complete
 informational answers remain ordinary chat replies without a task; questions save
 the initial goal and source context. Discovery data survives completion so existing
 openable result links remain available. Personal keeps its existing text protocol.
+Completion repair preserves the full original prose, including requested email
+copy, instead of replacing it with a model-generated completion summary. Invalid
+argument shapes receive one bounded schema repair before asking for clarification;
+unavailable tool names still fail immediately. No repair executes a write.
+
+## Marketing customer jobs
+
+The Sales/Marketing role adds five adapters to the existing research tools:
+
+| Tool | Contract |
+| --- | --- |
+| `search_marketing_prospects` | Read connected HubSpot/Salesforce and return bounded, signed, user-bound import previews. |
+| `import_marketing_prospect` | Reviewed import through the existing deduplicating CRM service; never grants marketing permission. |
+| `create_marketing_content` | Reviewed local email/social content draft, optionally linked to an owned campaign. Never approves, schedules or publishes. |
+| `create_marketing_followup` | Reviewed local follow-up for an owned contact and optional owned campaign, with an explicit future timestamp/offset. New/qualified leads become following_up through the existing service. No reminder, email or external task. |
+| `read_marketing_performance` | Read saved campaign outcomes and bounded cached account analytics with source dates. Unsynced delivery metrics are unavailable, not invented zeroes; account observations do not establish campaign causality. |
+
+Review details resolve the actual prospect, contact and campaign. Expired/changed
+import previews, foreign records, empty copy and invalid dates fail validation.
+Existing task receipts protect reviewed execution from replay. Copy requested in
+chat stays in chat, with every requested subject/body included. A local multi-email
+draft is separate from activating the Email Marketing workflow: activation still
+requires its verified sent-message anchor, selected sender and consent controls.
+No new migration or provider connection is required for local content drafting.
 
 `read_professional_records` discovers owned candidates, openings, tickets, property
 leads/listings/leases and invoices. It supports literal search, exact IDs and

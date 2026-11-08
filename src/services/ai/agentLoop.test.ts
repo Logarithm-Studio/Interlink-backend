@@ -57,7 +57,7 @@ test("saved-task prose receives an explicit question or completion signal withou
     await mockModel([[{ text: prose }], [{ functionCall: { name, args } }]], async requests => {
       const result = await runAgentTurn({ system: "Preserve the original goal and receipts.", tools: finalizeTools, finalizeTools, userParts: [{ text: "Continue saved work." }], isReadOnly: () => false, execReadOnly: async () => { throw new Error("No write or lookup may run"); } });
       assert.equal(result.kind, "action"); if (result.kind === "action") assert.equal(result.name, name);
-      assert.equal(requests.length, 2); assert.equal(requests[0].tool_config.function_calling_config.mode, "ANY"); assert.equal(requests[1].tool_config.function_calling_config.mode, "ANY");
+      assert.equal(requests.length, 2); assert.equal(requests[0].tool_config.function_calling_config.mode, "AUTO"); assert.equal(requests[1].tool_config.function_calling_config.mode, "ANY");
     });
   }
 });
@@ -67,6 +67,23 @@ test("explicit completion retains the discovery data used for openable links", a
   await mockModel([[{ functionCall: { name: "find_document", args: {} } }], [{ functionCall: { name: completion.name, args: { answer: "Here is the requested document." } } }]], async () => {
     const outcome = await runAgentTurn({system:"Find the document",tools:[{name:"find_document",description:"Find",parameters:{type:"object",properties:{}}},completion],finalizeTools:[completion],userParts:[{text:"Find my document"}],isReadOnly:name=>name==='find_document',execReadOnly:async()=>({message:"Found",data:{url:"https://example.invalid/document"}})});
     assert.equal(outcome.kind,"action");assert.deepEqual(outcome.via,{name:"find_document",args:{},data:{url:"https://example.invalid/document"}});
+  });
+});
+
+test("status repair preserves the actual draft instead of replacing it with a completion summary", async () => {
+  const completion = { name: "complete_professional_task", description: "Complete", parameters: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } };
+  const draft = "Subject: Retry-safe billing\nHere is the full copy the customer asked to use.";
+  await mockModel([[{ text: draft }], [{ functionCall: { name: completion.name, args: { answer: "The requested draft is above." } } }]], async () => {
+    const outcome = await runAgentTurn({system:"Draft in chat",tools:[completion],finalizeTools:[completion],userParts:[{text:"Draft an email"}],isReadOnly:()=>false,execReadOnly:async()=>({message:""})});
+    assert.equal(outcome.kind,"action");if(outcome.kind==="action")assert.equal(outcome.args.answer,draft);
+  });
+});
+
+test("a malformed proposal can repair its missing required field before user review", async () => {
+  await mockModel([[{ functionCall: { name: "draft_campaign", args: { title: "Launch" } } }], [{ functionCall: { name: "draft_campaign", args: { topic: "Launch" } } }]], async requests => {
+    const outcome = await runAgentTurn({system:"Save the supplied campaign",tools:[{name:"draft_campaign",description:"Draft",parameters:{type:"object",properties:{topic:{type:"string"}},required:["topic"]}}],userParts:[{text:"Save Launch"}],isReadOnly:()=>false,execReadOnly:async()=>{throw Error("Never execute a write");}});
+    assert.equal(outcome.kind,"action");if(outcome.kind==="action")assert.equal(outcome.args.topic,"Launch");assert.equal(requests.length,2);
+    assert.match(requests[1].contents.at(-1).parts[0].functionResponse.response.error,/topic/);
   });
 });
 

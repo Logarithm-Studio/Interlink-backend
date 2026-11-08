@@ -520,5 +520,13 @@ active task, explicit question/completion tools distinguish waiting from finishe
 Initial Professional model turns use the same explicit state protocol; a required
 clarification saves a paused task, while a complete informational answer has none.
 See [the execution contract](doc/autolink-execution.md) for six-role adapter rules.
+Marketing Autolink supports reviewed CRM prospect import, local campaign-linked
+content drafts and local CRM follow-ups, alongside research and performance reads.
+These reuse the existing Marketing services; they never grant consent, publish,
+send, create reminders or activate email sequences. The full model catalog uses
+AUTO, followed when necessary by a bounded question/completion-only repair.
+See [Marketing customer jobs](doc/autolink-execution.md#marketing-customer-jobs).
 `GET /api/v1/accountant/reports/flash` and its email operation accept an optional
-three-letter `currency`; mixed-currency reports require selection.
+three-letter `currency`; mixed-currency reports require selection. Flash report
+responses include the selected `currency`, and financial totals come directly
+from saved records rather than generated model totals.

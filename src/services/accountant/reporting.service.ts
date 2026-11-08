@@ -21,6 +21,7 @@ function daysOverdue(due: string): number {
 }
 
 export interface FlashReportResponse {
+  currency: string;
   report: FlashReport;
   isFallback: boolean;
   generatedAt: string;
@@ -90,7 +91,8 @@ export async function getFlashReport(userId: string, currency?: string): Promise
     context,
   });
   return {
-    report: result.data,
+    currency: context.currency,
+    report: { ...result.data, totals: { outstandingCents: context.outstandingCents, overdueCents: context.overdueCents, collectedCents: context.collectedCents, expensesCents: context.expensesCents } },
     isFallback: result.isFallback,
     generatedAt: new Date().toISOString(),
   };

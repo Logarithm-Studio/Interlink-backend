@@ -43,6 +43,13 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
    assert.equal((await re.realEstateVertical.executeTool(user,'send_listing_to_buyer',{listingId:listing.id,leadId:lead.id})).ok,false);
    assert.equal(sends,0);assert.equal((await support.listTickets(uid)).find(x=>x.id===ticket.id).status,'open');assert.equal((await re.listListings(uid)).find(x=>x.id===listing.id).shareSlug,null);
   });
+  await t.test('screening uses the supplied job requirements and explains the fit',async()=>{
+   const model=load('services/ai/geminiClient.js'),candidate=await hr.createCandidate(uid,{name:'Job requirements QA',role:'Engineer',resumeText:'Three years TypeScript and PostgreSQL; no Rust production experience.'});
+   const jobDescription='Must have five years of production Rust and distributed systems experience.';let submitted='';
+   model.isGeminiLive=()=>true;model.geminiGenerateContent=async options=>{submitted=JSON.stringify(options.parts);return{raw:JSON.stringify({score:25,summary:'The supplied resume does not show the required production Rust experience.',matches:['Backend development'],gaps:['Five years of production Rust']})}};
+   const result=await hr.hrVertical.executeTool(user,'screen_resume',{candidateId:candidate.id,jobDescription});
+   assert.equal(result.ok,true);assert(submitted.includes(jobDescription),'The screening model must receive the actual supplied job requirements.');assert.match(result.message,/Rust/);assert.equal(result.data.jobDescription,jobDescription);
+  });
   await t.test('real estate rejects ambiguous or foreign records, invented dates and invalid amounts',async()=>{
    const a=await re.createListing(uid,{address:'Duplicate address QA'});await re.createListing(uid,{address:a.address});
    const foreign=await re.createListing(s.config.otherUserId,{address:'Foreign listing QA'});
@@ -77,9 +84,11 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
    await invoices.createInvoice(uid,{clientName:'BDT reporting QA',currency:'BDT',amountCents:7304});
    load('services/ai/ai.service.js').generateFlashReport=async input=>{keys.push(input.idempotencyKey);contexts.push(input.context);return{data:{summary:'Source-backed fixture totals.',totals:{outstandingCents:input.context.outstandingCents}},isFallback:false}};
    await assert.rejects(reporting.getFlashReport(uid),/multiple currencies/);
-   await reporting.getFlashReport(uid,'BDT');assert.equal(contexts[0].currency,'BDT');assert.equal(contexts[0].outstandingCents,7304);
+   const report=await reporting.getFlashReport(uid,'BDT');assert.equal(contexts[0].currency,'BDT');assert.equal(contexts[0].outstandingCents,7304);assert.equal(report.currency,'BDT');
    await invoices.createInvoice(uid,{clientName:'Second BDT reporting QA',currency:'BDT',amountCents:12550});
    await reporting.getFlashReport(uid,'BDT');assert.equal(contexts[1].outstandingCents,19854);assert.notEqual(keys[0],keys[1]);
+   load('services/ai/ai.service.js').generateFlashReport=async()=>({data:{summary:'Unreliable generated totals',totals:{outstandingCents:999999,overdueCents:1,collectedCents:2,expensesCents:3}},isFallback:false});
+   const grounded=await reporting.getFlashReport(uid,'BDT');assert.equal(grounded.report.totals.outstandingCents,19854);assert.equal(grounded.report.totals.collectedCents,0);assert.equal(grounded.report.totals.expensesCents,0);
   });
   await t.test('all failed tax requests are a failure rather than a success with zero sends',async()=>{
    await s.db.query("UPDATE profession_profiles SET persona='finance' WHERE user_id=$1 AND mode='professional'",[uid]);

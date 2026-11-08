@@ -25,6 +25,103 @@ export const MARKETING_TOOLS: GeminiToolFunction[] = [{
   parameters: { type: "object", properties: { planId: { type: "string" }, provider: { type: "string", enum: ["notion", "todoist"] }, destinationId: { type: "string" }, query: { type: "string", description: "The destination search used for discovery, if any." } }, required: ["planId", "provider", "destinationId"] },
 }];
 
+const FollowupInput = z.object({ contactId: z.string().uuid(), campaignId: z.string().uuid().optional(), title: z.string().trim().min(1).max(200), dueAt: z.iso.datetime({ offset: true }), notes: z.string().trim().max(10000).optional() });
+const ContentInput = z.object({ campaignId: z.string().uuid().optional(), title: z.string().trim().min(1).max(200), channel: z.enum(["email", "instagram", "facebook", "linkedin", "youtube", "blog", "landing_page", "search", "ad", "influencer", "event", "other"]), body: z.string().trim().min(1).max(30000) });
+const ImportInput = z.object({ importToken: z.string().min(1).max(12000) });
+export const MARKETING_WORK_ACTIONS = new Set(["import_marketing_prospect", "create_marketing_followup", "create_marketing_content"]);
+MARKETING_TOOLS.push({
+  name: "read_marketing_performance", description: "Read owned campaign goals/outcomes and bounded cached analytics observations with dates. Optional exact campaignId scopes campaign results. This does not refresh providers or change anything. Unavailable/unsynced provider metrics are unknown, not zero; distinguish recorded association from causal impact.",
+  parameters: { type: "object", properties: { campaignId: { type: "string" } } },
+}, {
+  name: "search_marketing_prospects", description: "Search a connected HubSpot or Salesforce CRM for actual prospects. Returns bounded records and user-bound import previews. Search is read only; importing is a separate reviewed action. A CRM result never grants marketing permission.",
+  parameters: { type: "object", properties: { provider: { type: "string", enum: ["hubspot", "salesforce"] }, query: { type: "string" }, title: { type: "string" } }, required: ["provider", "query"] },
+}, {
+  name: "import_marketing_prospect", description: "Import one actual CRM prospect selected from search_marketing_prospects into Interlink after review. Use its exact importToken. Reuses an existing matching contact without overwriting it. Marketing permission stays false; no email or provider write.",
+  parameters: { type: "object", properties: { importToken: { type: "string" } }, required: ["importToken"] },
+}, {
+  name: "create_marketing_followup", description: "Save a local CRM follow-up task for an exact owned contact and supplied due time with timezone offset. No notification, email, Calendar event or Todoist task is created. Existing new/qualified lead status becomes following_up. Export/reminders need their own review in Follow-ups.",
+  parameters: { type: "object", properties: { contactId: { type: "string" }, campaignId: { type: "string" }, title: { type: "string" }, dueAt: { type: "string" }, notes: { type: "string" } }, required: ["contactId", "title", "dueAt"] },
+}, {
+  name: "create_marketing_content", description: "Save the exact supplied/generated copy as a local Marketing content draft, optionally linked to an owned campaign. Suitable for email or social/content-calendar work. Never publishes, sends, buys ads, schedules publication or approves the content. Do not require a provider connection for local drafting.",
+  parameters: { type: "object", properties: { campaignId: { type: "string" }, title: { type: "string" }, channel: { type: "string", enum: ContentInput.shape.channel.options }, body: { type: "string" } }, required: ["title", "channel", "body"] },
+});
+
+export async function searchMarketingProspects(userId: string, args: Record<string, unknown>) {
+  const { ProspectSearchSchema, searchCrmProspects } = await import("./prospect.service");
+  const prospects = await searchCrmProspects(userId, ProspectSearchSchema.parse(args));
+  const data = { prospects, limit: 25, source: "Connected CRM search; not marketing permission" };
+  return { message: JSON.stringify(data), data };
+}
+
+export async function readMarketingPerformance(userId: string, args: Record<string, unknown>) {
+  const input = z.object({ campaignId: z.string().uuid().optional() }).parse(args);
+  const { getMarketingPerformance } = await import("../sales/sales.service");
+  const { listMarketingAnalyticsSnapshots } = await import("./analytics.service");
+  const [performance, snapshots] = await Promise.all([getMarketingPerformance(userId), listMarketingAnalyticsSnapshots(userId)]);
+  const selected = performance.campaigns.filter(row => !input.campaignId || row.id === input.campaignId);
+  if (input.campaignId && !selected.length) throw new AppError("Choose a campaign in your Marketing workspace.", 400);
+  const data = { source: "Saved Marketing outcomes and cached workspace analytics; not a live provider refresh", generatedAt: performance.generatedAt,
+    workspaceTotals: input.campaignId ? undefined : performance.totals,
+    campaigns: selected.slice(0, 20).map(row => ({ ...row, email: row.email.syncedAt ? row.email : { sent: row.email.sent, providerMetrics: "Unavailable: provider results have not been synced" } })), hasMoreCampaigns: selected.length > 20,
+    workspaceAnalytics: snapshots.slice(0, 8).map(row => ({ provider: row.provider, account: row.accountName, from: row.rangeStart, to: row.rangeEnd, fetchedAt: row.fetchedAt, metricsExcerpt: JSON.stringify(row.metrics).slice(0, 4000), truncated: JSON.stringify(row.metrics).length > 4000 })),
+    interpretation: "Workspace analytics are account-level observations, not automatically attributable to this campaign. Missing observations are unavailable, not zero. Currency totals are separate; no conversion or causal impact is inferred." };
+  return { message: JSON.stringify(data), data };
+}
+
+export async function reviewMarketingWorkAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  try {
+    if (!MARKETING_WORK_ACTIONS.has(name)) throw new AppError("This Marketing workflow is unavailable.", 400);
+    if (name === "import_marketing_prospect") {
+      const { readPreview } = await import("./prospect.service");
+      const input = ImportInput.parse(args), prospect = readPreview(userId, input.importToken);
+      return { ...input, contactName: prospect.name, email: prospect.email, company: prospect.company, provider: prospect.provider, marketingPermission: "Not granted by import" };
+    }
+    if (name === "create_marketing_followup") {
+      const input = FollowupInput.parse(args);
+      if (Date.parse(input.dueAt) <= Date.now()) throw new AppError("Choose a future follow-up due time with an explicit timezone offset.", 400);
+      const { getContact } = await import("../sales/sales.service");
+      const contact = await getContact(userId, input.contactId);
+      if (!contact) throw new AppError("Choose a contact in your Marketing workspace.", 400);
+      const campaignTitle = input.campaignId ? await readOwnedCampaign(userId, input.campaignId) : undefined;
+      return { ...input, contactName: contact.name, campaignTitle, leadStatusEffect: "New or qualified leads become following_up; other stages stay as saved" };
+    }
+    const input = ContentInput.parse(args);
+    const campaignTitle = input.campaignId ? await readOwnedCampaign(userId, input.campaignId) : undefined;
+    return { ...input, campaignTitle };
+  } catch (error) {
+    if (error instanceof z.ZodError) throw new AppError("Provide the actual record IDs, complete copy and valid workflow details before review.", 400);
+    throw error;
+  }
+}
+
+async function readOwnedCampaign(userId: string, id: string): Promise<string> {
+  const found = await query<{ topic: string }>("SELECT topic FROM sales_marketing_campaigns WHERE id=$1 AND user_id=$2", [id, userId]);
+  if (!found.rows[0]) throw new AppError("Choose a campaign in your Marketing workspace.", 400);
+  return found.rows[0].topic;
+}
+
+export async function executeMarketingWorkAction(userId: string, name: string, args: Record<string, unknown>) {
+  try {
+    await reviewMarketingWorkAction(userId, name, args);
+    if (name === "import_marketing_prospect") {
+      const { importCrmProspect } = await import("./prospect.service");
+      const imported = await importCrmProspect(userId, ImportInput.parse(args).importToken);
+      return { ok: true, message: `${imported.alreadyImported ? "Retained existing" : "Imported"} contact "${imported.contact?.name}". Marketing permission was not granted and no message was sent.`, data: imported };
+    }
+    if (name === "create_marketing_followup") {
+      const { createMarketingFollowup } = await import("./leads.service");
+      const input = FollowupInput.parse(args), followup = await createMarketingFollowup(userId, { ...input, dueAt: new Date(input.dueAt) });
+      return { ok: true, message: `Saved local follow-up "${followup.title}" for ${followup.contactName}, due ${followup.dueAt.toISOString()}. No email, notification or external task was created.`, data: followup };
+    }
+    const { createMarketingContent } = await import("./content.service");
+    const content = await createMarketingContent(userId, ContentInput.parse(args));
+    return { ok: true, message: `Saved ${content.channel} content "${content.title}" as a draft. Nothing was sent, published, scheduled or approved.`, data: content };
+  } catch (error) {
+    if (error instanceof AppError && error.statusCode < 500) return { ok: false, message: error.message };
+    throw error;
+  }
+}
+
 const DestinationInput = z.object({ provider: z.enum(["notion", "todoist"]), query: z.string().trim().max(120).optional() });
 const ExportInput = DestinationInput.extend({ planId: z.string().uuid(), destinationId: z.string().trim().min(1).max(200) });
 

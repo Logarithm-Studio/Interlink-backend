@@ -20,7 +20,7 @@ function signPreview(userId: string, prospect: Prospect): string {
   return `${kid}.${payload}.${createHmac("sha256", key).update(`prospect:${payload}`).digest("base64url")}`;
 }
 
-function readPreview(userId: string, token: string): Prospect {
+export function readPreview(userId: string, token: string): Prospect {
   try {
     const [kid, payload, signature, extra] = token.split(".");
     if (!kid || !payload || !signature || extra) throw new Error();

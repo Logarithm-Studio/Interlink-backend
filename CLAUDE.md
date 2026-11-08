@@ -502,9 +502,15 @@ tools keep unanswered work paused; role-bound reviews and one unfinished task pe
 chat prevent cross-role execution and competing plans. The registered sandbox
 Professional matrix covers every advertised role-native tool; attachment and
 boundary suites are separate. PM preparation tools never hide external writes.
-Professional planning requests explicit function output on the initial turn too;
+Professional planning includes explicit state functions on the initial turn too;
 plain initial questions must not bypass durable task creation. Completion retains
 the last discovery data for openable result links; informational replies stay in chat.
+The full catalog uses AUTO to avoid Gemini constrained-schema state exhaustion;
+only bounded status repair forces the two question/completion functions. Repair
+retains full prose copy. Marketing native adapters reuse CRM import, local content,
+local follow-ups and cached performance services; consult the execution contract
+for consent, ownership and delivery boundaries. HR screening can use supplied job
+requirements and returns evidence/gaps; title-only screening is labelled as such.
 
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;
