@@ -38,9 +38,9 @@ test('Professional attachment formats and failures traverse actual API preparati
       await s.db.query("UPDATE profession_profiles SET persona=$2 WHERE user_id=$1 AND mode='professional'",[uid,persona]);
       for (const [name,mimeType,data,evidence] of fixtures) await t.test(persona+': '+name+' reaches the model with actual prepared evidence',async()=>{
         calls=0; model.isGeminiLive=()=>true;
-        model.geminiGenerateContent=async options=>{calls++;assert(JSON.stringify(options.contents).includes(evidence));assert(options.system.includes('UNTRUSTED DATA'));return{raw:'Analysis of the supplied fixture evidence only.',model:'fixture',latencyMs:1}};
+        model.geminiGenerateContent=async options=>{calls++;assert.equal(options.toolMode,'ANY');assert(JSON.stringify(options.contents).includes(evidence));assert(options.system.includes('UNTRUSTED DATA'));return{raw:'',functionCall:{name:'complete_professional_task',args:{answer:'Analysis of the supplied fixture evidence only.'}},model:'fixture',latencyMs:1}};
         const plan=await api({message:'Analyze this attachment using only its evidence. Do not save or send anything.',attachmentBase64:data,attachmentMimeType:mimeType,attachmentName:name});
-        assert.equal(plan.action,null);assert.equal(calls,1);
+        assert.equal(plan.action,null);assert.equal(plan.task,undefined);assert.equal(calls,1);
       });
       for(const [name,mimeType,data]of invalid) await t.test(persona+': '+name+' rejects unreadable input before planning or writing',async()=>{
         calls=0;const plan=await api({message:'Analyze the attachment.',attachmentBase64:data,attachmentMimeType:mimeType,attachmentName:name},400);assert(plan.error);assert.equal(calls,0);

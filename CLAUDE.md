@@ -502,6 +502,9 @@ tools keep unanswered work paused; role-bound reviews and one unfinished task pe
 chat prevent cross-role execution and competing plans. The registered sandbox
 Professional matrix covers every advertised role-native tool; attachment and
 boundary suites are separate. PM preparation tools never hide external writes.
+Professional planning requests explicit function output on the initial turn too;
+plain initial questions must not bypass durable task creation. Completion retains
+the last discovery data for openable result links; informational replies stay in chat.
 
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;

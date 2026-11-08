@@ -517,6 +517,8 @@ revises the same goal. Only one unfinished task may exist per chat (409 otherwis
 Role changes and invalid source corrections cannot consume a pending approval.
 Migration 098 stores role/clock/source fingerprints without raw files. During an
 active task, explicit question/completion tools distinguish waiting from finished.
+Initial Professional model turns use the same explicit state protocol; a required
+clarification saves a paused task, while a complete informational answer has none.
 See [the execution contract](doc/autolink-execution.md) for six-role adapter rules.
 `GET /api/v1/accountant/reports/flash` and its email operation accept an optional
 three-letter `currency`; mixed-currency reports require selection.

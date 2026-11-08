@@ -12,10 +12,10 @@ test('Professional workflow record identity, reviewed copy and task corrections'
     assert(JSON.stringify(options).includes('return the content in chat'));
     assert(!options.tools.some(tool=>tool.name==='create_notion_note'));
     assert(options.tools.some(tool=>tool.name==='read_professional_tasks'));
-    return{raw:'Acceptance criteria: reject duplicates and queue offline submissions. QA: test successful submission, retries, duplication, permissions and recovery.',model:'fixture',latencyMs:1};
+    return{raw:'',functionCall:{name:'complete_professional_task',args:{answer:'Acceptance criteria: reject duplicates and queue offline submissions. QA: test successful submission, retries, duplication, permissions and recovery.'}},model:'fixture',latencyMs:1};
    };
    const plan=await api('/command',{message:'Draft acceptance criteria and a QA plan. Include offline retry and duplicate submissions.'});
-   assert.equal(plan.action,null);assert.match(plan.answer,/offline/);
+   assert.equal(plan.action,null);assert.equal(plan.task,undefined);assert.match(plan.answer,/offline/);
    model.geminiGenerateContent=async options=>{
     assert(options.tools.some(tool=>tool.name==='create_notion_note'));
     return{raw:'',functionCall:{name:'create_notion_note',args:{title:'Reviewed QA draft',content:'Offline and duplicate submission criteria.'}},model:'fixture',latencyMs:1};

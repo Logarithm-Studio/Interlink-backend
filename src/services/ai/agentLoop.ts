@@ -43,11 +43,14 @@ export function validArguments(value: unknown, schema: Record<string, unknown>, 
   return true;
 }
 
-export type AgentTurnOutcome =
+export type AgentTurnOutcome = (
   | { kind: "action"; name: string; args: Record<string, unknown>; text?: string }
+  | { kind: "text"; text: string }
+) & {
   // `via` carries the last discovery tool that produced `data`, so callers can turn
   // it into openable deep-links (e.g. the YouTube result the answer describes).
-  | { kind: "text"; text: string; via?: { name: string; args: Record<string, unknown>; data?: unknown } };
+  via?: { name: string; args: Record<string, unknown>; data?: unknown };
+};
 
 export interface RunAgentTurnOptions {
   finalizeTools?: GeminiToolFunction[];
@@ -97,6 +100,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       contents,
       json: false,
       tools: opts.tools,
+      toolMode: opts.finalizeTools?.length ? "ANY" : "AUTO",
       tier: "fast",
       thinkingBudget: 1024,
       maxOutputTokens: 8192,
@@ -139,12 +143,12 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       if (text && opts.finalizeTools?.length) {
         const final = await geminiGenerateContent({
           system: opts.system,
-          contents: [...contents, { role: "model", parts: result.modelParts?.length ? result.modelParts : [{ text }] }, { role: "user", parts: [{ text: "Record this saved task's state using one provided function. If a missing detail or choice is still needed, call ask_professional_question with the question. If the original goal is complete, call complete_professional_task with the final answer. Preserve confirmed receipts. Do not perform another action or treat a question needed to finish the goal as completion." }] }],
+          contents: [...contents, { role: "model", parts: result.modelParts?.length ? result.modelParts : [{ text }] }, { role: "user", parts: [{ text: "Record this request's state using one provided function. If a missing detail or choice is still needed, call ask_professional_question with the question. Otherwise call complete_professional_task with the final answer. Preserve confirmed receipts. Do not perform another action or treat a question needed to finish the goal as completion." }] }],
           tools: opts.finalizeTools, toolMode: "ANY", tier: "fast", thinkingBudget: 0, maxOutputTokens: 8192, timeoutMs: remaining(),
         });
         const call = final.functionCall;
         const declaration = opts.finalizeTools.find(tool => tool.name === call?.name);
-        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call };
+        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, via: lastRead };
       }
       if (text) return { kind: "text", text, via: lastRead };
       // Model executed discovery but produced no closing prose — relay the last result.
@@ -172,7 +176,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       }
       // One reviewed write at a time. Remaining work is replanned from actual outcomes,
       // never speculative results or a queue of writes based on stale IDs.
-      return { kind: "action", ...write, text: result.raw?.trim() || undefined };
+      return { kind: "action", ...write, text: result.raw?.trim() || undefined, via: lastRead };
     }
     let newReads = 0;
     const results = await Promise.all(calls.slice(0, 12).map(async ({ name, args }) => {

@@ -21,6 +21,14 @@ valid completion leaves work unfinished. Initial informational replies remain ch
 replies. The paused question card says "Needs your answer"; manual pause retains
 Resume. Answer in the composer to continue the same task.
 
+The physical-phone pass also reproduced an initial prose question that bypassed
+task creation. Professional turns now request function output from the first model
+call, including the question/completion functions. A bounded status-only repair
+still handles unexpected prose on initial turns as well as continuations. Complete
+informational answers remain ordinary chat replies without a task; questions save
+the initial goal and source context. Discovery data survives completion so existing
+openable result links remain available. Personal keeps its existing text protocol.
+
 `read_professional_records` discovers owned candidates, openings, tickets, property
 leads/listings/leases and invoices. It supports literal search, exact IDs and
 timestamp/UUID pagination, bounded to 25 results plus a continuation cursor.

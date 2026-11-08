@@ -57,9 +57,17 @@ test("saved-task prose receives an explicit question or completion signal withou
     await mockModel([[{ text: prose }], [{ functionCall: { name, args } }]], async requests => {
       const result = await runAgentTurn({ system: "Preserve the original goal and receipts.", tools: finalizeTools, finalizeTools, userParts: [{ text: "Continue saved work." }], isReadOnly: () => false, execReadOnly: async () => { throw new Error("No write or lookup may run"); } });
       assert.equal(result.kind, "action"); if (result.kind === "action") assert.equal(result.name, name);
-      assert.equal(requests.length, 2); assert.equal(requests[1].tool_config.function_calling_config.mode, "ANY");
+      assert.equal(requests.length, 2); assert.equal(requests[0].tool_config.function_calling_config.mode, "ANY"); assert.equal(requests[1].tool_config.function_calling_config.mode, "ANY");
     });
   }
+});
+
+test("explicit completion retains the discovery data used for openable links", async () => {
+  const completion = { name: "complete_professional_task", description: "Complete", parameters: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } };
+  await mockModel([[{ functionCall: { name: "find_document", args: {} } }], [{ functionCall: { name: completion.name, args: { answer: "Here is the requested document." } } }]], async () => {
+    const outcome = await runAgentTurn({system:"Find the document",tools:[{name:"find_document",description:"Find",parameters:{type:"object",properties:{}}},completion],finalizeTools:[completion],userParts:[{text:"Find my document"}],isReadOnly:name=>name==='find_document',execReadOnly:async()=>({message:"Found",data:{url:"https://example.invalid/document"}})});
+    assert.equal(outcome.kind,"action");assert.deepEqual(outcome.via,{name:"find_document",args:{},data:{url:"https://example.invalid/document"}});
+  });
 });
 
 test("drafting and analytical prose never force an unrelated write", async () => {

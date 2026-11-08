@@ -239,7 +239,7 @@ export async function planAgentActions(params: {
 
   try {
     const outcome = await runAgentTurn({
-      finalizeTools: params.requireTaskResolution ? toolsForTurn.filter(tool => ["ask_professional_question", "complete_professional_task"].includes(tool.name)) : undefined,
+      finalizeTools: toolsForTurn.filter(tool => ["ask_professional_question", "complete_professional_task"].includes(tool.name)),
       system: params.system ?? AGENT_SYSTEM,
       tools: toolsForTurn,
       userParts,
@@ -250,8 +250,8 @@ export async function planAgentActions(params: {
       looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
     if (outcome.kind === "action") {
-      if (outcome.name === "ask_professional_question") return { answer: String(outcome.args.question), needsInput: true, isLive: true };
-      if (outcome.name === "complete_professional_task") return { answer: String(outcome.args.answer), isLive: true };
+      if (outcome.name === "ask_professional_question") return { answer: String(outcome.args.question), needsInput: true, isLive: true, via: outcome.via };
+      if (outcome.name === "complete_professional_task") return { answer: String(outcome.args.answer), isLive: true, via: outcome.via };
       if (attachedSheet && outcome.name === ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME) {
         const materialized = materializeSpreadsheetEmail(
           attachedSheet,

@@ -92,5 +92,14 @@ test('Professional workflow failures retain identity, evidence and unfinished wo
       await s.db.query("UPDATE autolink_tasks SET status='planning',updated_at=now()-interval '3 minutes' WHERE id=$1",[first.task.id]);
       assert.equal((await tasks.getAgentTask(uid,first.task.id)).status,'ready');
     });
+    await t.test('initial prose questions become durable tasks in every Professional role',async()=>{
+      for(const role of ['finance','sales','hr','product_manager','customer_support','real_estate']){
+        await persona(role);let calls=0;
+        model.geminiGenerateContent=async()=>++calls===1?{raw:'Which title should I use?',model:'fixture',latencyMs:1}:{raw:'',functionCall:{name:'ask_professional_question',args:{question:'Which title should I use?'}},model:'fixture',latencyMs:1};
+        const response=await api('/command',{message:'Use this attached brief; ask me for a title before saving anything.',attachmentName:'brief.txt',attachmentMimeType:'text/plain',attachmentBase64:Buffer.from('Actual source with no title.').toString('base64')});
+        assert.equal(response.task?.status,'paused',role+' must retain an initial prose clarification');
+        assert.equal(response.action,null);assert.equal(response.task.steps.length,0);
+      }
+    });
   } finally { await s.close(); }
 });
