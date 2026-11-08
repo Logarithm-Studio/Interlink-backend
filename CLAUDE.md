@@ -497,6 +497,11 @@ contract when changing mixed research/export goals or owned-record discovery.
 Unfinished Professional chats retain their goal across corrections and invalidate
 replaced approvals. Autolink follow-up, routing and agreement adapters separate
 drafting, sending, meetings and signatures; consult that contract before changing them.
+Migration 098 is required for initial-question task metadata. Question/completion
+tools keep unanswered work paused; role-bound reviews and one unfinished task per
+chat prevent cross-role execution and competing plans. The registered sandbox
+Professional matrix covers every advertised role-native tool; attachment and
+boundary suites are separate. PM preparation tools never hide external writes.
 
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;

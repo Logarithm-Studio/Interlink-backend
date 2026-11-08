@@ -86,8 +86,8 @@ export const AGENT_TOOLS: GeminiToolFunction[] = [
   },
   {
     name: "email_flash_report",
-    description: "Email the flash financial report to the user.",
-    parameters: noParams,
+    description: "Email a flash financial report to the user. Choose a three-letter currency when the book contains multiple currencies; totals never combine currencies.",
+    parameters: { type: "object", properties: { currency: { type: "string" } } },
   },
   {
     name: "pause_client",

@@ -61,6 +61,8 @@ export interface PersonaVertical {
   ): Promise<{ ok: boolean; message: string; data?: unknown }>;
   /** Human-readable summary for the confirm card. */
   summarizeAction(name: string, args: Record<string, unknown>): string;
+  reviewAction?(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  readOnlyTools?: readonly string[];
   /** Optional one-tap demo data loader. */
   seedDemo?(userId: string): Promise<{ count: number }>;
   /** Optional scheduled autonomy automations. */

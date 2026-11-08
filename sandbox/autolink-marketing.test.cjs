@@ -13,7 +13,7 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
   assert(options.tools.some(tool=>tool.name==='read_marketing_workspace'));
   assert(options.tools.some(tool=>tool.name==='create_marketing_research_plan'));
   const call = phase++===0 ? {name:'read_marketing_workspace',args:{resource:'contacts'}} : phase===2 ? {name:'create_marketing_research_plan',args:{title:'Reviewed launch research',objective:'Confirm buying signals and prepare a reviewed outreach plan.',contactIds:[selected],contacts:'Forged contact label'}} : undefined;
-  return {raw:call?'':'Your reviewed research plan is saved in Interlink. No external copy was made.',functionCall:call,model:'fixture',latencyMs:1};
+  return {raw:'',functionCall:call??{name:'complete_professional_task',args:{answer:'Your reviewed research plan is saved in Interlink. No external copy was made.'}},model:'fixture',latencyMs:1};
  };
  const api=async(route,body,expected=200)=>{const r=await fetch(s.config.base+'/api/v1/accountant/assistant'+route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+s.config.token,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await r.json();assert.equal(r.status,expected,JSON.stringify(data));return data};
  const count=async()=>Number((await s.db.query('SELECT count(*) AS n FROM sales_marketing_research_plans WHERE user_id=$1',[uid])).rows[0].n);
@@ -55,7 +55,7 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
     if(round<2)assert(!options.tools.some(tool=>['create_todoist_task','create_notion_note','create_trello_card'].includes(tool.name)),'Pending research exports must use durable receipts');
     else if(round<4)assert(!options.tools.some(tool=>tool.name==='create_todoist_task'),'Todoist must retain its native export review until confirmed');
     const calls=[{name:'read_marketing_destinations',args:{provider:'notion',query:'Sandbox'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'notion',destinationId:'sandbox-parent',query:'Sandbox',destination:'Forged destination',fingerprint:'forged'}},{name:'read_marketing_destinations',args:{provider:'todoist'}},{name:'export_marketing_research_plan',args:{planId:saved.id,provider:'todoist',destinationId:'sandbox-project',contacts:'Forged contacts'}}];
-    return{raw:round<4?'':'Both reviewed copies are saved.',functionCall:calls[round++],model:'fixture',latencyMs:1};
+    return{raw:'',functionCall:calls[round++]??{name:'complete_professional_task',args:{answer:'Both reviewed copies are saved.'}},model:'fixture',latencyMs:1};
    };
    const first=await api('/command',{message:'Export research plan Agent delegation QA to Notion Sandbox workspace, then delegate it to Todoist Sandbox marketing.'});
    assert.equal(first.action?.name,'export_marketing_research_plan','The native reviewed export tool must be available');

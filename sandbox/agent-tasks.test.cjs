@@ -5,6 +5,11 @@ const { startSandbox } = require('./runtime.cjs');
 test('Professional task intake, reviewed continuation and durable duplicate protection', async t => {
   const s = await startSandbox({ port: 4324 });
   const uid = s.config.userId;
+  const fixtureTask = async goal => {
+    const conversationId = require('node:crypto').randomUUID();
+    await s.db.query('INSERT INTO accountant_conversations(id,user_id,title) VALUES($1,$2,$3)', [conversationId, uid, goal]);
+    return s.load('services/accountant/agent-task.service.js').createAgentTask(uid, conversationId, goal);
+  };
   await s.db.query("UPDATE profession_profiles SET persona='finance' WHERE user_id=$1 AND mode='professional'", [uid]);
   const model = s.load('services/ai/geminiClient.js');
   model.isGeminiLive = () => true;
@@ -16,7 +21,7 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       assert.ok(JSON.stringify(options.contents).includes('succeeded'));
       assert.ok(options.contents.some(turn => turn.parts.some(part => part.text?.includes('"amount":75'))), 'Continuation must retain the exact applied arguments, not only the action summary.');
     }
-    const functionCall = modelStep <= 2 ? { name: 'create_invoice', args: { clientName: modelStep === 1 ? 'First client' : 'Second client', amount: 75 } } : undefined;
+    const functionCall = modelStep <= 2 ? { name: 'create_invoice', args: { clientName: modelStep === 1 ? 'First client' : 'Second client', amount: 75 } } : { name: 'complete_professional_task', args: { answer: 'Both requested invoices were saved.' } };
     return { raw: functionCall ? 'I will save each requested invoice separately for your review.' : 'Both requested invoices were saved.', functionCall, model: 'fixture', latencyMs: 1 };
   };
   const api = async (route, body, expected = 200, token = s.config.token) => {
@@ -71,7 +76,7 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
     });
     await t.test('expired approval cannot perform a write', async () => {
       const service = s.load('services/accountant/agent-task.service.js');
-      const id = await service.createAgentTask(uid, plan.conversationId, 'Expired approval fixture');
+      const id = await fixtureTask('Expired approval fixture');
       const action = { ...second.action, id: require('node:crypto').randomUUID() };
       await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
       await s.db.query("UPDATE autolink_action_proposals SET expires_at=now()-interval '1 minute' WHERE id=$1", [action.id]);
@@ -105,7 +110,7 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       const service = s.load('services/accountant/agent-task.service.js');
       const data = Buffer.from('Original launch checklist').toString('base64');
       const digest = crypto.createHash('sha256').update(Buffer.from(data, 'base64')).digest('hex');
-      const id = await service.createAgentTask(uid, plan.conversationId, 'Use the attached file to prepare the next task.');
+      const id = await fixtureTask('Use the attached file to prepare the next task.');
       const action = { id: crypto.randomUUID(), name: 'create_invoice', args: { clientName: 'File test', amount: 12 }, summary: 'Prepare file test', needsConfirm: true };
       await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true }, { sourceAttachmentDigest: digest });
       await service.executeTaskProposal(uid, id, action.id, async () => ({ ok: true, message: 'First step confirmed.' }));
@@ -118,7 +123,7 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
     await t.test('an unconfirmed action blocks continuation and cannot be run again', async () => {
       const crypto = require('node:crypto');
       const service = s.load('services/accountant/agent-task.service.js');
-      const id = await service.createAgentTask(uid, plan.conversationId, 'Prepare one controlled action.');
+      const id = await fixtureTask('Prepare one controlled action.');
       const action = { id: crypto.randomUUID(), name: 'create_invoice', args: {}, summary: 'Controlled uncertain action', needsConfirm: true };
       await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
       let calls = 0;
@@ -134,7 +139,7 @@ test('Professional task intake, reviewed continuation and durable duplicate prot
       const service = s.load('services/accountant/agent-task.service.js');
       const db = s.load('config/db.js');
       const original = db.withTransaction;
-      const id = await service.createAgentTask(uid, plan.conversationId, 'Exercise durable receipt failure.');
+      const id = await fixtureTask('Exercise durable receipt failure.');
       const action = { id: crypto.randomUUID(), name: 'create_invoice', args: {}, summary: 'Receipt failure', needsConfirm: true };
       await service.saveTaskPlan(uid, id, { action, answer: null, conversationId: plan.conversationId, isLive: true });
       let writes = 0;

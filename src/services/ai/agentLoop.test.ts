@@ -48,6 +48,20 @@ async function mockModel(parts: unknown[][], work: (requests: any[]) => Promise<
   finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey; }
 }
 
+test("saved-task prose receives an explicit question or completion signal without executing a write", async () => {
+  const finalizeTools = ["ask_professional_question", "complete_professional_task"].map((name, index) => ({ name, description: name, parameters: { type: "object", properties: { [index ? "answer" : "question"]: { type: "string" } }, required: [index ? "answer" : "question"] } }));
+  for (const [name, args, prose] of [
+    ["ask_professional_question", { question: "Which channel should receive the summary?" }, "The invoice is saved. Which channel should receive the summary?"],
+    ["complete_professional_task", { answer: "The confirmed invoice is saved and all requested work is complete." }, "The invoice is saved."],
+  ] as const) {
+    await mockModel([[{ text: prose }], [{ functionCall: { name, args } }]], async requests => {
+      const result = await runAgentTurn({ system: "Preserve the original goal and receipts.", tools: finalizeTools, finalizeTools, userParts: [{ text: "Continue saved work." }], isReadOnly: () => false, execReadOnly: async () => { throw new Error("No write or lookup may run"); } });
+      assert.equal(result.kind, "action"); if (result.kind === "action") assert.equal(result.name, name);
+      assert.equal(requests.length, 2); assert.equal(requests[1].tool_config.function_calling_config.mode, "ANY");
+    });
+  }
+});
+
 test("drafting and analytical prose never force an unrelated write", async () => {
   await mockModel([[{ text: "Here is the requested project proposal." }]], async requests => {
     const outcome = await runAgentTurn({ system: "Draft", tools: [], userParts: [{ text: "Write a project proposal" }], looksLikeAction: true, isReadOnly: () => false, execReadOnly: async () => { throw new Error("Unexpected execution"); } });

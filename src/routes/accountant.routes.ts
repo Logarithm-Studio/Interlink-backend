@@ -363,7 +363,7 @@ router.post("/expenses/:id/resolve", async (req: Request, res: Response, next: N
 router.get("/reports/flash", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
-    res.json(await getFlashReport(user.id));
+    res.json(await getFlashReport(user.id, z.string().length(3).optional().parse(req.query.currency)));
   } catch (err) {
     next(err);
   }
@@ -372,7 +372,7 @@ router.get("/reports/flash", async (req: Request, res: Response, next: NextFunct
 router.post("/reports/flash/email", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
-    res.json(await emailFlashReport(user));
+    res.json(await emailFlashReport(user, z.string().length(3).optional().parse(req.body?.currency)));
   } catch (err) {
     mapSendError(err, next);
   }
@@ -579,7 +579,7 @@ router.post("/assistant/tasks/:id/actions/:actionId/execute", async (req: Reques
     const { tz, attachmentBase64, attachmentMimeType, attachmentName } = ExecuteBody.omit({ name: true, args: true, conversationId: true }).parse(req.body ?? {});
     const attachment = attachmentBase64 ? { base64: attachmentBase64, mimeType: attachmentMimeType ?? "application/octet-stream", name: attachmentName ?? "Upload" } : undefined;
     res.json(await executeTaskProposal(user.id, z.string().uuid().parse(req.params.id), z.string().uuid().parse(req.params.actionId),
-      (action, conversationId, context) => executeAction(user, action.name, action.args, attachment, context.tz, conversationId),
+      (action, conversationId, context) => executeAction(user, action.name, action.args, attachment, context.tz, conversationId, context.persona),
       attachment ? createHash("sha256").update(Buffer.from(attachment.base64, "base64")).digest("hex") : undefined));
   } catch (err) { mapSendError(err, next); }
 });

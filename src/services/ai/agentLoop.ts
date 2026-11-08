@@ -25,7 +25,7 @@ async function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   finally { if (timer) clearTimeout(timer); }
 }
 
-function validArguments(value: unknown, schema: Record<string, unknown>, depth = 0): boolean {
+export function validArguments(value: unknown, schema: Record<string, unknown>, depth = 0): boolean {
   if (depth > 12 || value === undefined) return false;
   if (value === null) return schema.nullable === true;
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return false;
@@ -33,7 +33,7 @@ function validArguments(value: unknown, schema: Record<string, unknown>, depth =
   if (type === "object") {
     if (typeof value !== "object" || Array.isArray(value)) return false;
     const object = value as Record<string, unknown>;
-    if (Array.isArray(schema.required) && schema.required.some(key => !(String(key) in object))) return false;
+    if (Array.isArray(schema.required) && schema.required.some(key => !(String(key) in object) || (typeof object[String(key)] === "string" && !String(object[String(key)]).trim()))) return false;
     return Object.entries((schema.properties ?? {}) as Record<string, Record<string, unknown>>).every(([key, child]) => !(key in object) || validArguments(object[key], child, depth + 1));
   }
   if (type === "array") return Array.isArray(value) && value.length <= 100 && (!schema.items || value.every(item => validArguments(item, schema.items as Record<string, unknown>, depth + 1)));
@@ -50,6 +50,7 @@ export type AgentTurnOutcome =
   | { kind: "text"; text: string; via?: { name: string; args: Record<string, unknown>; data?: unknown } };
 
 export interface RunAgentTurnOptions {
+  finalizeTools?: GeminiToolFunction[];
   system: string;
   tools: GeminiToolFunction[];
   /** The current user turn's parts (e.g. connected-apps summary, message text, an image). */
@@ -135,6 +136,16 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
 
     if (!result.functionCall) {
       const text = result.raw?.trim();
+      if (text && opts.finalizeTools?.length) {
+        const final = await geminiGenerateContent({
+          system: opts.system,
+          contents: [...contents, { role: "model", parts: result.modelParts?.length ? result.modelParts : [{ text }] }, { role: "user", parts: [{ text: "Record this saved task's state using one provided function. If a missing detail or choice is still needed, call ask_professional_question with the question. If the original goal is complete, call complete_professional_task with the final answer. Preserve confirmed receipts. Do not perform another action or treat a question needed to finish the goal as completion." }] }],
+          tools: opts.finalizeTools, toolMode: "ANY", tier: "fast", thinkingBudget: 0, maxOutputTokens: 8192, timeoutMs: remaining(),
+        });
+        const call = final.functionCall;
+        const declaration = opts.finalizeTools.find(tool => tool.name === call?.name);
+        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call };
+      }
       if (text) return { kind: "text", text, via: lastRead };
       // Model executed discovery but produced no closing prose — relay the last result.
       if (lastReadMessage) return { kind: "text", text: lastReadMessage, via: lastRead };

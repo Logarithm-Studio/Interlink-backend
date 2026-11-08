@@ -1,5 +1,63 @@
 # Autolink execution and saved work
 
+## Six-role hardening and initial questions (migration 098)
+
+Migration `098_autolink_task_context.sql` must precede this backend release. It
+adds private JSON metadata to the existing RLS-protected task table: the reviewed
+Professional role, request clock and source-file fingerprints. It stores no raw
+attachment bytes. Older tasks fall back to their saved proposal context.
+
+An initial clarification now creates a paused task before the first write. The
+same goal and source context survive answers, interrupted planning and restarts.
+One unfinished task is allowed per conversation, enforced under its lock. Invalid
+attachments cannot cancel an existing review. A review prepared in another role
+cannot execute or consume that approval. The client recovers the matching saved
+task even when the first command response was lost.
+
+`ask_professional_question` and `complete_professional_task` explicitly distinguish
+waiting for an answer from completion. For active-task continuation/correction,
+plain model prose receives one bounded status-only tool turn; failure to obtain a
+valid completion leaves work unfinished. Initial informational replies remain chat
+replies. The paused question card says "Needs your answer"; manual pause retains
+Resume. Answer in the composer to continue the same task.
+
+`read_professional_records` discovers owned candidates, openings, tickets, property
+leads/listings/leases and invoices. It supports literal search, exact IDs and
+timestamp/UUID pagination, bounded to 25 results plus a continuation cursor.
+Mutations resolve exact owned IDs, reject ambiguous labels and, where applicable,
+recheck the reviewed stage/status atomically. Native execution also validates its
+declared schema, including blank required strings, outside the model loop.
+
+- HR requires saved resume text and a role before screening. Missing, invalid or
+  unavailable model scores never become saved invented scores. `create_opening`
+  saves a local opening; interview scheduling requires an email and explicit-offset
+  future start/end timestamps. Outreach is an exact unsent draft.
+- Support `create_ticket` saves a local ticket. Reply drafting never resolves or
+  emails a ticket; triage/escalation/resolution use its exact reviewed identity.
+- Real Estate `create_buyer_lead` saves a local buyer with an explicit USD budget.
+  Listings remain unpublished until a separate `publish_listing` review. Listing
+  copy requires its actual public URL; matching excludes incompatible currencies.
+  Showings are local records, not invitations. Closing checklists require a supplied
+  closing date and do not create tasks. Demo market feeds are labelled as demo.
+- Product Manager PRD, interruption, release, status and scope tools prepare
+  source-backed output without hidden issue creation, assignment or publication.
+  Attached PRD text can be drafted without Notion/Jira. Actual requested issue,
+  assignment, Notion and Slack writes each use their existing separate review.
+  Failed sources are unavailable, not empty evidence; release notes use merged PRs.
+- Sales Trello workflows require an exact board and reject ambiguous cards/lists.
+  Pipeline digests require an exact channel. Partial failures retain actual counts.
+- Finance flash reports reject mixed currencies unless one currency is selected;
+  cache and email identity include the actual report content. The flash-report API
+  accepts optional three-letter `currency`. Bulk reminder/tax failures cannot be
+  reported as success; ambiguous client/contractor labels require an exact choice.
+
+These are bounded interactive workflows (3 MB inline source, 12 reviewed writes),
+not a claim of arbitrary-file support, unrestricted automation or universal model
+accuracy. The registered sandbox matrix covers all 61 role-native tools with and
+without a text attachment; separate attachment, failure and actual-model checks
+are recorded in the app's November 8 Professional matrix QA report. Provider
+simulation is distinct from acceptance against a connected external account.
+
 ## Professional workflow corrections (November 8)
 
 New instructions in an unfinished Professional chat revise its owned task. The
@@ -52,8 +110,8 @@ in chat; connecting a notes app is not itself a request to save a page. This sco
 selection improves common drafting requests; ownership/review remain mandatory
 for all writes and natural-language intent is not a universal success guarantee.
 
-No Personal task architecture, provider, dependency, database schema or migration
-was changed by this pass. The shared agent-loop/review fixes also apply wherever
+The earlier corrections did not change Personal task architecture, providers,
+dependencies or schema. The shared agent-loop/review fixes also apply wherever
 those shared components are used.
 
 Autolink proposes a write, the user reviews it, and the execute endpoint runs the

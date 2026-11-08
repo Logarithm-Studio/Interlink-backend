@@ -5,7 +5,8 @@
  * summary with insights + recommendations. Can also email the report to the user.
  */
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { BadRequestError } from "../../utils/errors";
 import { query } from "../../config/db";
 import { generateFlashReport } from "../ai/ai.service";
 import type { FlashReport } from "../ai/prompts/financialReport";
@@ -25,9 +26,14 @@ export interface FlashReportResponse {
   generatedAt: string;
 }
 
-async function gatherContext(userId: string) {
-  const invoices = await listInvoices(userId);
-  const currency = invoices[0]?.currency ?? "USD";
+async function gatherContext(userId: string, selectedCurrency?: string) {
+  const allInvoices = await listInvoices(userId);
+  const expenseCurrencies = await query<{ currency: string }>("SELECT DISTINCT currency FROM expenses WHERE user_id=$1", [userId]);
+  const currencies = new Set([...allInvoices.map(invoice => invoice.currency), ...expenseCurrencies.rows.map(row => row.currency)]);
+  if (!selectedCurrency && currencies.size > 1) throw new BadRequestError("This book has multiple currencies. Use Autolink to request a flash report for one currency; amounts will not be converted or combined.");
+  const currency = selectedCurrency?.trim().toUpperCase() || allInvoices[0]?.currency || expenseCurrencies.rows[0]?.currency || "USD";
+  if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestError("Choose a three-letter report currency.");
+  const invoices = allInvoices.filter(invoice => invoice.currency === currency);
 
   const active = invoices.filter((i) => i.status !== "paid");
   const overdue = active.filter((i) => daysOverdue(i.dueDate) > 0);
@@ -40,12 +46,12 @@ async function gatherContext(userId: string) {
   const expRes = await query<{ total: string; category: string | null; cat_total: string }>(
     `SELECT category,
             SUM(amount_cents)::text AS cat_total,
-            (SELECT SUM(amount_cents) FROM expenses WHERE user_id = $1)::text AS total
+            (SELECT SUM(amount_cents) FROM expenses WHERE user_id = $1 AND currency=$2)::text AS total
        FROM expenses
-      WHERE user_id = $1
+      WHERE user_id = $1 AND currency=$2
       GROUP BY category
       ORDER BY SUM(amount_cents) DESC`,
-    [userId],
+    [userId, currency],
   );
   const expensesCents = Number(expRes.rows[0]?.total ?? 0);
   const topExpenseCategories = expRes.rows.slice(0, 5).map((r) => ({
@@ -75,12 +81,12 @@ async function gatherContext(userId: string) {
   };
 }
 
-export async function getFlashReport(userId: string): Promise<FlashReportResponse> {
-  const context = await gatherContext(userId);
+export async function getFlashReport(userId: string, currency?: string): Promise<FlashReportResponse> {
+  const context = await gatherContext(userId, currency);
   const dayBucket = new Date().toISOString().slice(0, 10);
   const result = await generateFlashReport({
     userId,
-    idempotencyKey: `ai:flash:${userId}:${dayBucket}`,
+    idempotencyKey: `ai:flash:${userId}:${dayBucket}:${createHash("sha256").update(JSON.stringify(context)).digest("hex").slice(0,16)}`,
     context,
   });
   return {
@@ -93,8 +99,9 @@ export async function getFlashReport(userId: string): Promise<FlashReportRespons
 /** Email the flash report to the user's own inbox via Gmail. */
 export async function emailFlashReport(
   user: AppUser,
+  currency?: string,
 ): Promise<{ sent: boolean; messageId: string }> {
-  const { report } = await getFlashReport(user.id);
+  const { report } = await getFlashReport(user.id, currency);
 
   const body = [
     "Flash Financial Report",
@@ -111,7 +118,7 @@ export async function emailFlashReport(
   ].join("\n");
 
   const subject = `Flash Financial Report — ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`;
-  const idempotencyKey = `flash:email:${user.id}:${new Date().toISOString().slice(0, 10)}`;
+  const idempotencyKey = `flash:email:${user.id}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(subject + body).digest("hex").slice(0,16)}`;
 
   const draft = await createGmailDraft({
     executionId: null,

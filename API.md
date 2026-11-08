@@ -510,3 +510,13 @@ receipts; their task can continue with a fresh approval. Deleting a conversation
 with active planning/execution returns 409. Inline attachments are limited to 3 MB
 for hosted transport; transcription provider outages return 503. See
 [Autolink reliability](doc/autolink-reliability.md) for execution boundaries.
+
+Professional clarification replies include a paused `task`, including before its
+first write; answering through `/assistant/command` with that `conversationId`
+revises the same goal. Only one unfinished task may exist per chat (409 otherwise).
+Role changes and invalid source corrections cannot consume a pending approval.
+Migration 098 stores role/clock/source fingerprints without raw files. During an
+active task, explicit question/completion tools distinguish waiting from finished.
+See [the execution contract](doc/autolink-execution.md) for six-role adapter rules.
+`GET /api/v1/accountant/reports/flash` and its email operation accept an optional
+three-letter `currency`; mixed-currency reports require selection.

@@ -6,7 +6,8 @@
 import { query } from "../../../config/db";
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
-import { sendProfessionalEmail } from "../email";
+import { resolveNamedRecord } from "../assistant-records.service";
+import { AppError } from "../../../utils/errors";
 import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
@@ -14,7 +15,7 @@ import { getMarketStats, isRentCastConfigured, searchListings, type MarketListin
 import { getCensusMarketStats, isCensusConfigured } from "./census.service";
 import { searchRapidListings, isRapidListingsConfigured } from "./rapidListings.service";
 import { searchSimplyRets, isSimplyRetsLive } from "./simplyrets.service";
-import { publishListing } from "./listingPhotos.service";
+import { publishListing, shareUrl as listingShareUrl } from "./listingPhotos.service";
 
 const PERSONA = "real_estate";
 
@@ -50,6 +51,7 @@ export async function listListings(userId: string): Promise<Listing[]> {
   return res.rows.map(mapListing as never);
 }
 export async function createListing(userId: string, data: { address: string; priceCents?: number; beds?: number; baths?: number; sqft?: number; status?: ListingStatus; description?: string; source?: string }): Promise<Listing> {
+  if (!data.address.trim() || (data.priceCents !== undefined && (!Number.isSafeInteger(data.priceCents) || data.priceCents < 0)) || [data.beds, data.baths, data.sqft].some(value => value !== undefined && (!Number.isFinite(value) || value < 0))) throw new AppError("Provide an address and valid nonnegative property amounts/dimensions.", 400);
   const res = await query(
     `INSERT INTO re_listings (user_id, address, price_cents, beds, baths, sqft, status, description, source)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -64,6 +66,7 @@ export async function listLeads(userId: string): Promise<Lead[]> {
   return res.rows.map(mapLead as never);
 }
 export async function createLead(userId: string, data: { name: string; email?: string; phone?: string; budgetCents?: number; interest?: string; stage?: LeadStage; source?: string }): Promise<Lead> {
+  if (!data.name.trim() || (data.budgetCents !== undefined && (!Number.isSafeInteger(data.budgetCents) || data.budgetCents < 0))) throw new AppError("Provide a buyer name and a valid nonnegative budget in USD minor units.", 400);
   const res = await query(
     `INSERT INTO re_leads (user_id, name, email, phone, budget_cents, interest, stage, source)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -71,12 +74,12 @@ export async function createLead(userId: string, data: { name: string; email?: s
     [userId, data.name, data.email ?? null, data.phone ?? null, data.budgetCents ?? null, data.interest ?? null, data.stage ?? "new", data.source ?? "manual"]);
   return mapLead(res.rows[0] as never);
 }
-export async function updateLead(userId: string, id: string, patch: { stage?: LeadStage }): Promise<Lead | null> {
+export async function updateLead(userId: string, id: string, patch: { stage?: LeadStage; expectedStage?: LeadStage }): Promise<Lead | null> {
   const res = await query(
     `UPDATE re_leads SET stage = COALESCE($3, stage), updated_at = now()
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND ($4::text IS NULL OR stage=$4)
       RETURNING id, name, email, phone, budget_cents, interest, stage, source, created_at`,
-    [id, userId, patch.stage ?? null]);
+    [id, userId, patch.stage ?? null, patch.expectedStage ?? null]);
   return res.rows[0] ? mapLead(res.rows[0] as never) : null;
 }
 
@@ -189,13 +192,13 @@ async function buildSnapshot(userId: string): Promise<string> {
     `Active listings: ${active.length}. Leads: ${leads.length}.`,
     isRentCastConfigured() || isRapidListingsConfigured() || isSimplyRetsLive()
       ? "Live listings are connected: use search_market for real for-sale listings by area, and market_report for area stats by ZIP."
-      : `search_market returns real for-sale listings out of the box (SimplyRETS demo MLS — Houston, TX metro; set RENTCAST_API_KEY or RAPIDAPI_KEY for live nationwide data). market_report gives area stats by ZIP${
+      : `search_market has demonstration MLS data only — Houston, TX metro. These are not verified live listings; set RENTCAST_API_KEY or RAPIDAPI_KEY for live data. market_report gives area stats by ZIP${
           isCensusConfigured() ? " via US Census (free)." : " — set CENSUS_API_KEY (free) to enable it."
         }`,
     "Listings:",
-    ...listings.slice(0, 15).map((l) => `- ${l.address} | ${fmt(l.priceCents)} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
+    ...listings.slice(0, 15).map((l) => `- ${l.address} | id=${l.id} | ${l.currency} ${(l.priceCents / 100).toLocaleString("en-US")} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba | ${l.status}`),
     "Leads:",
-    ...leads.slice(0, 15).map((l) => `- ${l.name} | ${l.email ?? "no-email"} | budget ${l.budgetCents ? fmt(l.budgetCents) : "?"} | ${l.interest ?? ""} | ${l.stage}`),
+    ...leads.slice(0, 15).map((l) => `- ${l.name} | id=${l.id} | ${l.email ?? "no-email"} | budget ${l.budgetCents ? fmt(l.budgetCents) : "?"} | ${l.interest ?? ""} | ${l.stage}`),
   ].join("\n");
 }
 
@@ -208,6 +211,7 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 const TOOLS: GeminiToolFunction[] = [
+  { name: "create_buyer_lead", description: "Save a local buyer lead from supplied details. Stored buyer budgets are USD minor units; do not infer a currency conversion. Does not send outreach.", parameters: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, budgetCents: { type: "integer" }, interest: { type: "string" } }, required: ["name"] } },
   { name: "create_listing", description: "Add a new property listing.", parameters: { type: "object", properties: { address: { type: "string" }, priceCents: { type: "number" }, beds: { type: "number" }, baths: { type: "number" } }, required: ["address"] } },
   { name: "draft_listing_description", description: "Write a marketing description for a listing (returns copy, does not publish).", parameters: { type: "object", properties: { address: { type: "string" } }, required: ["address"] } },
   { name: "qualify_lead", description: "Move a buyer lead to a new stage.", parameters: { type: "object", properties: { name: { type: "string" }, stage: { type: "string", enum: ["new", "qualified", "touring", "offer", "closed", "lost"] } }, required: ["name", "stage"] } },
@@ -221,16 +225,50 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "transaction_tasks", description: "Produce a standard purchase/closing task checklist for a property that's gone under contract, with milestone due dates counted back from the close date. Use when a deal is accepted and the agent needs to manage the transaction to closing.", parameters: { type: "object", properties: { property: { type: "string", description: "The property address or listing under contract." }, closeDate: { type: "string", description: "Target closing date (YYYY-MM-DD). Defaults to 30 days out." } }, required: ["property"] } },
 ];
 
+for (const tool of TOOLS) {
+  const properties = tool.parameters.properties as Record<string, unknown>;
+  if (["draft_listing_description", "send_listing_to_buyer"].includes(tool.name)) properties.listingId = { type: "string", description: "Exact owned listing ID; preferred over matching an address." };
+  if (["qualify_lead", "follow_up_lead", "send_listing_to_buyer", "match_buyers"].includes(tool.name)) properties.leadId = { type: "string", description: "Exact owned buyer lead ID." };
+  if (tool.name === "lease_renewal") properties.leaseId = { type: "string", description: "Exact owned lease ID." };
+  if (["draft_listing_description", "qualify_lead", "follow_up_lead", "lease_renewal", "send_listing_to_buyer"].includes(tool.name)) tool.parameters.required = ((tool.parameters.required ?? []) as string[]).filter(key => !["name", "address", "property"].includes(key));
+  if (["follow_up_lead", "lease_renewal", "send_listing_to_buyer"].includes(tool.name)) tool.description = "Prepare exact recipient, subject and body for the selected owned record. Does not send or publish. Use a separate send_gmail review for requested delivery. Listing copy requires an already public page; publish_listing is separately reviewed.";
+  if (tool.name === "search_market") tool.description = "Read for-sale inventory for city/state or ZIP, labelled by actual source. Without live credentials, the feed is demonstration data only; never present demo inventory as current verified listings.";
+  if (tool.name === "transaction_tasks") {
+    tool.parameters.required = ["property", "closeDate"];
+    properties.closeDate = { type: "string", description: "The actual agreed future closing date, YYYY-MM-DD. Never invent it." };
+  }
+}
+TOOLS.push({ name: "publish_listing", description: "Publish an exact owned listing as a public web page. This is a separate reviewed publication; it never emails anyone.", parameters: { type: "object", properties: { listingId: { type: "string" }, address: { type: "string" } } } });
+
+async function reviewRealEstateAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let result = args;
+  if (["qualify_lead", "follow_up_lead", "send_listing_to_buyer"].includes(name)) {
+    const lead = resolveNamedRecord(await listLeads(userId), "name", args.leadId, args.name);
+    result = { ...result, leadId: lead.id, name: lead.name, reviewedStage: lead.stage };
+  }
+  if (["draft_listing_description", "publish_listing", "send_listing_to_buyer"].includes(name)) {
+    const listing = resolveNamedRecord(await listListings(userId), "address", args.listingId, args.address);
+    result = { ...result, listingId: listing.id, address: listing.address };
+  }
+  if (name === "lease_renewal") {
+    const lease = resolveNamedRecord(await listLeases(userId), "property", args.leaseId, args.property);
+    result = { ...result, leaseId: lease.id, property: lease.property };
+  }
+  return result;
+}
+
 function summarizeAction(name: string, args: Record<string, unknown>): string {
   switch (name) {
+    case "create_buyer_lead": return `Save buyer lead ${args.name ?? ""}. No outreach will be sent.`;
     case "create_listing": return `Add listing ${args.address ?? ""}.`;
     case "draft_listing_description": return `Draft a description for ${args.address ?? "the listing"}.`;
     case "qualify_lead": return `Move lead ${args.name ?? ""} to ${args.stage}.`;
-    case "follow_up_lead": return `Draft & send a follow-up to ${args.name ?? "the lead"}.`;
+    case "follow_up_lead": return `Prepare follow-up copy for ${args.name ?? "the lead"}. No email will be sent.`;
     case "schedule_showing": return `Record a showing at ${args.address ?? "the property"}.`;
-    case "lease_renewal": return `Draft & send a renewal for ${args.property ?? "the lease"}.`;
+    case "lease_renewal": return `Prepare renewal copy for ${args.property ?? "the lease"}. No email will be sent.`;
     case "match_buyers": return args.name ? `Match ${args.name} to your listings.` : "Match your buyer leads to your listings.";
-    case "send_listing_to_buyer": return `Email ${args.address ?? "the listing"} to ${args.name ?? "the buyer"}.`;
+    case "send_listing_to_buyer": return `Prepare listing copy for ${args.name ?? "the buyer"}. No email or publication.`;
+    case "publish_listing": return `Publish ${args.address ?? "the selected listing"} as a public web page.`;
     case "search_market": return `Search the market${args.zipCode ? ` in ${args.zipCode}` : args.city ? ` in ${args.city}${args.state ? `, ${args.state}` : ""}` : ""}.`;
     case "market_report": return `Generate a market report for ${args.zipCode ?? "the area"}.`;
     case "transaction_tasks": return `Build a closing checklist for ${args.property ?? "the property"}.`;
@@ -241,50 +279,50 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
 async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string; data?: unknown }> {
   try {
     switch (name) {
+      case "create_buyer_lead": {
+        const lead = await createLead(user.id, { name: String(args.name ?? "").trim(), email: args.email ? String(args.email) : undefined, phone: args.phone ? String(args.phone) : undefined, budgetCents: args.budgetCents as number | undefined, interest: args.interest ? String(args.interest) : undefined, source: "assistant" });
+        return { ok: true, message: `Created buyer lead ${lead.name}. No outreach was sent.`, data: lead };
+      }
+      case "publish_listing": {
+        const listing = resolveNamedRecord(await listListings(user.id), "address", args.listingId, args.address);
+        const published = await publishListing(user.id, listing.id);
+        return { ok: true, message: `Published the listing page: ${published.shareUrl}. No email was sent.`, data: { listingId: listing.id, ...published } };
+      }
       case "create_listing": {
         const l = await createListing(user.id, { address: String(args.address ?? "").trim(), priceCents: typeof args.priceCents === "number" ? args.priceCents : undefined, beds: typeof args.beds === "number" ? args.beds : undefined, baths: typeof args.baths === "number" ? args.baths : undefined, source: "assistant" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "listing_created", title: `Added listing ${l.address}`, entityType: "re_listing", entityId: l.id });
-        return { ok: true, message: `Added listing ${l.address}.` };
+        return { ok: true, message: `Added listing ${l.address}.`, data: l };
       }
       case "draft_listing_description": {
-        const listings = await listListings(user.id);
-        const l = listings.find((x) => x.address.toLowerCase().includes(String(args.address ?? "").toLowerCase()));
-        if (!l) return { ok: false, message: "Couldn't find that listing." };
+        const l = resolveNamedRecord(await listListings(user.id), "address", args.listingId, args.address);
         const draft = await draftEmail({ role: "real-estate marketer", purpose: "an appealing MLS-style property description (use the body field for the description)", context: `Property: ${l.address}, ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba, ${l.sqft ?? "?"} sqft, priced ${(l.priceCents / 100).toLocaleString("en-US")}.` });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "listing_described", title: `Drafted description for ${l.address}`, entityType: "re_listing", entityId: l.id });
-        return { ok: true, message: draft.body };
+        if (draft.isFallback || !draft.body.trim()) return { ok: false, message: "Listing copy is unavailable. Nothing was saved or published." };
+        return { ok: true, message: draft.body, data: { listingId: l.id, body: draft.body, status: "draft" } };
       }
       case "qualify_lead": {
-        const leads = await listLeads(user.id);
-        const ld = leads.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!ld) return { ok: false, message: "Couldn't find that lead." };
-        await updateLead(user.id, ld.id, { stage: args.stage as LeadStage });
+        const ld = resolveNamedRecord(await listLeads(user.id), "name", args.leadId, args.name);
+        if (!["new", "qualified", "touring", "offer", "closed", "lost"].includes(String(args.stage))) throw new AppError("Choose a supported buyer stage.", 400);
+        if (args.reviewedStage && ld.stage !== args.reviewedStage) throw new AppError("This lead changed after review. Prepare a fresh review.", 409);
+        if (!await updateLead(user.id, ld.id, { stage: args.stage as LeadStage, expectedStage: ld.stage })) throw new AppError("This lead changed after review. Prepare a fresh review.", 409);
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "lead_qualified", title: `${ld.name} → ${args.stage}`, entityType: "re_lead", entityId: ld.id });
         return { ok: true, message: `Moved ${ld.name} to ${args.stage}.` };
       }
       case "follow_up_lead": {
-        const leads = await listLeads(user.id);
-        const ld = leads.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!ld) return { ok: false, message: "Couldn't find that lead." };
+        const ld = resolveNamedRecord(await listLeads(user.id), "name", args.leadId, args.name);
         if (!ld.email) return { ok: false, message: `No email on file for ${ld.name}.` };
         const draft = await draftEmail({ role: "real-estate agent", purpose: "a warm follow-up to a buyer lead", context: `Lead: ${ld.name}, interested in ${ld.interest ?? "a home"}, budget ${ld.budgetCents ? `$${(ld.budgetCents / 100).toLocaleString("en-US")}` : "unknown"}. ${args.note ? `Note: ${args.note}` : ""}` });
-        await sendProfessionalEmail({ user, to: ld.email, subject: draft.subject, body: draft.body, tag: "re_followup" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "lead_followup", title: `Follow-up sent to ${ld.name}`, detail: draft.subject, entityType: "re_lead", entityId: ld.id });
-        return { ok: true, message: `Follow-up sent to ${ld.name}.` };
+        if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "Follow-up copy is unavailable. Nothing was sent." };
+        return { ok: true, message: "Prepared buyer follow-up copy. Nothing was sent.", data: { leadId: ld.id, toEmail: ld.email, subject: draft.subject, body: draft.body, status: "draft" } };
       }
       case "send_listing_to_buyer": {
         const [leads, listings] = await Promise.all([listLeads(user.id), listListings(user.id)]);
-        const ld = leads.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!ld) return { ok: false, message: "Couldn't find that buyer lead." };
+        const ld = resolveNamedRecord(leads, "name", args.leadId, args.name);
         if (!ld.email) return { ok: false, message: `No email on file for ${ld.name}.` };
 
-        const wanted = String(args.address ?? "").toLowerCase();
-        const l = listings.find((x) => x.address.toLowerCase().includes(wanted));
-        if (!l) return { ok: false, message: "Couldn't find that listing among yours." };
+        const l = resolveNamedRecord(listings, "address", args.listingId, args.address);
 
-        // Publishing is idempotent, so this both creates the page on first send and reuses
-        // the same URL afterwards — a buyer who gets two emails sees one stable link.
-        const { shareUrl } = await publishListing(user.id, l.id);
+        const shareUrl = listingShareUrl(l.shareSlug);
+        if (!shareUrl) return { ok: false, message: "This listing has no public page. Review publish_listing before preparing a link for a buyer. Nothing was published or sent." };
 
         const draft = await draftEmail({
           role: "real-estate agent",
@@ -292,40 +330,33 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           context: `Buyer: ${ld.name}, looking for ${ld.interest ?? "a home"}${ld.budgetCents ? `, budget $${(ld.budgetCents / 100).toLocaleString("en-US")}` : ""}. Property: ${l.address}, ${usd(l.priceCents)}, ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? `, ${l.sqft} sqft` : ""}.${args.note ? ` Note from the agent: ${args.note}` : ""}`,
         });
         // Append the link ourselves rather than trusting the model to reproduce a URL verbatim.
+        if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "Listing copy is unavailable. Nothing was sent." };
         const body = `${draft.body}\n\nView the listing: ${shareUrl}`;
-
-        await sendProfessionalEmail({ user, to: ld.email, subject: draft.subject, body, tag: "re_listing_share" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "listing_shared", title: `Sent ${l.address} to ${ld.name}`, detail: shareUrl, entityType: "re_listing", entityId: l.id });
         return {
           ok: true,
-          message: `Sent ${l.address} to ${ld.name} (${ld.email}) with the listing page: ${shareUrl}${l.photos.length === 0 ? "\n\nTip: this listing has no photos yet — add some under Listings → Photos & sharing so buyers see the property." : ""}`,
+          message: "Prepared the exact buyer email and existing public link. Nothing was sent or published.",
+          data: { listingId: l.id, leadId: ld.id, toEmail: ld.email, subject: draft.subject, body, status: "draft" },
         };
       }
       case "schedule_showing": {
         const address = String(args.address ?? "").trim();
         if (!address) return { ok: false, message: "Which property is the showing for?" };
-        // `when` may be an ISO datetime OR free text ("Sat 2:00 PM"). scheduled_at is a
-        // timestamptz column, so only pass it a value it can store; otherwise keep the raw
-        // phrasing in notes so nothing is lost (and the insert never fails).
         const whenRaw = args.when ? String(args.when).trim() : "";
         const parsed = whenRaw ? new Date(whenRaw) : null;
-        const scheduledAt = parsed && !isNaN(parsed.getTime()) ? parsed.toISOString() : undefined;
-        const notes = whenRaw && !scheduledAt ? `Requested time: ${whenRaw}` : undefined;
+        if (!/(?:Z|[+-]\d{2}:\d{2})$/.test(whenRaw) || !parsed || !Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) throw new AppError("Provide the actual future showing time as ISO datetime with an explicit timezone offset. No showing was recorded.", 400);
+        const scheduledAt = parsed.toISOString();
         const s = await createShowing(user.id, {
           address,
           leadName: args.leadName ? String(args.leadName) : undefined,
           scheduledAt,
-          notes,
           source: "assistant",
         });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "showing_scheduled", title: `Showing at ${s.address}`, entityType: "re_showing", entityId: s.id });
         const whenMsg = scheduledAt ? ` for ${parsed!.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}` : whenRaw ? ` (${whenRaw})` : "";
-        return { ok: true, message: `Showing recorded for ${s.address}${whenMsg}.` };
+        return { ok: true, message: `Showing recorded for ${s.address}${whenMsg}. This is an Interlink record; no calendar invitation was sent.`, data: s };
       }
       case "lease_renewal": {
-        const leases = await listLeases(user.id);
-        const l = leases.find((x) => x.property.toLowerCase().includes(String(args.property ?? "").toLowerCase()));
-        if (!l) return { ok: false, message: "Couldn't find that lease." };
+        const l = resolveNamedRecord(await listLeases(user.id), "property", args.leaseId, args.property);
         if (!l.tenantEmail) return { ok: false, message: `No tenant email on file for ${l.property}.` };
         // PRD: pull localized pricing trends to inform renewal terms when a ZIP is given.
         // RentCast (paid) gives sale comps; Census (free) gives the median gross rent — which
@@ -344,13 +375,12 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           }
         }
         const draft = await draftEmail({ role: "property manager", purpose: "a friendly lease-renewal offer", context: `Property: ${l.property}. Tenant: ${l.tenantName ?? ""}. Lease ends ${l.endDate ?? "soon"}. Current rent ${l.rentCents ? `$${(l.rentCents / 100).toLocaleString("en-US")}/mo` : "unknown"}.${marketContext}` });
-        await sendProfessionalEmail({ user, to: l.tenantEmail, subject: draft.subject, body: draft.body, tag: "re_lease_renewal" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "lease_renewal_sent", title: `Renewal sent for ${l.property}`, detail: draft.subject, entityType: "re_lease", entityId: l.id });
-        return { ok: true, message: `Renewal sent to ${l.tenantName ?? "tenant"}.` };
+        if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "Renewal copy is unavailable. Nothing was sent." };
+        return { ok: true, message: "Prepared renewal copy. Actual terms need review; nothing was sent.", data: { leaseId: l.id, toEmail: l.tenantEmail, subject: draft.subject, body: draft.body, status: "draft" } };
       }
       case "match_buyers": {
         const [leads, listings] = await Promise.all([listLeads(user.id), listListings(user.id)]);
-        const inventory = listings.filter((l) => l.status === "active" || l.status === "pending");
+        const inventory = listings.filter((l) => (l.status === "active" || l.status === "pending") && l.currency === "USD");
         if (inventory.length === 0)
           return {
             ok: false,
@@ -358,9 +388,10 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
               "You have no active listings to match against yet. Add a listing (tell me the address + price), or tap “Load demo” on your dashboard to try this with sample data.",
           };
         const targetName = String(args.name ?? "").trim().toLowerCase();
-        const buyers = leads
+        const selectedLeads = args.leadId || targetName ? [resolveNamedRecord(leads, "name", args.leadId, args.name)] : leads;
+        const buyers = selectedLeads
           .filter((l) => l.stage !== "closed" && l.stage !== "lost")
-          .filter((l) => (targetName ? l.name.toLowerCase().includes(targetName) : true));
+          .slice(0, 25);
         if (buyers.length === 0)
           return {
             ok: false,
@@ -407,10 +438,9 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
             })),
           });
         }
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "buyers_matched", title: `Matched ${buyers.length} buyer(s) to listings` });
         return {
           ok: true,
-          message: `Buyer ↔ listing matches:\n\n${blocks.join("\n\n")}`,
+          message: `Buyer ↔ listing matches (up to 25 buyers; stored buyer budgets are USD, no currency conversion):\n\n${blocks.join("\n\n")}`,
           data: {
             kind: "buyer_matches",
             buyerCount: buyers.length,
@@ -420,6 +450,8 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         };
       }
       case "search_market": {
+        if (!args.zipCode && (!String(args.city ?? "").trim() || !String(args.state ?? "").trim())) return { ok: false, message: "Choose a city and state or a ZIP code before searching." };
+        if ([args.beds, args.maxPrice].some(value => value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) return { ok: false, message: "Use nonnegative search filters." };
         const searchArgs = {
           city: args.city ? String(args.city) : undefined,
           state: args.state ? String(args.state) : undefined,
@@ -449,11 +481,12 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         }
         if (results.length === 0) return { ok: true, message: "No active for-sale listings matched that search (or the area returned no data)." };
         const lines = results.map((l) => `- ${l.address}${l.city ? `, ${l.city}${l.state ? `, ${l.state}` : ""}` : ""} — ${l.priceCents ? usd(l.priceCents) : "price N/A"} | ${l.beds ?? "?"}bd/${l.baths ?? "?"}ba${l.sqft ? ` | ${l.sqft.toLocaleString()} sqft` : ""}`);
-        return { ok: true, message: `Found ${results.length} live for-sale listing(s) via ${source}:\n${lines.join("\n")}` };
+        const isDemo = source.includes("demo");
+        return { ok: true, message: `Found ${results.length} ${isDemo ? "demonstration listing(s), not verified live inventory" : "source-returned for-sale listing(s)"} via ${source}:\n${lines.join("\n")}`, data: { source, isDemo, listings: results } };
       }
       case "market_report": {
         const zip = String(args.zipCode ?? "").trim();
-        if (!zip) return { ok: false, message: "Which ZIP code should I report on?" };
+        if (!/^\d{5}$/.test(zip)) return { ok: false, message: "Choose a five-digit US ZIP code for the market-data source." };
         const line = (label: string, cents: number | null) => (cents != null ? `- ${label}: ${usd(cents)}` : null);
 
         // Prefer RentCast when configured (live for-sale stats); otherwise use the FREE
@@ -472,7 +505,6 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
               s.newListings != null ? `- New this period: ${s.newListings}` : null,
               "(Source: RentCast)",
             ].filter(Boolean).join("\n");
-            await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${s.zipCode}` });
             return { ok: true, message: body };
           }
         }
@@ -487,7 +519,6 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
               c.ownerOccupiedPct != null ? `- Owner-occupied: ${c.ownerOccupiedPct}%` : null,
               `(Source: ${c.source})`,
             ].filter(Boolean).join("\n");
-            await recordActivity({ userId: user.id, persona: PERSONA, kind: "market_report", title: `Market report for ${c.zipCode}` });
             return { ok: true, message: body };
           }
           return { ok: true, message: `No Census market data is available for ${zip}.` };
@@ -503,8 +534,9 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         const property = String(args.property ?? "").trim();
         if (!property) return { ok: false, message: "Which property is under contract?" };
         // Standard residential purchase timeline, counted back from the close date.
-        const close = args.closeDate ? new Date(String(args.closeDate)) : new Date(Date.now() + 30 * 864e5);
-        if (isNaN(close.getTime())) return { ok: false, message: "That close date isn't a valid YYYY-MM-DD." };
+        const date = String(args.closeDate ?? "");
+        const close = new Date(date);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close.getTime()) || close.toISOString().slice(0, 10) !== date || close.getTime() <= Date.now()) return { ok: false, message: "Provide the actual agreed future closing date as YYYY-MM-DD. No deadline was invented." };
         const dayBefore = (n: number) => {
           const d = new Date(close.getTime() - n * 864e5);
           return d.toISOString().slice(0, 10);
@@ -528,8 +560,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           "",
           ...milestones.map(([task, due]) => `- [ ] ${due} — ${task}`),
         ].join("\n");
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "transaction_tasks", title: `Closing checklist for ${property}` });
-        return { ok: true, message: body };
+        return { ok: true, message: `${body}\n\nSuggested template dates only. Validate against the actual contract and adjust past milestones. No tasks were created.`, data: { property, closeDate: date, milestones, status: "draft" } };
       }
       default:
         return { ok: false, message: `Unsupported action: ${name}.` };
@@ -582,6 +613,8 @@ async function planLeaseRenewals(userId: string): Promise<AutomationProposal[]> 
 }
 
 export const realEstateVertical: PersonaVertical = {
+  reviewAction: reviewRealEstateAction,
+  readOnlyTools: ["draft_listing_description", "follow_up_lead", "lease_renewal", "match_buyers", "send_listing_to_buyer", "search_market", "market_report", "transaction_tasks"],
   persona: PERSONA,
   tools: TOOLS,
   systemPrompt: SYSTEM_PROMPT,

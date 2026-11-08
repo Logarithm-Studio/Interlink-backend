@@ -69,7 +69,7 @@ test('Professional workflow record identity, reviewed copy and task corrections'
     const action={id:crypto.randomUUID(),name:'log_activity',args:{note:'Step '+i},summary:'Step '+i,needsConfirm:true};
     await tasks.saveTaskPlan(uid,taskId,{action,answer:null,conversationId:conv,isLive:true});await tasks.executeTaskProposal(uid,taskId,action.id,async()=>({ok:true,message:'Confirmed '+i}));
    }
-   model.geminiGenerateContent=async()=>({raw:'All twelve recorded steps succeeded.',model:'fixture',latencyMs:1});
+   model.geminiGenerateContent=async()=>({raw:'',functionCall:{name:'complete_professional_task',args:{answer:'All twelve recorded steps succeeded.'}},model:'fixture',latencyMs:1});
    const done=await api('/tasks/'+taskId+'/continue',{});assert.equal(done.task.status,'answered');assert.equal(done.task.steps.length,12);
    await assert.rejects(tasks.saveTaskPlan(uid,taskId,{action:{id:crypto.randomUUID(),name:'log_activity',args:{note:'Thirteenth'},summary:'Thirteenth',needsConfirm:true},answer:null,conversationId:conv,isLive:true}),/12|limit/);
   });
@@ -131,6 +131,7 @@ test('Professional workflow record identity, reviewed copy and task corrections'
    await s.db.query("UPDATE autolink_tasks SET status='planning',updated_at=now()-interval '3 minutes' WHERE id=$1",[first.task.id]);
    assert.equal((await tasks.getAgentTask(uid,first.task.id)).status,'ready','A crashed revision with no completed writes must release its stale planning lease');
    await api('/tasks/'+first.task.id+'/actions/'+first.action.id+'/execute',{},409);
+   await s.db.query("UPDATE autolink_tasks SET status='answered' WHERE id=$1",[first.task.id]);
    const blockedId=await tasks.createAgentTask(uid,first.conversationId,'Uncertain fixture write');
    const action={id:crypto.randomUUID(),name:'create_invoice',args:{clientName:'Uncertain',amount:10},summary:'Uncertain',needsConfirm:true};
    await tasks.saveTaskPlan(uid,blockedId,{action,answer:null,conversationId:first.conversationId,isLive:true});await tasks.executeTaskProposal(uid,blockedId,action.id,async()=>({ok:false,message:'Outcome uncertain.'}));
@@ -141,7 +142,7 @@ test('Professional workflow record identity, reviewed copy and task corrections'
    model.geminiGenerateContent=async()=>({raw:'',functionCall:{name:'create_invoice',args:{clientName:'Clock QA',amount:10}},model:'fixture',latencyMs:1});
    const first=await api('/command',{message:'Create an invoice for Clock QA then prepare a reminder plan for tomorrow.',clientNow:original,tz:'Asia/Dhaka'});
    await api('/tasks/'+first.task.id+'/actions/'+first.action.id+'/execute',{});
-   model.geminiGenerateContent=async options=>{assert(JSON.stringify(options.contents).includes(original));return{raw:'The confirmed invoice is saved. The requested tomorrow is November 8 in Asia/Dhaka.',model:'fixture',latencyMs:1}};
+   model.geminiGenerateContent=async options=>{assert(JSON.stringify(options.contents).includes(original));return{raw:'',functionCall:{name:'complete_professional_task',args:{answer:'The confirmed invoice is saved. The requested tomorrow is November 8 in Asia/Dhaka.'}},model:'fixture',latencyMs:1}};
    const done=await api('/tasks/'+first.task.id+'/continue',{clientNow:'2026-11-08T01:00:00.000Z',tz:'Asia/Dhaka'});assert.equal(done.task.status,'answered');
   });
   await t.test('a corrected upload binds the retained file and latest request clock',async()=>{

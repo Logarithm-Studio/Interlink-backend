@@ -6,7 +6,8 @@
 import { query } from "../../../config/db";
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
-import { sendProfessionalEmail } from "../email";
+import { resolveNamedRecord } from "../assistant-records.service";
+import { AppError } from "../../../utils/errors";
 import { draftEmail } from "../draft";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
 import type { AutomationProposal, PersonaVertical } from "../registry";
@@ -43,6 +44,7 @@ export async function createTicket(
   userId: string,
   data: { subject: string; body?: string; customerName?: string; customerEmail?: string; priority?: TicketPriority; category?: string; source?: string },
 ): Promise<SupportTicket> {
+  if (!data.subject.trim()) throw new AppError("Enter a ticket subject.", 400);
   // SLA target derived from priority so the SLA-watch automation has a deadline.
   const res = await query(
     `INSERT INTO support_tickets (user_id, subject, body, customer_name, customer_email, priority, category, source, sla_due_at)
@@ -61,7 +63,7 @@ export async function createTicket(
 export async function updateTicket(
   userId: string,
   id: string,
-  patch: { priority?: TicketPriority; status?: TicketStatus; category?: string },
+  patch: { priority?: TicketPriority; status?: TicketStatus; category?: string; expectedStatus?: TicketStatus },
 ): Promise<SupportTicket | null> {
   const res = await query(
     `UPDATE support_tickets SET
@@ -69,9 +71,9 @@ export async function updateTicket(
         status   = COALESCE($4, status),
         category = COALESCE($5, category),
         updated_at = now()
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND ($6::text IS NULL OR status=$6)
       RETURNING id, subject, body, customer_name, customer_email, priority, status, category, sla_due_at, source, created_at`,
-    [id, userId, patch.priority ?? null, patch.status ?? null, patch.category ?? null],
+    [id, userId, patch.priority ?? null, patch.status ?? null, patch.category ?? null, patch.expectedStatus ?? null],
   );
   return res.rows[0] ? mapRow(res.rows[0] as never) : null;
 }
@@ -96,7 +98,7 @@ async function buildSnapshot(userId: string): Promise<string> {
   return [
     `Open tickets: ${open.length} (urgent ${byPriority("urgent")}, high ${byPriority("high")}). Resolved: ${tickets.length - open.length}.`,
     "Tickets:",
-    ...tickets.slice(0, 20).map((t) => `- [${t.priority}/${t.status}] ${t.subject} | ${t.customerName ?? "—"} <${t.customerEmail ?? "no-email"}> | ${t.body ?? ""}`),
+    ...tickets.slice(0, 20).map((t) => `- [${t.priority}/${t.status}] ${t.subject} | id=${t.id} | ${t.customerName ?? "—"} <${t.customerEmail ?? "no-email"}> | ${t.body ?? ""}`),
   ].join("\n");
 }
 
@@ -107,6 +109,7 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 const TOOLS: GeminiToolFunction[] = [
+  { name: "create_ticket", description: "Save a local Support ticket from actual supplied details. Does not contact the customer or create a provider-side ticket.", parameters: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" }, customerName: { type: "string" }, customerEmail: { type: "string" }, priority: { type: "string", enum: ["low", "medium", "high", "urgent"] } }, required: ["subject"] } },
   {
     name: "triage_ticket",
     description: "Set a ticket's priority and/or category.",
@@ -114,59 +117,77 @@ const TOOLS: GeminiToolFunction[] = [
       type: "object",
       properties: {
         subject: { type: "string", description: "Ticket subject from the snapshot." },
+        ticketId: { type: "string", description: "Exact owned ID; preferred over subject matching." },
         priority: { type: "string", enum: ["low", "medium", "high", "urgent"] },
         category: { type: "string" },
       },
-      required: ["subject"],
+      required: [],
     },
   },
   {
     name: "draft_reply",
-    description: "Draft and send a reply to the ticket's customer.",
+    description: "Prepare exact reply copy for an owned ticket. Does not send or change its status. Delivery requires a separate review of the recipient and exact copy.",
     parameters: {
       type: "object",
       properties: {
         subject: { type: "string", description: "Ticket subject from the snapshot." },
+        ticketId: { type: "string" },
         note: { type: "string", description: "Optional guidance for the reply." },
       },
-      required: ["subject"],
+      required: [],
     },
   },
   {
     name: "escalate_ticket",
     description: "Mark a ticket as escalated.",
-    parameters: { type: "object", properties: { subject: { type: "string" } }, required: ["subject"] },
+    parameters: { type: "object", properties: { subject: { type: "string" }, ticketId: { type: "string" } } },
   },
   {
     name: "resolve_ticket",
     description: "Mark a ticket as resolved.",
-    parameters: { type: "object", properties: { subject: { type: "string" } }, required: ["subject"] },
+    parameters: { type: "object", properties: { subject: { type: "string" }, ticketId: { type: "string" } } },
   },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
   switch (name) {
+    case "create_ticket": return `Save local Support ticket "${args.subject ?? ""}". No customer message.`;
     case "triage_ticket": return `Triage "${args.subject ?? "ticket"}"${args.priority ? ` → ${args.priority}` : ""}.`;
-    case "draft_reply": return `Draft & send a reply for "${args.subject ?? "ticket"}".`;
+    case "draft_reply": return `Prepare a reply draft for "${args.subject ?? "ticket"}". No send or status change.`;
     case "escalate_ticket": return `Escalate "${args.subject ?? "ticket"}".`;
     case "resolve_ticket": return `Resolve "${args.subject ?? "ticket"}".`;
     default: return `Run ${name}.`;
   }
 }
 
-async function findTicket(userId: string, subject: string): Promise<SupportTicket | undefined> {
-  const tickets = await listTickets(userId);
-  const s = subject.toLowerCase();
-  return tickets.find((t) => t.subject.toLowerCase() === s) ?? tickets.find((t) => t.subject.toLowerCase().includes(s));
+async function findTicket(userId: string, subject: string, id?: unknown): Promise<SupportTicket> {
+  return resolveNamedRecord(await listTickets(userId), "subject", id, subject);
 }
 
-async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+async function reviewSupportAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (name === "create_ticket" || !TOOLS.some(tool => tool.name === name)) return args;
+  const ticket = await findTicket(userId, String(args.subject ?? ""), args.ticketId);
+  return { ...args, ticketId: ticket.id, subject: ticket.subject, reviewedStatus: ticket.status };
+}
+
+async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string; data?: unknown }> {
   try {
-    const t = await findTicket(user.id, String(args.subject ?? ""));
-    if (!t) return { ok: false, message: "Couldn't find that ticket." };
+    if (name === "create_ticket") {
+      const ticket = await createTicket(user.id, { subject: String(args.subject ?? "").trim(), body: args.body ? String(args.body) : undefined, customerName: args.customerName ? String(args.customerName) : undefined, customerEmail: args.customerEmail ? String(args.customerEmail) : undefined, priority: args.priority as TicketPriority | undefined, source: "assistant" });
+      return { ok: true, message: `Created local ticket "${ticket.subject}". No message was sent.`, data: ticket };
+    }
+    const t = await findTicket(user.id, String(args.subject ?? ""), args.ticketId);
+    if (args.reviewedStatus && t.status !== args.reviewedStatus) throw new AppError("This ticket changed after review. Read it and prepare a fresh review.", 409);
+    const update = async (patch: Parameters<typeof updateTicket>[2]) => {
+      const saved = await updateTicket(user.id, t.id, { ...patch, expectedStatus: t.status });
+      if (!saved) throw new AppError("This ticket changed after review. Prepare a fresh review.", 409);
+      return saved;
+    };
     switch (name) {
       case "triage_ticket":
-        await updateTicket(user.id, t.id, { priority: args.priority as TicketPriority | undefined, category: args.category ? String(args.category) : undefined });
+        if (args.priority && !["low", "medium", "high", "urgent"].includes(String(args.priority))) throw new AppError("Choose a supported ticket priority.", 400);
+        if (!args.priority && !args.category) throw new AppError("Choose a priority or category to change.", 400);
+        await update({ priority: args.priority as TicketPriority | undefined, category: args.category ? String(args.category) : undefined });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "ticket_triaged", title: `Triaged: ${t.subject}`, entityType: "support_ticket", entityId: t.id });
         return { ok: true, message: `Triaged "${t.subject}".` };
       case "draft_reply": {
@@ -176,17 +197,15 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           purpose: "a helpful, empathetic reply resolving the customer's issue",
           context: `Ticket: ${t.subject}. Message: ${t.body ?? ""}. ${args.note ? `Guidance: ${args.note}` : ""}`,
         });
-        await sendProfessionalEmail({ user, to: t.customerEmail, subject: `Re: ${t.subject}`, body: draft.body, tag: "support_reply" });
-        await updateTicket(user.id, t.id, { status: "pending" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "reply_sent", title: `Replied to ${t.customerName ?? "customer"}`, detail: t.subject, entityType: "support_ticket", entityId: t.id });
-        return { ok: true, message: `Reply sent to ${t.customerName ?? "customer"}.` };
+        if (draft.isFallback || !draft.body.trim()) return { ok: false, message: "Reply copy is unavailable. Nothing was sent or changed." };
+        return { ok: true, message: "Prepared a reply draft. No email or ticket-status change.", data: { ticketId: t.id, toEmail: t.customerEmail, subject: `Re: ${t.subject}`, body: draft.body, status: "draft" } };
       }
       case "escalate_ticket":
-        await updateTicket(user.id, t.id, { status: "escalated" });
+        await update({ status: "escalated" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "ticket_escalated", title: `Escalated: ${t.subject}`, entityType: "support_ticket", entityId: t.id });
         return { ok: true, message: `Escalated "${t.subject}".` };
       case "resolve_ticket":
-        await updateTicket(user.id, t.id, { status: "resolved" });
+        await update({ status: "resolved" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "ticket_resolved", title: `Resolved: ${t.subject}`, entityType: "support_ticket", entityId: t.id });
         return { ok: true, message: `Resolved "${t.subject}".` };
       default:
@@ -227,6 +246,7 @@ export const supportVertical: PersonaVertical = {
   buildSnapshot,
   executeTool,
   summarizeAction,
+  reviewAction: reviewSupportAction,
   seedDemo,
   automations: [
     {

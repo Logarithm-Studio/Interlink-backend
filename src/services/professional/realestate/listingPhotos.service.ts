@@ -152,7 +152,7 @@ function publicBase(): string {
   return (process.env.API_BASE_URL ?? "").replace(/\/+$/, "");
 }
 
-function shareUrl(slug: string | null): string | null {
+export function shareUrl(slug: string | null): string | null {
   if (!slug) return null;
   const base = publicBase();
   return base ? `${base}/l/${slug}` : null;

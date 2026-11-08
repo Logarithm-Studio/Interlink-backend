@@ -101,6 +101,7 @@ export async function transcribeAudio(
 // ─── Agentic planning (function-calling) ──────────────────────────────────────
 
 export interface AgentPlan {
+  needsInput?: boolean;
   /** A direct text answer (when no action was requested). */
   answer?: string;
   /** A proposed action the user must confirm before execution. */
@@ -163,6 +164,7 @@ export async function planPersonaReply(params: {
 }
 
 export async function planAgentActions(params: {
+  requireTaskResolution?: boolean;
   message: string;
   snapshot: string;
   /** Persona-specific tool declarations (defaults to the finance/accountant set). */
@@ -200,7 +202,7 @@ export async function planAgentActions(params: {
     // Any attachment: make it the subject of the turn (the model must not ignore it).
     attachmentParts.push({ text: ATTACHMENT_DIRECTIVE });
     const prepared = prepareAssistantAttachment(params.attachment);
-    if (!prepared.ok) return { answer: prepared.message, isLive: true };
+    if (!prepared.ok) throw new AppError(prepared.message, 400);
     attachmentParts.push(...prepared.value.parts);
     attachedSheet = prepared.value.spreadsheet;
     if (attachedSheet) {
@@ -237,6 +239,7 @@ export async function planAgentActions(params: {
 
   try {
     const outcome = await runAgentTurn({
+      finalizeTools: params.requireTaskResolution ? toolsForTurn.filter(tool => ["ask_professional_question", "complete_professional_task"].includes(tool.name)) : undefined,
       system: params.system ?? AGENT_SYSTEM,
       tools: toolsForTurn,
       userParts,
@@ -247,6 +250,8 @@ export async function planAgentActions(params: {
       looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
     if (outcome.kind === "action") {
+      if (outcome.name === "ask_professional_question") return { answer: String(outcome.args.question), needsInput: true, isLive: true };
+      if (outcome.name === "complete_professional_task") return { answer: String(outcome.args.answer), isLive: true };
       if (attachedSheet && outcome.name === ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME) {
         const materialized = materializeSpreadsheetEmail(
           attachedSheet,
@@ -259,7 +264,7 @@ export async function planAgentActions(params: {
       }
       return { answer: outcome.text, action: { name: outcome.name, args: outcome.args }, isLive: true };
     }
-    return { answer: outcome.text || "Done.", isLive: true, via: outcome.via };
+    return { answer: outcome.text || "I need more information to continue.", needsInput: params.requireTaskResolution || undefined, isLive: true, via: outcome.via };
   } catch (err) {
     logger.warn("[multimodal] agent planning failed", { error: err instanceof Error ? err.name : "UnknownError" });
     throw new AppError("The AI service could not finish planning. Your saved steps are retained. Try continuing again; no new action was executed.", 503);

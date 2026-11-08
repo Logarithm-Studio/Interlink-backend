@@ -6,7 +6,8 @@
 import { query } from "../../../config/db";
 import { AppUser } from "../../../types";
 import { recordActivity } from "../../accountant/activity.service";
-import { sendProfessionalEmail } from "../email";
+import { resolveNamedRecord } from "../assistant-records.service";
+import { AppError } from "../../../utils/errors";
 import { draftEmail } from "../draft";
 import { geminiGenerateContent, isGeminiLive } from "../../ai/geminiClient";
 import type { GeminiToolFunction } from "../../ai/geminiClient";
@@ -32,6 +33,7 @@ export async function listCandidates(userId: string): Promise<Candidate[]> {
   return res.rows.map(mapCandidate as never);
 }
 export async function createCandidate(userId: string, data: { name: string; email?: string; role?: string; stage?: CandidateStage; resumeText?: string; source?: string }): Promise<Candidate> {
+  if (!data.name.trim()) throw new AppError("Enter a candidate name.", 400);
   const res = await query(
     `INSERT INTO hr_candidates (user_id, name, email, role, stage, resume_text, source)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -39,12 +41,12 @@ export async function createCandidate(userId: string, data: { name: string; emai
     [userId, data.name, data.email ?? null, data.role ?? null, data.stage ?? "applied", data.resumeText ?? null, data.source ?? "manual"]);
   return mapCandidate(res.rows[0] as never);
 }
-export async function updateCandidate(userId: string, id: string, patch: { stage?: CandidateStage; score?: number }): Promise<Candidate | null> {
+export async function updateCandidate(userId: string, id: string, patch: { stage?: CandidateStage; expectedStage?: CandidateStage; score?: number }): Promise<Candidate | null> {
   const res = await query(
     `UPDATE hr_candidates SET stage = COALESCE($3, stage), score = COALESCE($4, score), updated_at = now()
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND ($5::text IS NULL OR stage=$5)
       RETURNING id, name, email, role, stage, score, resume_text, source, created_at`,
-    [id, userId, patch.stage ?? null, patch.score ?? null]);
+    [id, userId, patch.stage ?? null, patch.score ?? null, patch.expectedStage ?? null]);
   return res.rows[0] ? mapCandidate(res.rows[0] as never) : null;
 }
 export async function listOpenings(userId: string): Promise<Opening[]> {
@@ -54,6 +56,7 @@ export async function listOpenings(userId: string): Promise<Opening[]> {
   return res.rows.map(mapOpening as never);
 }
 export async function createOpening(userId: string, data: { title: string; department?: string; location?: string; status?: string; source?: string }): Promise<Opening> {
+  if (!data.title.trim()) throw new AppError("Enter an opening title.", 400);
   const res = await query(
     `INSERT INTO hr_openings (user_id, title, department, location, status, source)
      VALUES ($1,$2,$3,$4,$5,$6)
@@ -85,7 +88,7 @@ async function buildSnapshot(userId: string): Promise<string> {
     "Openings:",
     ...openings.slice(0, 10).map((o) => `- ${o.title} | ${o.department ?? "—"} | ${o.location ?? "—"} | ${o.status}`),
     "Candidates:",
-    ...cands.slice(0, 20).map((c) => `- ${c.name} | ${c.role ?? "—"} | stage=${c.stage}${c.score != null ? ` | score=${c.score}` : ""} | ${c.email ?? "no-email"}`),
+    ...cands.slice(0, 20).map((c) => `- ${c.name} | id=${c.id} | ${c.role ?? "—"} | stage=${c.stage}${c.score != null ? ` | score=${c.score}` : ""} | ${c.email ?? "no-email"}`),
   ].join("\n");
 }
 
@@ -96,21 +99,23 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 const TOOLS: GeminiToolFunction[] = [
-  { name: "add_candidate", description: "Add a candidate to the pipeline.", parameters: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, role: { type: "string" } }, required: ["name"] } },
-  { name: "screen_resume", description: "AI-score a candidate's resume against their target role (0-100) and set their score.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  { name: "advance_candidate", description: "Move a candidate to a new stage.", parameters: { type: "object", properties: { name: { type: "string" }, stage: { type: "string", enum: ["applied", "screening", "interview", "offer", "hired", "rejected"] } }, required: ["name", "stage"] } },
-  { name: "draft_outreach", description: "Draft and send an outreach/scheduling email to a candidate.", parameters: { type: "object", properties: { name: { type: "string" }, note: { type: "string" } }, required: ["name"] } },
+  { name: "create_opening", description: "Save a basic local HR job-opening record from the supplied title, department and location. Does not publish a job advert or contact candidates.", parameters: { type: "object", properties: { title: { type: "string" }, department: { type: "string" }, location: { type: "string" } }, required: ["title"] } },
+  { name: "add_candidate", description: "Add a candidate to the pipeline. Include supplied resumeText for later evidence-based screening; never invent a resume.", parameters: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, role: { type: "string" }, resumeText: { type: "string" } }, required: ["name"] } },
+  { name: "screen_resume", description: "AI-score an owned candidate's actual saved resume against their target role. Missing evidence/offline AI is an error, never a default score. Prefer exact candidateId.", parameters: { type: "object", properties: { name: { type: "string" }, candidateId: { type: "string" } } } },
+  { name: "advance_candidate", description: "Move an owned candidate to a new stage. Prefer exact candidateId.", parameters: { type: "object", properties: { name: { type: "string" }, candidateId: { type: "string" }, stage: { type: "string", enum: ["applied", "screening", "interview", "offer", "hired", "rejected"] } }, required: ["stage"] } },
+  { name: "draft_outreach", description: "Prepare outreach copy for an owned candidate without sending. Returns the exact recipient, subject and body for separate delivery review.", parameters: { type: "object", properties: { name: { type: "string" }, candidateId: { type: "string" }, note: { type: "string" } } } },
   { name: "view_interviews", description: "List the user's upcoming interviews from their Google Calendar.", parameters: { type: "object", properties: {} } },
   { name: "check_availability", description: "Find free interview slots on a given date (YYYY-MM-DD).", parameters: { type: "object", properties: { date: { type: "string" } }, required: ["date"] } },
-  { name: "schedule_interview", description: "Book a calendar interview for a candidate and email invites.", parameters: { type: "object", properties: { name: { type: "string", description: "Candidate name from the snapshot." }, interviewerEmail: { type: "string" }, startTime: { type: "string", description: "ISO 8601 start datetime." }, endTime: { type: "string", description: "ISO 8601 end datetime." } }, required: ["name", "interviewerEmail", "startTime", "endTime"] } },
+  { name: "schedule_interview", description: "Book a calendar interview for an owned candidate and email invites. Prefer candidateId and explicit future ISO timestamps with timezone offsets.", parameters: { type: "object", properties: { name: { type: "string" }, candidateId: { type: "string" }, interviewerEmail: { type: "string" }, startTime: { type: "string", description: "ISO 8601 start datetime with offset." }, endTime: { type: "string", description: "ISO 8601 end datetime with offset." } }, required: ["interviewerEmail", "startTime", "endTime"] } },
 ];
 
 function summarizeAction(name: string, args: Record<string, unknown>): string {
   switch (name) {
+    case "create_opening": return `Save local opening "${args.title ?? ""}". No job advert will be published.`;
     case "add_candidate": return `Add candidate ${args.name ?? ""}.`;
     case "screen_resume": return `AI-screen ${args.name ?? "candidate"}'s resume.`;
     case "advance_candidate": return `Move ${args.name ?? "candidate"} to ${args.stage}.`;
-    case "draft_outreach": return `Draft & send outreach to ${args.name ?? "candidate"}.`;
+    case "draft_outreach": return `Prepare outreach copy for ${args.name ?? "candidate"}. No email will be sent.`;
     case "view_interviews": return "Show upcoming interviews.";
     case "check_availability": return `Find free interview slots on ${args.date ?? "that date"}.`;
     case "schedule_interview": return `Schedule an interview for ${args.name ?? "the candidate"}.`;
@@ -119,56 +124,76 @@ function summarizeAction(name: string, args: Record<string, unknown>): string {
 }
 
 async function scoreResume(resume: string, role: string): Promise<number> {
-  if (!isGeminiLive()) return 60;
+  if (!resume.trim() || !role.trim()) throw new AppError("Provide the actual resume and target role before screening.", 400);
+  if (!isGeminiLive()) throw new AppError("Resume screening is unavailable while the AI is offline. No score or stage was changed.", 503);
   try {
     const result = await geminiGenerateContent({
       system: `You are a technical recruiter. Score the resume's fit for the role from 0-100. Return ONLY JSON: {"score": number}.`,
       parts: [{ text: `Role: ${role}\nResume: ${resume}` }],
       json: true,
-      maxOutputTokens: 200,
+      thinkingBudget: 0,
+      maxOutputTokens: 1024,
     });
     const obj = JSON.parse(result.raw) as { score?: unknown };
-    const s = typeof obj.score === "number" ? obj.score : 60;
-    return Math.max(0, Math.min(100, Math.round(s)));
+    if (typeof obj.score !== "number" || !Number.isFinite(obj.score) || obj.score < 0 || obj.score > 100) throw new Error("Invalid score");
+    return Math.round(obj.score);
   } catch {
-    return 60;
+    throw new AppError("Resume screening could not produce a valid score. No score or stage was changed.", 503);
   }
 }
 
-async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+async function findCandidate(userId: string, args: Record<string, unknown>): Promise<Candidate> {
+  return resolveNamedRecord(await listCandidates(userId), "name", args.candidateId, args.name);
+}
+
+function validateInterviewTime(args: Record<string, unknown>): void {
+  const start = Date.parse(String(args.startTime)), end = Date.parse(String(args.endTime));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(args.interviewerEmail)) || ![args.startTime, args.endTime].every(time => /(?:Z|[+-]\d{2}:\d{2})$/.test(String(time))) || !Number.isFinite(start) || !Number.isFinite(end) || end <= start || start <= Date.now()) throw new AppError("Provide a valid interviewer email and future ISO interview times with timezone offsets, with end after start.", 400);
+}
+
+async function reviewHrAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!["screen_resume", "advance_candidate", "draft_outreach", "schedule_interview"].includes(name)) return args;
+  const candidate = await findCandidate(userId, args);
+  if (name === "schedule_interview") validateInterviewTime(args);
+  if (name === "screen_resume" && (!candidate.resumeText?.trim() || !candidate.role?.trim())) throw new AppError("Supply this candidate's actual resume and target role before screening.", 400);
+  return { ...args, candidateId: candidate.id, name: candidate.name, reviewedStage: candidate.stage };
+}
+
+async function executeTool(user: AppUser, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message: string; data?: unknown }> {
   try {
     switch (name) {
+      case "create_opening": {
+        const opening = await createOpening(user.id, { title: String(args.title ?? "").trim(), department: args.department ? String(args.department) : undefined, location: args.location ? String(args.location) : undefined, source: "assistant" });
+        return { ok: true, message: `Created local opening "${opening.title}". Nothing was published.`, data: opening };
+      }
       case "add_candidate": {
-        const c = await createCandidate(user.id, { name: String(args.name ?? "").trim(), email: args.email ? String(args.email) : undefined, role: args.role ? String(args.role) : undefined, source: "assistant" });
+        const c = await createCandidate(user.id, { name: String(args.name ?? "").trim(), email: args.email ? String(args.email) : undefined, role: args.role ? String(args.role) : undefined, resumeText: args.resumeText ? String(args.resumeText) : undefined, source: "assistant" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "candidate_added", title: `Added candidate ${c.name}`, entityType: "hr_candidate", entityId: c.id });
-        return { ok: true, message: `Added ${c.name}.` };
+        return { ok: true, message: `Added ${c.name}.`, data: c };
       }
       case "screen_resume": {
-        const cands = await listCandidates(user.id);
-        const c = cands.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!c) return { ok: false, message: "Couldn't find that candidate." };
-        const score = await scoreResume(c.resumeText ?? "", c.role ?? "the role");
-        await updateCandidate(user.id, c.id, { score, stage: c.stage === "applied" ? "screening" : c.stage });
+        const c = await findCandidate(user.id, args);
+        if (args.reviewedStage && c.stage !== args.reviewedStage) throw new AppError("The candidate changed after review. Prepare a fresh review.", 409);
+        const score = await scoreResume(c.resumeText ?? "", c.role ?? "");
+        const saved = await updateCandidate(user.id, c.id, { score, stage: c.stage === "applied" ? "screening" : c.stage, expectedStage: c.stage });
+        if (!saved) throw new AppError("The candidate changed while screening. Prepare a fresh review.", 409);
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "resume_screened", title: `Screened ${c.name}: ${score}/100`, entityType: "hr_candidate", entityId: c.id });
-        return { ok: true, message: `${c.name} scored ${score}/100 for ${c.role ?? "the role"}.` };
+        return { ok: true, message: `${c.name} scored ${score}/100 for ${c.role ?? "the role"}. This is AI screening assistance, not a hiring decision.`, data: { candidateId: c.id, score } };
       }
       case "advance_candidate": {
-        const cands = await listCandidates(user.id);
-        const c = cands.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!c) return { ok: false, message: "Couldn't find that candidate." };
-        await updateCandidate(user.id, c.id, { stage: args.stage as CandidateStage });
+        const c = await findCandidate(user.id, args);
+        if (args.reviewedStage && c.stage !== args.reviewedStage) throw new AppError("The candidate changed after review. Prepare a fresh review.", 409);
+        if (!["applied", "screening", "interview", "offer", "hired", "rejected"].includes(String(args.stage))) throw new AppError("Choose a supported candidate stage.", 400);
+        if (!await updateCandidate(user.id, c.id, { stage: args.stage as CandidateStage, expectedStage: c.stage })) throw new AppError("The candidate changed after review. Prepare a fresh review.", 409);
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "candidate_advanced", title: `${c.name} → ${args.stage}`, entityType: "hr_candidate", entityId: c.id });
         return { ok: true, message: `Moved ${c.name} to ${args.stage}.` };
       }
       case "draft_outreach": {
-        const cands = await listCandidates(user.id);
-        const c = cands.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!c) return { ok: false, message: "Couldn't find that candidate." };
+        const c = await findCandidate(user.id, args);
         if (!c.email) return { ok: false, message: `No email on file for ${c.name}.` };
         const draft = await draftEmail({ role: "recruiter", purpose: "a friendly outreach email inviting the candidate to a next step", context: `Candidate: ${c.name}, applying for ${c.role ?? "a role"}. ${args.note ? `Note: ${args.note}` : ""}` });
-        await sendProfessionalEmail({ user, to: c.email, subject: draft.subject, body: draft.body, tag: "hr_outreach" });
-        await recordActivity({ userId: user.id, persona: PERSONA, kind: "outreach_sent", title: `Outreach sent to ${c.name}`, detail: draft.subject, entityType: "hr_candidate", entityId: c.id });
-        return { ok: true, message: `Outreach sent to ${c.name}.` };
+        if (draft.isFallback || !draft.subject.trim() || !draft.body.trim()) return { ok: false, message: "Outreach copy is unavailable. Nothing was sent." };
+        return { ok: true, message: "Prepared candidate outreach. Review the exact recipient/copy separately before sending.", data: { candidateId: c.id, toEmail: c.email, subject: draft.subject, body: draft.body, status: "draft" } };
       }
       case "view_interviews": {
         const events = await getUpcomingInterviews(user.id);
@@ -181,10 +206,10 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: "Free slots:\n" + slots.map((s) => `- ${new Date(s.start).toLocaleTimeString()}–${new Date(s.end).toLocaleTimeString()}`).join("\n") };
       }
       case "schedule_interview": {
-        const cands = await listCandidates(user.id);
-        const c = cands.find((x) => x.name.toLowerCase() === String(args.name ?? "").toLowerCase());
-        if (!c) return { ok: false, message: "Couldn't find that candidate." };
+        const c = await findCandidate(user.id, args);
+        if (args.reviewedStage && c.stage !== args.reviewedStage) throw new AppError("The candidate changed after review. Prepare a fresh review.", 409);
         if (!c.email) return { ok: false, message: `No email on file for ${c.name}.` };
+        validateInterviewTime(args);
         const ev = await scheduleInterview(user.id, {
           candidateName: c.name,
           candidateEmail: c.email,
@@ -236,6 +261,8 @@ export const hrVertical: PersonaVertical = {
   buildSnapshot,
   executeTool,
   summarizeAction,
+  reviewAction: reviewHrAction,
+  readOnlyTools: ["view_interviews", "check_availability"],
   seedDemo,
   automations: [
     {

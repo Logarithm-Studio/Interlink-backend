@@ -15,7 +15,7 @@ import { listDeals, createDeal, getOverview, type DealStage } from "./sales.serv
 import { formatSalesAmounts } from "./sales-overview.model";
 
 const PERSONA = "sales";
-type Result = { ok: boolean; message: string };
+type Result = { ok: boolean; message: string; data?: unknown };
 
 const STAGE_LABELS: Record<DealStage, string> = {
   lead: "Lead", qualified: "Qualified", proposal: "Proposal", negotiation: "Negotiation",
@@ -41,11 +41,13 @@ export async function salesConnectionsLine(userId: string): Promise<string> {
 
 // ─── Push: pipeline → Trello ────────────────────────────────────────────────────
 
-export async function syncPipelineToTrello(user: AppUser): Promise<Result> {
+export async function syncPipelineToTrello(user: AppUser, boardId?: string): Promise<Result> {
   if (!(await isConnected(user.id, "trello"))) return { ok: false, message: "Connect Trello in Settings → Manage Integrations to sync your pipeline." };
   const boards = await getBoards(user.id);
   if (boards.length === 0) return { ok: false, message: "No Trello board found. Create a board in Trello, then try again." };
-  const board = boards[0];
+  const chosen = boardId ? boards.filter(board => board.id === boardId) : boards;
+  if (chosen.length !== 1) return { ok: false, message: "Choose an exact Trello board ID. No arbitrary board was selected." };
+  const board = chosen[0];
   const [lists, cards, deals] = await Promise.all([
     getListsForBoard(user.id, board.id),
     getCardsForBoard(user.id, board.id),
@@ -54,8 +56,14 @@ export async function syncPipelineToTrello(user: AppUser): Promise<Result> {
   if (lists.length === 0) return { ok: false, message: `Your board "${board.name}" has no lists. Add a list, then try again.` };
 
   const open = deals.filter((d) => d.stage !== "won" && d.stage !== "lost");
+  if (new Set(open.map(deal => deal.title.toLowerCase())).size !== open.length) return { ok: false, message: "Duplicate deal titles require manual matching before this sync. Nothing was written." };
+  for (const deal of open) {
+    const matchingLists = lists.filter(list => list.name.toLowerCase().includes(deal.stage));
+    if (matchingLists.length !== 1 || cards.filter(card => card.name.toLowerCase() === deal.title.toLowerCase()).length > 1) return { ok: false, message: "Resolve duplicate card titles or ambiguous stage lists before syncing. Nothing was written." };
+  }
   let created = 0;
   let updated = 0;
+  const failed: string[] = [];
   for (const deal of open) {
     const label = STAGE_LABELS[deal.stage];
     const target =
@@ -66,23 +74,25 @@ export async function syncPipelineToTrello(user: AppUser): Promise<Result> {
     try {
       if (existing) { await updateCard(user.id, existing.id, { desc }); updated++; }
       else { await createCard(user.id, target.id, { name: deal.title, desc }); created++; }
-    } catch { /* skip a single card failure */ }
+    } catch { failed.push(deal.id); }
   }
 
   await recordActivity({
     userId: user.id, persona: PERSONA, kind: "trello_sync",
     title: `Synced pipeline to Trello board "${board.name}"`, detail: `${created} new, ${updated} updated`,
   });
-  return { ok: true, message: `Synced ${created + updated} deal(s) to Trello board "${board.name}" (${created} new, ${updated} updated).` };
+  return { ok: failed.length === 0, message: `Synced ${created + updated} deal(s) to Trello board "${board.name}" (${created} new, ${updated} updated); ${failed.length} failed. Check the destination before retrying partial work.`, data: { boardId: board.id, created, updated, failedDealIds: failed } };
 }
 
 // ─── Pull: Trello cards → deals ─────────────────────────────────────────────────
 
-export async function importDealsFromTrello(user: AppUser): Promise<Result> {
+export async function importDealsFromTrello(user: AppUser, boardId?: string): Promise<Result> {
   if (!(await isConnected(user.id, "trello"))) return { ok: false, message: "Connect Trello in Settings → Manage Integrations to import cards." };
   const boards = await getBoards(user.id);
   if (boards.length === 0) return { ok: false, message: "No Trello board found to import from." };
-  const board = boards[0];
+  const chosen = boardId ? boards.filter(board => board.id === boardId) : boards;
+  if (chosen.length !== 1) return { ok: false, message: "Choose an exact Trello board ID before importing." };
+  const board = chosen[0];
   const [lists, cards, deals] = await Promise.all([
     getListsForBoard(user.id, board.id),
     getCardsForBoard(user.id, board.id),
@@ -92,20 +102,22 @@ export async function importDealsFromTrello(user: AppUser): Promise<Result> {
   const existing = new Set(deals.map((d) => d.title.toLowerCase()));
 
   let imported = 0;
+  const failed: string[] = [];
   for (const card of cards) {
     if (existing.has(card.name.toLowerCase())) continue;
     const stage = inferStage(listName.get(card.listId) ?? "");
     try {
       await createDeal(user.id, { title: card.name, stage, notes: card.desc || undefined, source: "trello" });
       imported++;
-    } catch { /* skip */ }
+      existing.add(card.name.toLowerCase());
+    } catch { failed.push(card.id); }
   }
 
   await recordActivity({
     userId: user.id, persona: PERSONA, kind: "trello_import",
     title: `Imported ${imported} deal(s) from Trello board "${board.name}"`,
   });
-  return { ok: true, message: imported > 0 ? `Imported ${imported} new deal(s) from Trello board "${board.name}".` : `No new cards to import from "${board.name}" — your pipeline is already in sync.` };
+  return { ok: failed.length === 0, message: `Imported ${imported} new deal(s) from "${board.name}"; ${failed.length} failed.`, data: { boardId: board.id, imported, failedCardIds: failed } };
 }
 
 // ─── Push: pipeline digest → Slack ──────────────────────────────────────────────
@@ -114,20 +126,9 @@ export async function postPipelineDigestToSlack(user: AppUser, channel?: string)
   if (!(await isConnected(user.id, "slack"))) return { ok: false, message: "Connect Slack in Settings → Manage Integrations to post updates." };
   const overview = await getOverview(user.id);
 
-  let target = (channel ?? "").trim();
-  if (target) {
-    // Accept a channel name (with/without #) as well as an id.
-    if (!/^[CG][A-Z0-9]/.test(target)) {
-      const clean = target.replace(/^#/, "").toLowerCase();
-      const match = (await getChannels(user.id)).find((c) => c.name.toLowerCase() === clean);
-      if (match) target = match.id;
-    }
-  } else {
-    const channels = await getChannels(user.id);
-    const first = channels.find((c) => c.isMember) ?? channels[0];
-    if (!first) return { ok: false, message: "No Slack channel is available to post to." };
-    target = first.id;
-  }
+  const target = (channel ?? "").trim();
+  const channels = await getChannels(user.id);
+  if (!target || !channels.some(item => item.id === target)) return { ok: false, message: "Choose an exact available Slack channel ID before posting the digest." };
 
   const text =
     `*Sales pipeline digest*\n${overview.briefing}\n` +

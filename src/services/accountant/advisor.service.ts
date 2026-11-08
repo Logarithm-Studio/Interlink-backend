@@ -112,12 +112,12 @@ export async function resolveClient(userId: string, idOrName: string): Promise<A
   const clients = await listClients(userId);
   const q = idOrName.trim().toLowerCase();
   if (!q) return null;
-  return (
-    clients.find((c) => c.id === idOrName) ??
-    clients.find((c) => c.name.toLowerCase() === q) ??
-    clients.find((c) => c.name.toLowerCase().includes(q)) ??
-    null
-  );
+  const byId = clients.find(client => client.id === idOrName);
+  if (byId) return byId;
+  const exact = clients.filter(client => client.name.toLowerCase() === q);
+  const matches = exact.length ? exact : clients.filter(client => client.name.toLowerCase().includes(q));
+  if (matches.length > 1) throw new BadRequestError("Multiple advisory clients match. Choose the exact client ID.");
+  return matches[0] ?? null;
 }
 
 async function listHoldings(userId: string, clientId: string): Promise<Holding[]> {

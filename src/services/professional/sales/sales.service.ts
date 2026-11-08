@@ -1300,8 +1300,8 @@ const TOOLS: GeminiToolFunction[] = [
   { name: "mark_contract_signed", description: "Record the user's reported contract signature for an owned deal (moves it to won). This does not verify a provider signature. Prefer exact dealId.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" } } } },
   { name: "route_lead", description: "Assign an owned Marketing contact to the exact repId from read_marketing_workspace resource reps. Saves routing metadata only. A meeting needs separate schedule_meet review with explicit time and attendees.", parameters: { type: "object", properties: { contactId: { type: "string" }, contactName: { type: "string" }, repId: { type: "string" } }, required: ["repId"] } },
   { name: "reengage_deal", description: "Prepare re-engagement copy for an owned stalled deal with recorded marketing permission. Does not send or change stage. Prefer exact dealId. Delivery and stage changes require separate reviews.", parameters: { type: "object", properties: { dealId: { type: "string" }, dealTitle: { type: "string" } } } },
-  { name: "sync_pipeline_to_trello", description: "Push your open deals to your Trello board as cards (one per stage list).", parameters: { type: "object", properties: {} } },
-  { name: "import_from_trello", description: "Pull cards from your Trello board and create deals for any that aren't in the pipeline yet.", parameters: { type: "object", properties: {} } },
+  { name: "sync_pipeline_to_trello", description: "Push open deals to the selected Trello board. Discover exact boardId first. Ambiguous stages/titles are rejected and partial failures are reported.", parameters: { type: "object", properties: { boardId: { type: "string" } }, required: ["boardId"] } },
+  { name: "import_from_trello", description: "Import new deal titles from the selected Trello board. Discover exact boardId first.", parameters: { type: "object", properties: { boardId: { type: "string" } }, required: ["boardId"] } },
   { name: "post_pipeline_to_slack", description: "Post a pipeline digest to a Slack channel.", parameters: { type: "object", properties: { channel: { type: "string", description: "Channel name or id (defaults to a channel you're in)." } } } },
   { name: "log_activity", description: "Log a note to the feed.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] } },
 ];
@@ -1381,7 +1381,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         const { contact, isFallback } = await enrichLead(user.id, text);
         if (isFallback) return { ok: false, message: "AI is offline — couldn't enrich the lead." };
         if (!contact) return { ok: false, message: "Couldn't extract a lead from that email." };
-        return { ok: true, message: `Enriched ${contact.name}${contact.company ? ` (${contact.company})` : ""}.` };
+        return { ok: true, message: `Enriched ${contact.name}${contact.company ? ` (${contact.company})` : ""}.`, data: contact };
       }
       case "meeting_followup": {
         const deal = await findDealByTitle(user.id, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
@@ -1412,8 +1412,8 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Assigned ${contact.name} to ${rep.name} in Interlink. This is routing metadata; no meeting, message or human acceptance is implied.`, data: { contactId: contact.id, repId: rep.id } };
       }
       case "reengage_deal": return reengageDeal(user, String(args.dealTitle ?? ""), typeof args.dealId === "string" ? args.dealId : undefined);
-      case "sync_pipeline_to_trello": return syncPipelineToTrello(user);
-      case "import_from_trello": return importDealsFromTrello(user);
+      case "sync_pipeline_to_trello": return syncPipelineToTrello(user, args.boardId ? String(args.boardId) : undefined);
+      case "import_from_trello": return importDealsFromTrello(user, args.boardId ? String(args.boardId) : undefined);
       case "post_pipeline_to_slack": return postPipelineDigestToSlack(user, args.channel ? String(args.channel) : undefined);
       case "log_activity": {
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "note", title: String(args.note ?? "Note") });
@@ -1452,6 +1452,7 @@ function mapContract2(r: {
 
 // ─── Vertical export ────────────────────────────────────────────────────────
 export const salesVertical: PersonaVertical = {
+  reviewAction: reviewSalesAction,
   persona: PERSONA,
   tools: TOOLS,
   systemPrompt: SYSTEM_PROMPT,
