@@ -6,6 +6,7 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
  try{
   const support=load('services/professional/support/support.service.js'),hr=load('services/professional/hr/hr.vertical.js'),re=load('services/professional/realestate/realestate.service.js'),sales=load('services/professional/sales/sales.service.js');
   const records=load('services/professional/assistant-records.service.js');
+  assert.match(support.supportVertical.systemPrompt,/recommend a provisional category and priority/);
   await t.test('property showings reject missing offsets before review and listings retain supplied floor area',async()=>{
    await assert.rejects(re.realEstateVertical.reviewAction(uid,'schedule_showing',{address:'Review time QA',when:'2030-12-01T15:00:00'}),/offset/);
    const reviewed=await re.realEstateVertical.reviewAction(uid,'schedule_showing',{address:'Review time QA',when:'2030-12-01T15:00:00+06:00'});assert.equal(reviewed.when,'2030-12-01T15:00:00+06:00');
