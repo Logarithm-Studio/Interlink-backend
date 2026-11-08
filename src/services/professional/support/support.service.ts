@@ -194,7 +194,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         if (!t.customerEmail) return { ok: false, message: "No customer email on this ticket." };
         const draft = await draftEmail({
           role: "customer-support agent",
-          purpose: "a helpful, empathetic reply resolving the customer's issue",
+          purpose: "a helpful, empathetic reply based only on verified ticket facts. Do not claim an investigation has started, a resolution, refund, escalation or fix date unless the ticket explicitly confirms it. Describe unverified work as a proposed next step, not work already underway",
           context: `Ticket: ${t.subject}. Message: ${t.body ?? ""}. ${args.note ? `Guidance: ${args.note}` : ""}`,
         });
         if (draft.isFallback || !draft.body.trim()) return { ok: false, message: "Reply copy is unavailable. Nothing was sent or changed." };
