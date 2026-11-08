@@ -240,6 +240,7 @@ async function planSlaWatch(userId: string): Promise<AutomationProposal[]> {
 }
 
 export const supportVertical: PersonaVertical = {
+  readOnlyTools: ["draft_reply"],
   persona: PERSONA,
   tools: TOOLS,
   systemPrompt: SYSTEM_PROMPT,

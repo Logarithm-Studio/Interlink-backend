@@ -34,6 +34,11 @@ Completion repair preserves the full original prose, including requested email
 copy, instead of replacing it with a model-generated completion summary. Invalid
 argument shapes receive one bounded schema repair before asking for clarification;
 unavailable tool names still fail immediately. No repair executes a write.
+If an explicit action request stops with preparation-only prose, one bounded
+full-catalog AUTO round may propose the next requested action for review. Common
+introductory phrases such as "Using this brief, create..." retain their action
+intent. This never executes a write, invents authorization for an export, or
+replaces a complete chat draft with a status summary.
 History preserves user-before-assistant order when paired messages share a
 timestamp. Reversing a descending timestamp-only query inverted those pairs and
 could cause an old request to dominate the next turn.
@@ -137,6 +142,15 @@ Linked opportunities use the existing owned Marketing opportunity service.
 Autolink's `draft_followup`, `meeting_followup` and `reengage_deal` prepare actual recipient/subject/
 body without sending or changing a deal stage. Unavailable AI copy is a failure,
 not fallback outreach. Sending exact copy requires a separate `send_gmail` review.
+Pure Sales follow-up/meeting copy, HR outreach and Support reply generators run
+as read-only preparation and return the actual recipient/subject/body in chat.
+They do not require a separate approval just to generate unsent copy. Saving a
+record, changing a stage, sending or publishing still requires its own review.
+Local Real Estate listings retain supplied floor area and accept USD only;
+another supplied currency is rejected before review and again at persistence.
+Showing review and execution require a future ISO datetime with its explicit
+offset. Receipts retain that supplied offset; only `schedule_meet` uses the
+separate calendar adapter's wall-clock convention.
 `route_lead` saves the explicitly selected owned representative as routing metadata;
 it does not guess a rep, invent a meeting time or imply human acceptance.
 `generate_contract` prepares a local editable agreement from supplied requirements

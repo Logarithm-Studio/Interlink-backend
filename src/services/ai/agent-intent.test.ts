@@ -13,7 +13,7 @@ test("only explicit no-action attachment analysis narrows the workflow catalog",
   for (const request of ["Summarize this and save a campaign draft.", "Create the opportunity described in the file.", "Draft an email but do not send it.", "Review this resume and schedule an interview.", "Summarize this report, then email it to me.", "Summarize the brief and save a local draft. Do not publish anything."]) assert.equal(requestsAttachmentAnalysisOnly(request), false, request);
 });
 test("explicit reviewed action requests can still request a tool", () => {
-  for (const request of ["Create a campaign draft", "Please add a contact", "Can you schedule a meeting?", "I want you to draft a follow-up", "Do not publish anything. Create a local draft."]) {
+  for (const request of ["Create a campaign draft", "Please add a contact", "Can you schedule a meeting?", "I want you to draft a follow-up", "Using this attached PRD, create exactly two Jira issues.", "Based on this brief, save a local campaign.", "Save a local ticket.", "Do not publish anything. Create a local draft."]) {
     assert.equal(looksLikeAgentActionRequest(request), true, request);
   }
 });

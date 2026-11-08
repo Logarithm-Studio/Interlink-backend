@@ -93,6 +93,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
   let lastReadMessage: string | null = null;
   let lastRead: { name: string; args: Record<string, unknown>; data?: unknown } | undefined;
   let repairAttempted = false;
+  let repairText: string | undefined;
 
   for (let step = 0; step < maxSteps; step++) {
     let result = await geminiGenerateContent({
@@ -141,6 +142,13 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
 
     if (!result.functionCall) {
       const text = result.raw?.trim();
+      if (text && opts.looksLikeAction && opts.finalizeTools?.length && !repairAttempted && opts.tools.some(tool => !opts.isReadOnly(tool.name) && !opts.finalizeTools!.some(final => final.name === tool.name))) {
+        repairAttempted = true;
+        repairText = text;
+        contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : [{ text }] });
+        contents.push({ role: "user", parts: [{ text: "Check the original request against actual receipts. Read-only preparation is not execution. If a requested write remains, propose its next exact action for the app's review; the user already asked for that work, so do not ask for permission again in prose. Never execute it here or add an unrequested export. If this was only a drafting/analysis request or all requested work is confirmed complete, preserve the full answer with complete_professional_task. Ask only for a missing required fact." }] });
+        continue;
+      }
       if (text && opts.finalizeTools?.length) {
         const final = await geminiGenerateContent({
           system: opts.system,
@@ -149,7 +157,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         });
         const call = final.functionCall;
         const declaration = opts.finalizeTools.find(tool => tool.name === call?.name);
-        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, args: call.name === "complete_professional_task" ? { ...call.args, answer: text } : call.args, via: lastRead };
+        if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, args: call.name === "complete_professional_task" ? { ...call.args, answer: repairText ?? text } : call.args, via: lastRead };
       }
       if (text) return { kind: "text", text, via: lastRead };
       // Model executed discovery but produced no closing prose — relay the last result.
@@ -183,8 +191,9 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       }
       // One reviewed write at a time. Remaining work is replanned from actual outcomes,
       // never speculative results or a queue of writes based on stale IDs.
-      return { kind: "action", ...write, text: result.raw?.trim() || undefined, via: lastRead };
+      return { kind: "action", ...write, args: write.name === "complete_professional_task" && repairText ? { ...write.args, answer: repairText } : write.args, text: result.raw?.trim() || undefined, via: lastRead };
     }
+    repairText = undefined;
     let newReads = 0;
     const results = await Promise.all(calls.slice(0, 12).map(async ({ name, args }) => {
       if (!opts.isReadOnly(name)) return { part: { functionResponse: { name, response: { executed: false, error: "Discovery is still pending. Use the returned real IDs and propose this write again in the next round for user review." } } } as GeminiPart };

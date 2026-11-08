@@ -6,6 +6,26 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
  try{
   const support=load('services/professional/support/support.service.js'),hr=load('services/professional/hr/hr.vertical.js'),re=load('services/professional/realestate/realestate.service.js'),sales=load('services/professional/sales/sales.service.js');
   const records=load('services/professional/assistant-records.service.js');
+  await t.test('property showings reject missing offsets before review and listings retain supplied floor area',async()=>{
+   await assert.rejects(re.realEstateVertical.reviewAction(uid,'schedule_showing',{address:'Review time QA',when:'2030-12-01T15:00:00'}),/offset/);
+   const reviewed=await re.realEstateVertical.reviewAction(uid,'schedule_showing',{address:'Review time QA',when:'2030-12-01T15:00:00+06:00'});assert.equal(reviewed.when,'2030-12-01T15:00:00+06:00');
+   const listing=await re.realEstateVertical.executeTool(user,'create_listing',{address:'Floor area QA',priceCents:18000000,beds:3,baths:2,sqft:1200});assert.equal(listing.ok,true);assert.equal(listing.data.sqft,1200);
+   const unsupported=await re.realEstateVertical.executeTool(user,'create_listing',{address:'Unsupported currency QA',priceCents:8235,currency:'BDT'});assert.equal(unsupported.ok,false);assert.equal((await re.listListings(uid)).filter(x=>x.address==='Unsupported currency QA').length,0);
+   await assert.rejects(re.createListing(uid,{address:'Unsupported form currency QA',priceCents:8235,currency:'BDT'}),/USD only/);
+  });
+  await t.test('unsent Sales HR and Support copy is returned without a write approval or record mutation',async()=>{
+   const contact=await sales.createContact(uid,{name:'Read draft customer',email:'draft-customer@sandbox.invalid'}),candidate=await hr.createCandidate(uid,{name:'Read draft candidate',email:'draft-candidate@sandbox.invalid',role:'Engineer'}),ticket=await support.createTicket(uid,{subject:'Read draft ticket',body:'Please investigate duplicate entries.',customerEmail:'draft-support@sandbox.invalid'});
+   const model=load('services/ai/geminiClient.js'),original={generate:model.geminiGenerateContent,live:model.isGeminiLive};
+   try{
+    model.isGeminiLive=()=>true;
+    for(const[persona,name,args,email]of[['sales','draft_followup',{contactId:contact.id},contact.email],['hr','draft_outreach',{candidateId:candidate.id},candidate.email],['customer_support','draft_reply',{ticketId:ticket.id},ticket.customerEmail]]){
+     await s.db.query("UPDATE profession_profiles SET persona=$2 WHERE user_id=$1 AND mode='professional'",[uid,persona]);
+     model.geminiGenerateContent=async input=>{if(input.json)return{raw:JSON.stringify({subject:'Source-backed copy',body:'Actual requested unsent draft.'}),model:'fixture',latencyMs:1};const response=input.contents.flatMap(x=>x.parts).find(x=>x.functionResponse?.name===name);return response?{raw:'',functionCall:{name:'complete_professional_task',args:{answer:JSON.stringify(response.functionResponse.response.data)}},model:'fixture',latencyMs:1}:{raw:'',functionCall:{name,args},model:'fixture',latencyMs:1}};
+     const result=await load('services/accountant/assistant.service.js').command(uid,'Draft the requested reply in this chat only. Do not send.');assert.equal(result.action,null);assert.equal(result.task,undefined);assert.match(result.answer,/Actual requested unsent draft/);assert(result.answer.includes(email));
+    }
+    assert.equal((await hr.listCandidates(uid)).find(x=>x.id===candidate.id).stage,'applied');assert.equal((await support.listTickets(uid)).find(x=>x.id===ticket.id).status,'open');assert.equal((await s.db.query('SELECT count(*)::int AS n FROM email_drafts WHERE user_id=$1',[uid])).rows[0].n,0);
+   }finally{model.geminiGenerateContent=original.generate;model.isGeminiLive=original.live;await s.db.query("UPDATE profession_profiles SET persona='sales' WHERE user_id=$1 AND mode='professional'",[uid]);await s.db.query('DELETE FROM support_tickets WHERE id=$1 AND user_id=$2',[ticket.id,uid]);await s.db.query('DELETE FROM hr_candidates WHERE id=$1 AND user_id=$2',[candidate.id,uid]);await s.db.query('DELETE FROM sales_contacts WHERE id=$1 AND user_id=$2',[contact.id,uid])}
+  });
   await t.test('an interview result retains a newer candidate stage and reports the actual calendar result',async()=>{
    const candidate=await hr.createCandidate(uid,{name:'Interview concurrency QA',email:'candidate@sandbox.invalid',role:'Engineer'});
    const calendar=load('services/hr/calendar-hr.service.js'),original=calendar.scheduleInterview;

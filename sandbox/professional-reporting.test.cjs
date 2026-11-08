@@ -8,16 +8,18 @@ test('Finance reports preserve the selected currency and reviewed destination th
  const sent=[];
  try{
   await invoices.createInvoice(uid,{clientName:'BDT report customer',amountCents:8235,currency:'BDT'});await invoices.createInvoice(uid,{clientName:'USD report customer',amountCents:12000,currency:'USD'});await invoices.createInvoice(s.config.otherUserId,{clientName:'Foreign private customer',amountCents:9900,currency:'CAD'});
+  const expenses=load('services/accountant/expenses.service.js');await expenses.createExpenseManual(uid,{merchant:'EUR expense only',amountCents:5400,currency:'EUR'});await expenses.createExpenseManual(s.config.otherUserId,{merchant:'Foreign private expense',amountCents:9900,currency:'GBP'});
   load('services/ai/ai.service.js').generateFlashReport=async({context})=>({data:{summary:'Current source-backed report.',totals:{outstandingCents:999999,overdueCents:0,collectedCents:0,expensesCents:0},cashRunwayNote:'Bank balance unavailable.',insights:[],recommendations:[]},isFallback:false});
   load('services/integrations/tokenStore.js').isConnected=async()=>true;
   Object.assign(load('services/slack/slack.service.js'),{getChannels:async()=>[{id:'CQA123',name:'reviewed-finance',isMember:true}],postMessage:async(_uid,channel,text)=>{sent.push({provider:'slack',destination:channel,text});return{ok:true}}});
   Object.assign(load('services/notion/notion.service.js'),{searchPages:async()=>[{id:'notion-parent-qa',title:'Reviewed finance parent'}],createPage:async(_uid,input)=>{sent.push({provider:'notion',destination:input.parentId,text:input.content,title:input.title});return{id:'created-page',url:'https://example.invalid/qa'}}});
   Object.assign(load('services/email/gmail.service.js'),{createGmailDraft:async input=>{sent.push({provider:'email',destination:input.recipients,text:input.body,title:input.subject});return{providerDraftId:'draft-qa'}},sendGmailDraft:async()=>({messageId:'sent-qa'})});
   await t.test('currency choices contain owned book currencies only',async()=>{
-   const result=await api('currencies');assert.equal(result.status,200);assert.deepEqual(result.data.currencies,['BDT','USD']);
+   const result=await api('currencies');assert.equal(result.status,200);assert.deepEqual(result.data.currencies,['BDT','EUR','USD']);
   });
   await t.test('a selected report uses the actual BDT totals and never combines USD',async()=>{
    const result=await api('flash?currency=BDT');assert.equal(result.status,200);assert.equal(result.data.currency,'BDT');assert.equal(result.data.report.totals.outstandingCents,8235);
+   assert.equal(result.data.report.totals.expensesCents,0);const eur=await api('flash?currency=EUR');assert.equal(eur.data.report.totals.outstandingCents,0);assert.equal(eur.data.report.totals.expensesCents,5400);
    assert.equal((await api('flash')).status,400);assert.equal((await api('flash?currency=12!')).status,400);
   });
   await t.test('missing and unavailable sharing destinations cannot silently select another target',async()=>{

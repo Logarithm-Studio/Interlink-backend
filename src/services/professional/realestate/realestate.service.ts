@@ -50,7 +50,8 @@ export async function listListings(userId: string): Promise<Listing[]> {
        FROM re_listings WHERE user_id = $1 ORDER BY created_at DESC`, [userId]);
   return res.rows.map(mapListing as never);
 }
-export async function createListing(userId: string, data: { address: string; priceCents?: number; beds?: number; baths?: number; sqft?: number; status?: ListingStatus; description?: string; source?: string }): Promise<Listing> {
+export async function createListing(userId: string, data: { address: string; priceCents?: number; currency?: string; beds?: number; baths?: number; sqft?: number; status?: ListingStatus; description?: string; source?: string }): Promise<Listing> {
+  validateListingCurrency(data.currency);
   if (!data.address.trim() || (data.priceCents !== undefined && (!Number.isSafeInteger(data.priceCents) || data.priceCents < 0)) || [data.beds, data.baths, data.sqft].some(value => value !== undefined && (!Number.isFinite(value) || value < 0))) throw new AppError("Provide an address and valid nonnegative property amounts/dimensions.", 400);
   const res = await query(
     `INSERT INTO re_listings (user_id, address, price_cents, beds, baths, sqft, status, description, source)
@@ -212,11 +213,11 @@ const SYSTEM_PROMPT = [
 
 const TOOLS: GeminiToolFunction[] = [
   { name: "create_buyer_lead", description: "Save a local buyer lead from supplied details. Stored buyer budgets are USD minor units; do not infer a currency conversion. Does not send outreach.", parameters: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, budgetCents: { type: "integer" }, interest: { type: "string" } }, required: ["name"] } },
-  { name: "create_listing", description: "Add a new property listing.", parameters: { type: "object", properties: { address: { type: "string" }, priceCents: { type: "number" }, beds: { type: "number" }, baths: { type: "number" } }, required: ["address"] } },
+  { name: "create_listing", description: "Add a local USD property listing, preserving supplied price, bedrooms, bathrooms and floor area. Pass the supplied currency; other currencies are unsupported here and must never be silently converted to USD. Does not publish a public page.", parameters: { type: "object", properties: { address: { type: "string" }, priceCents: { type: "number" }, currency: { type: "string", description: "Actual supplied currency. This local listing workflow currently accepts USD only." }, beds: { type: "number" }, baths: { type: "number" }, sqft: { type: "integer" } }, required: ["address"] } },
   { name: "draft_listing_description", description: "Write a marketing description for a listing (returns copy, does not publish).", parameters: { type: "object", properties: { address: { type: "string" } }, required: ["address"] } },
   { name: "qualify_lead", description: "Move a buyer lead to a new stage.", parameters: { type: "object", properties: { name: { type: "string" }, stage: { type: "string", enum: ["new", "qualified", "touring", "offer", "closed", "lost"] } }, required: ["name", "stage"] } },
   { name: "follow_up_lead", description: "Draft and send a follow-up email to a buyer lead.", parameters: { type: "object", properties: { name: { type: "string" }, note: { type: "string" } }, required: ["name"] } },
-  { name: "schedule_showing", description: "Record a property showing for a lead.", parameters: { type: "object", properties: { address: { type: "string" }, leadName: { type: "string" }, when: { type: "string", description: "ISO datetime." } }, required: ["address"] } },
+  { name: "schedule_showing", description: "Record a local property showing at the actual supplied future time. Does not send a calendar invitation.", parameters: { type: "object", properties: { address: { type: "string" }, leadName: { type: "string" }, when: { type: "string", description: "Future ISO datetime with explicit timezone offset." } }, required: ["address", "when"] } },
   { name: "lease_renewal", description: "Draft and send a lease-renewal email to a tenant. Optionally pass the property's ZIP to factor localized market pricing trends into the renewal terms.", parameters: { type: "object", properties: { property: { type: "string", description: "Property from the snapshot." }, zipCode: { type: "string", description: "Property ZIP — pulls localized pricing trends (RentCast) to inform the renewal." } }, required: ["property"] } },
   { name: "match_buyers", description: "Match buyer leads to the agent's active listings by budget and bedrooms (from each lead's interest). Returns a shortlist per buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Optional: match a single lead by name; otherwise matches all active buyer leads." } } } },
   { name: "send_listing_to_buyer", description: "Email one of the agent's own listings to a buyer lead, including a link to the listing's public page (with photos). Publishes the page automatically if it isn't public yet. Use after match_buyers to actually put the property in front of the buyer.", parameters: { type: "object", properties: { name: { type: "string", description: "Buyer lead name from the snapshot." }, address: { type: "string", description: "Address of the agent's listing to send." }, note: { type: "string", description: "Optional personal line to include." } }, required: ["name", "address"] } },
@@ -240,7 +241,19 @@ for (const tool of TOOLS) {
 }
 TOOLS.push({ name: "publish_listing", description: "Publish an exact owned listing as a public web page. This is a separate reviewed publication; it never emails anyone.", parameters: { type: "object", properties: { listingId: { type: "string" }, address: { type: "string" } } } });
 
+function showingTime(value: unknown): Date {
+  const raw = String(value ?? "").trim(), parsed = new Date(raw);
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/.test(raw) || !Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) throw new AppError("Provide the actual future showing time as ISO datetime with an explicit timezone offset. No showing was recorded.", 400);
+  return parsed;
+}
+
+function validateListingCurrency(value: unknown): void {
+  if (value !== undefined && String(value).trim().toUpperCase() !== "USD") throw new AppError("This property workflow currently supports USD only. Keep other-currency property details in chat; no conversion or listing was saved.", 400);
+}
+
 async function reviewRealEstateAction(userId: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (name === "create_listing") validateListingCurrency(args.currency);
+  if (name === "schedule_showing") showingTime(args.when);
   let result = args;
   if (["qualify_lead", "follow_up_lead", "send_listing_to_buyer"].includes(name)) {
     const lead = resolveNamedRecord(await listLeads(userId), "name", args.leadId, args.name);
@@ -289,7 +302,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
         return { ok: true, message: `Published the listing page: ${published.shareUrl}. No email was sent.`, data: { listingId: listing.id, ...published } };
       }
       case "create_listing": {
-        const l = await createListing(user.id, { address: String(args.address ?? "").trim(), priceCents: typeof args.priceCents === "number" ? args.priceCents : undefined, beds: typeof args.beds === "number" ? args.beds : undefined, baths: typeof args.baths === "number" ? args.baths : undefined, source: "assistant" });
+        const l = await createListing(user.id, { address: String(args.address ?? "").trim(), priceCents: typeof args.priceCents === "number" ? args.priceCents : undefined, currency: typeof args.currency === "string" ? args.currency : undefined, beds: typeof args.beds === "number" ? args.beds : undefined, baths: typeof args.baths === "number" ? args.baths : undefined, sqft: typeof args.sqft === "number" ? args.sqft : undefined, source: "assistant" });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "listing_created", title: `Added listing ${l.address}`, entityType: "re_listing", entityId: l.id });
         return { ok: true, message: `Added listing ${l.address}.`, data: l };
       }
@@ -341,9 +354,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
       case "schedule_showing": {
         const address = String(args.address ?? "").trim();
         if (!address) return { ok: false, message: "Which property is the showing for?" };
-        const whenRaw = args.when ? String(args.when).trim() : "";
-        const parsed = whenRaw ? new Date(whenRaw) : null;
-        if (!/(?:Z|[+-]\d{2}:\d{2})$/.test(whenRaw) || !parsed || !Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) throw new AppError("Provide the actual future showing time as ISO datetime with an explicit timezone offset. No showing was recorded.", 400);
+        const parsed = showingTime(args.when);
         const scheduledAt = parsed.toISOString();
         const s = await createShowing(user.id, {
           address,
@@ -352,7 +363,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           source: "assistant",
         });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "showing_scheduled", title: `Showing at ${s.address}`, entityType: "re_showing", entityId: s.id });
-        const whenMsg = scheduledAt ? ` for ${parsed!.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}` : whenRaw ? ` (${whenRaw})` : "";
+        const whenMsg = ` for ${String(args.when).trim()}`;
         return { ok: true, message: `Showing recorded for ${s.address}${whenMsg}. This is an Interlink record; no calendar invitation was sent.`, data: s };
       }
       case "lease_renewal": {

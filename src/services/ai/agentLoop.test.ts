@@ -95,6 +95,26 @@ test("drafting and analytical prose never force an unrelated write", async () =>
   });
 });
 
+test("requested execution can continue from prepared drafts into an actual review", async () => {
+  const completion={name:'complete_professional_task',description:'Complete',parameters:{type:'object',properties:{answer:{type:'string'}},required:['answer']}};
+  const prepare={name:'prepare_issues',description:'Prepare only',parameters:{type:'object',properties:{}}};
+  const create={name:'create_issue',description:'Reviewed create',parameters:{type:'object',properties:{title:{type:'string'}},required:['title']}};
+  await mockModel([[{functionCall:{name:prepare.name,args:{}}}],[{text:'Here are the draft issues. Let me know if you want them created.'}],[{functionCall:{name:create.name,args:{title:'Actual prepared issue'}}}]],async requests=>{
+    const outcome=await runAgentTurn({system:'Create the requested issues with separate review',tools:[prepare,create,completion],finalizeTools:[completion],looksLikeAction:true,userParts:[{text:'Using this brief, create the issues.'}],isReadOnly:name=>name===prepare.name,execReadOnly:async()=>({message:'Prepared actual issue drafts. Nothing created.',data:{title:'Actual prepared issue'}})});
+    assert.equal(outcome.kind,'action');if(outcome.kind==='action')assert.equal(outcome.name,create.name);
+    assert.equal(requests.length,3);assert(requests[2].tools[0].function_declarations.some((x:any)=>x.name===create.name));assert.equal(requests[2].tool_config.function_calling_config.mode,'AUTO');
+  });
+});
+
+test("follow-through repair preserves a complete analytical draft when no write was requested",async()=>{
+ const completion={name:'complete_professional_task',description:'Complete',parameters:{type:'object',properties:{answer:{type:'string'}},required:['answer']}};
+ const draft='Here is the complete requested Python function: def total(values): return sum(values)';
+ await mockModel([[{text:draft}],[{functionCall:{name:completion.name,args:{answer:'The function is above.'}}}]],async()=>{
+  const result=await runAgentTurn({system:'Do not save or export unless requested',tools:[completion,{name:'save_file',description:'Save',parameters:{type:'object',properties:{}}}],finalizeTools:[completion],looksLikeAction:true,userParts:[{text:'Generate a Python function in chat'}],isReadOnly:()=>false,execReadOnly:async()=>{throw Error('No write')}});
+  assert.equal(result.kind,'action');if(result.kind==='action')assert.equal(result.args.answer,draft);
+ });
+});
+
 test("unavailable tool names never reach an executor or approval", async () => {
   await mockModel([[{ functionCall: { name: "STRIPE_CREATE_REFUND", args: { amount: 50 } } }]], async () => {
     let executed = false;

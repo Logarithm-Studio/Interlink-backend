@@ -232,8 +232,9 @@ export async function planAgentActions(params: {
             : new Date().toISOString()
         }${params.tz ? ` in timezone ${params.tz}` : " (UTC fallback)"}. ` +
         `Resolve relative dates against this and never schedule or create anything in the past. ` +
-        `When scheduling, emit the user's intended time as a plain local wall-clock datetime WITHOUT a "Z" or UTC offset ` +
-        `(e.g. 2026-07-11T15:00:00) — the calendar applies the user's own timezone. Do not convert to UTC yourself.`,
+        `For schedule_meet only, emit the user's intended time as a local wall-clock datetime without a "Z" or offset ` +
+        `(e.g. 2026-07-11T15:00:00); that calendar adapter applies the user's timezone. ` +
+        `For schedule_interview, schedule_showing and other role-specific deadlines, preserve the supplied explicit ISO timezone offset. Never strip a supplied offset from those tools.`,
     },
     { text: `DATA SNAPSHOT:\n${params.snapshot}` },
     ...attachmentParts,

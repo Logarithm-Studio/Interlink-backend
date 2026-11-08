@@ -268,7 +268,7 @@ export const hrVertical: PersonaVertical = {
   executeTool,
   summarizeAction,
   reviewAction: reviewHrAction,
-  readOnlyTools: ["view_interviews", "check_availability"],
+  readOnlyTools: ["view_interviews", "check_availability", "draft_outreach"],
   seedDemo,
   automations: [
     {
