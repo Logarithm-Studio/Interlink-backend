@@ -94,6 +94,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
   let lastRead: { name: string; args: Record<string, unknown>; data?: unknown } | undefined;
   let repairAttempted = false;
   let repairText: string | undefined;
+  let replayedRepairRead = false;
 
   for (let step = 0; step < maxSteps; step++) {
     let result = await geminiGenerateContent({
@@ -160,8 +161,7 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
         if (call && declaration && validArguments(call.args, declaration.parameters)) return { kind: "action", ...call, args: call.name === "complete_professional_task" ? { ...call.args, answer: repairText ?? text } : call.args, via: lastRead };
       }
       if (text) return { kind: "text", text, via: lastRead };
-      // Model executed discovery but produced no closing prose — relay the last result.
-      if (lastReadMessage) return { kind: "text", text: lastReadMessage, via: lastRead };
+      if (lastReadMessage) break;
       return { kind: "text", text: "I'm not sure how to help with that yet — try rephrasing, or tell me which app to use." };
     }
 
@@ -221,15 +221,20 @@ export async function runAgentTurn(opts: RunAgentTurnOptions): Promise<AgentTurn
       lastReadMessage = exec.message;
       lastRead = { name, args, data: exec.data };
     }
-    if (!newReads || responses.length !== calls.length || Date.now() >= deadline) break;
+    if (responses.length !== calls.length || Date.now() >= deadline) break;
+    if (!newReads) {
+      if (!repairAttempted || replayedRepairRead) break;
+      replayedRepairRead = true;
+    }
     contents.push({ role: "model", parts: result.modelParts?.length ? result.modelParts : calls.map(functionCall => ({ functionCall })) });
     contents.push({ role: "user", parts: responses });
   }
 
-  // Ran out of steps — return the most useful thing we have.
+  // Discovery payloads can contain signed previews; never render them as chat.
+  if (opts.finalizeTools?.length) throw new Error("Discovery did not resolve the requested next step.");
   return {
     kind: "text",
-    text: lastReadMessage ?? "I ran several steps but couldn't finish — tell me the next step to take.",
+    text: "I couldn't finish preparing the next step. Your confirmed changes are kept. Please try again.",
     via: lastRead,
   };
 }

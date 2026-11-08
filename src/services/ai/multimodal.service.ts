@@ -241,6 +241,8 @@ export async function planAgentActions(params: {
     { text: `USER: ${params.message}` },
   ];
 
+  // The model chooses a short reference; signed CRM previews stay server-side.
+  const prospectPreviews = new Map<string, string>();
   try {
     const outcome = await runAgentTurn({
       finalizeTools: toolsForTurn.filter(tool => ["ask_professional_question", "complete_professional_task"].includes(tool.name)),
@@ -249,8 +251,22 @@ export async function planAgentActions(params: {
       userParts,
       history: params.history,
       isReadOnly: params.isReadOnly ?? (() => false),
-      execReadOnly: params.execReadOnly ?? (async () => ({ message: "" })),
-      validateAction: params.validateAction,
+      execReadOnly: async (name, args) => {
+        const result: { message: string; data?: unknown } = await (params.execReadOnly?.(name, args) ?? Promise.resolve({ message: "" }));
+        const data = result.data as { prospects?: Record<string, unknown>[] } | undefined;
+        if (name !== "search_marketing_prospects" || !Array.isArray(data?.prospects)) return result;
+        const safeData = { ...data, prospects: data.prospects.map(prospect => {
+          if (typeof prospect.importToken !== "string") return prospect;
+          const reference = `prospect-${prospectPreviews.size + 1}`;
+          prospectPreviews.set(reference, prospect.importToken);
+          return { ...prospect, importToken: reference };
+        }) };
+        return { message: JSON.stringify(safeData), data: safeData };
+      },
+      validateAction: async (name, args) => {
+        if (name === "import_marketing_prospect" && typeof args.importToken === "string" && prospectPreviews.has(args.importToken)) args.importToken = prospectPreviews.get(args.importToken)!;
+        return await params.validateAction?.(name, args) ?? null;
+      },
       looksLikeAction: looksLikeAgentActionRequest(params.message),
     });
     if (outcome.kind === "action") {

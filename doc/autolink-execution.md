@@ -39,6 +39,12 @@ full-catalog AUTO round may propose the next requested action for review. Common
 introductory phrases such as "Using this brief, create..." retain their action
 intent. This never executes a write, invents authorization for an export, or
 replaces a complete chat draft with a status summary.
+CRM search previews stay server-side during planning. The model selects a short
+turn-local reference, which resolves back to the exact signed, owned preview
+before validation/review. It never has to reproduce a long signature. One
+cached discovery replay can repair an invalid proposal without another provider
+read. Exhausted Professional discovery fails with a retryable planning error;
+it does not render internal JSON or mark unfinished work complete.
 History preserves user-before-assistant order when paired messages share a
 timestamp. Reversing a descending timestamp-only query inverted those pairs and
 could cause an old request to dominate the next turn.

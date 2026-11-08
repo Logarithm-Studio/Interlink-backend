@@ -139,6 +139,17 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
    assert.equal((await read(uid,{resource:'research_plans',query:'%'})).data.records.length,1,'Search treats percent as literal text');
    await assert.rejects(read(uid,{resource:'contacts',recordId:'not-a-uuid'}),/UUID|uuid/);
   });
+  await t.test('model selects an exact short CRM reference while signed previews remain server-side',async()=>{
+   const composio=s.load('services/composio/composio.service.js'),original=composio.executeComposioTool;
+   composio.executeComposioTool=async()=>({ok:true,message:'Fixture prospects',data:{results:[{id:'crm-a',properties:{firstname:'First',lastname:'Prospect',email:'first@sandbox.invalid'}},{id:'crm-b',properties:{firstname:'Selected',lastname:'Prospect',email:'selected@sandbox.invalid'}}]}});
+   try{
+    const prospect=s.load('services/professional/marketing/prospect.service.js'),rows=await prospect.searchCrmProspects(uid,{provider:'hubspot',query:'Prospect'});
+    let round=0;
+    model.geminiGenerateContent=async options=>{if(round++===0)return{raw:'',functionCall:{name:'search_marketing_prospects',args:{provider:'hubspot',query:'Prospect'}},model:'fixture',latencyMs:1};const response=options.contents.at(-1).parts[0].functionResponse.response;assert(!JSON.stringify(response).includes(rows[0].importToken));assert.deepEqual(response.data.prospects.map(x=>x.importToken),['prospect-1','prospect-2']);return{raw:'',functionCall:{name:'import_marketing_prospect',args:{importToken:response.data.prospects[1].importToken}},model:'fixture',latencyMs:1}};
+    const plan=await s.load('services/ai/multimodal.service.js').planAgentActions({message:'Import the selected prospect',snapshot:'Owned CRM search',tools:s.load('services/professional/marketing/assistant-workflow.service.js').MARKETING_TOOLS,isReadOnly:name=>name==='search_marketing_prospects',execReadOnly:async()=>({message:JSON.stringify({prospects:rows}),data:{prospects:rows}}),validateAction:async(_name,args)=>{assert.equal(prospect.readPreview(uid,args.importToken).externalId,'crm-b');return null}});
+    assert.equal(plan.action.name,'import_marketing_prospect');assert.equal(plan.action.args.importToken,rows[1].importToken);
+   }finally{composio.executeComposioTool=original}
+  });
   await t.test('independent planning context loads overlap rather than serializing provider latency',async()=>{
    const vertical=s.load('services/professional/registry.js').getVertical('sales');
    const personal=s.load('services/personal-assistant/personal-assistant.service.js');

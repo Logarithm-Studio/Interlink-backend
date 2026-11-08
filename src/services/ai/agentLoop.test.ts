@@ -151,6 +151,22 @@ test("a repeated discovery stops without repeatedly calling the provider", async
   });
 });
 
+test("cached discovery can recover one invalid proposal without another provider request", async () => {
+  await mockModel([[{functionCall:{name:"lookup",args:{}}}],[{functionCall:{name:"save",args:{id:"bad"}}}],[{functionCall:{name:"lookup",args:{}}}],[{functionCall:{name:"save",args:{id:"actual"}}}]],async()=>{
+    let reads=0;
+    const result=await runAgentTurn({system:"Resolve the exact record",tools:[{name:"lookup",description:"Read",parameters:{type:"object",properties:{}}},{name:"save",description:"Save",parameters:{type:"object",properties:{id:{type:"string"}},required:["id"]}}],userParts:[{text:"Save the record"}],isReadOnly:name=>name==="lookup",execReadOnly:async()=>{reads++;return{message:"Actual record",data:{id:"actual"}}},validateAction:async(_name,args)=>args.id==="actual"?null:"Use the exact discovered ID."});
+    assert.equal(reads,1);assert.equal(result.kind,"action");if(result.kind==="action")assert.equal(result.args.id,"actual");
+  });
+});
+
+test("exhausted discovery never renders signed preview data or pretends Professional completion", async () => {
+  await mockModel([[{functionCall:{name:"lookup",args:{}}}]],async()=>{
+    const options={system:"Resolve",tools:[{name:"lookup",description:"Read",parameters:{type:"object",properties:{}}}],userParts:[{text:"Import"}],isReadOnly:()=>true,execReadOnly:async()=>({message:'{"importToken":"private-signed-preview"}',data:{importToken:"private-signed-preview"}})};
+    const outcome=await runAgentTurn(options);assert.equal(outcome.kind,"text");if(outcome.kind==="text")assert(!outcome.text.includes("private-signed-preview"));
+    await assert.rejects(runAgentTurn({...options,finalizeTools:[{name:"complete_professional_task",description:"Complete",parameters:{type:"object",properties:{}}}]}),/Discovery did not resolve/);
+  });
+});
+
 test("signed parallel calls are preserved in the next model round", async () => {
   const signed = { functionCall: { name: "list_people", args: {} }, thoughtSignature: "fixture-signature" };
   await mockModel([[signed], [{ text: "Found Sam." }]], async requests => {
