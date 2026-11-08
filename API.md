@@ -530,3 +530,10 @@ See [Marketing customer jobs](doc/autolink-execution.md#marketing-customer-jobs)
 three-letter `currency`; mixed-currency reports require selection. Flash report
 responses include the selected `currency`, and financial totals come directly
 from saved records rather than generated model totals.
+
+`GET /api/v1/accountant/reports/currencies` returns `{ currencies: string[] }`
+from the authenticated user's invoice/expense book (USD for an empty book).
+Report email, Slack and Notion operations accept `currency`. Slack requires an
+explicit accessible `channel`; Notion requires an explicit accessible `parentId`.
+Missing/unavailable destinations return `ok: false` without sharing. All three
+transports include the selected currency and record-derived numeric totals.

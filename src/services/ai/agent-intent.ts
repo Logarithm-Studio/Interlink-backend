@@ -4,8 +4,9 @@ export function looksLikeAgentActionRequest(message: string): boolean {
   return /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+|(?:i want|i need|i'd like)\s+you\s+to\s+)?(?:please\s+)?(?:create|add|make|send|draft|write|generate|update|assign|move|close|remind|schedule|log|post|file|enrich|route|clean|sync|release|record|mark|pay|refund)\b/i.test(actionable);
 }
 
-/** Explicit no-action analysis needs the source, not the workflow catalog. */
+/** Analysis needs the source; a separate action request keeps the workflow catalog. */
 export function requestsAttachmentAnalysisOnly(message: string): boolean {
+  const affirmative = message.replace(/\b(?:do not|don't|never|without)\b[^.!?;\n]*/gi, " ");
   return /^\s*(?:please\s+)?(?:summari[sz]e|analy[sz]e|explain|review|compare)\b/i.test(message)
-    && /\b(?:(?:do not|don't|never)\s+(?:(?:create|change|modify)(?:\s+or\s+(?:create|change|modify))?\s+anything|(?:perform|take|execute)\s+any\s+actions)|read[- ]only|analysis[- ]only)\b/i.test(message);
+    && !/\b(?:save|export|send|email|publish|post|create|add|update|delete|assign|schedule|import|sync|route|set|mark|log|upload|share|book|cancel|remove|move)\b/i.test(affirmative);
 }

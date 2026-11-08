@@ -224,9 +224,9 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           startTime: String(args.startTime ?? ""),
           endTime: String(args.endTime ?? ""),
         });
-        await updateCandidate(user.id, c.id, { stage: c.stage === "applied" || c.stage === "screening" ? "interview" : c.stage });
+        const saved = await updateCandidate(user.id, c.id, { stage: c.stage === "applied" || c.stage === "screening" ? "interview" : c.stage, expectedStage: c.stage });
         await recordActivity({ userId: user.id, persona: PERSONA, kind: "interview_scheduled", title: `Interview booked for ${c.name}`, detail: ev.summary, entityType: "hr_candidate", entityId: c.id });
-        return { ok: true, message: `Interview scheduled for ${c.name}.` };
+        return { ok: true, message: `Interview scheduled for ${c.name}.${saved ? "" : " The candidate stage changed during scheduling and was retained."}`, data: { candidateId: c.id, eventId: ev.id, htmlLink: ev.htmlLink, stageUpdated: Boolean(saved) } };
       }
       default:
         return { ok: false, message: `Unsupported action: ${name}.` };

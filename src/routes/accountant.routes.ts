@@ -41,7 +41,7 @@ import {
 } from "../services/accountant/expenses.service";
 import { extractReceipt } from "../services/ai/multimodal.service";
 import { getArInsights } from "../services/accountant/insights.service";
-import { emailFlashReport, getFlashReport } from "../services/accountant/reporting.service";
+import { emailFlashReport, getFlashReport, getReportCurrencies } from "../services/accountant/reporting.service";
 import {
   postFlashReportToSlack,
   exportFlashReportToNotion,
@@ -360,6 +360,11 @@ router.post("/expenses/:id/resolve", async (req: Request, res: Response, next: N
 });
 
 // ─── Flash report ───────────────────────────────────────────────────────────
+router.get("/reports/currencies", async (req: Request, res: Response, next: NextFunction) => {
+  try { res.json({ currencies: await getReportCurrencies((req as AuthenticatedRequest).user.id) }); }
+  catch (err) { next(err); }
+});
+
 router.get("/reports/flash", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
@@ -379,26 +384,26 @@ router.post("/reports/flash/email", async (req: Request, res: Response, next: Ne
 });
 
 // Push the flash report to a Slack channel (gated on Slack being connected).
-const FlashSlackBody = z.object({ channel: z.string().optional() });
+const FlashSlackBody = z.object({ channel: z.string().optional(), currency: z.string().length(3).optional() });
 router.post("/reports/flash/slack", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = FlashSlackBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("Invalid request body.");
-    res.json(await postFlashReportToSlack(user, parsed.data.channel));
+    res.json(await postFlashReportToSlack(user, parsed.data.channel, parsed.data.currency));
   } catch (err) {
     next(err);
   }
 });
 
 // Export the flash report to a Notion page (gated on Notion being connected).
-const FlashNotionBody = z.object({ parentId: z.string().optional() });
+const FlashNotionBody = z.object({ parentId: z.string().optional(), currency: z.string().length(3).optional() });
 router.post("/reports/flash/notion", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const parsed = FlashNotionBody.safeParse(req.body ?? {});
     if (!parsed.success) throw new BadRequestError("Invalid request body.");
-    res.json(await exportFlashReportToNotion(user, parsed.data.parentId));
+    res.json(await exportFlashReportToNotion(user, parsed.data.parentId, parsed.data.currency));
   } catch (err) {
     next(err);
   }

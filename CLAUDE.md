@@ -511,6 +511,11 @@ retains full prose copy. Marketing native adapters reuse CRM import, local conte
 local follow-ups and cached performance services; consult the execution contract
 for consent, ownership and delivery boundaries. HR screening can use supplied job
 requirements and returns evidence/gaps; title-only screening is labelled as such.
+Plain attachment analysis does not require a no-change phrase to exclude workflow
+tools. Operational drafts omit unknown identifiers. Reviewed interview scheduling
+retains a concurrently changed candidate stage while reporting the actual event.
+Reports expose owned currency choices; email/Slack/Notion preserve that currency
+and numeric totals, with explicit accessible sharing destinations.
 
 Composio tools prioritize named connected apps and request preferred slugs
 explicitly. WhatsApp is Business-only. DocuSign needs custom OAuth configuration;

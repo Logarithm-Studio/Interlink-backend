@@ -6,6 +6,16 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
  try{
   const support=load('services/professional/support/support.service.js'),hr=load('services/professional/hr/hr.vertical.js'),re=load('services/professional/realestate/realestate.service.js'),sales=load('services/professional/sales/sales.service.js');
   const records=load('services/professional/assistant-records.service.js');
+  await t.test('an interview result retains a newer candidate stage and reports the actual calendar result',async()=>{
+   const candidate=await hr.createCandidate(uid,{name:'Interview concurrency QA',email:'candidate@sandbox.invalid',role:'Engineer'});
+   const calendar=load('services/hr/calendar-hr.service.js'),original=calendar.scheduleInterview;
+   let invitations=0;calendar.scheduleInterview=async()=>{invitations++;await hr.updateCandidate(uid,candidate.id,{stage:'hired'});return{id:'confirmed-interview-qa',summary:'Confirmed calendar interview',htmlLink:'https://example.invalid/calendar/qa'}};
+   try{
+    const args=await hr.hrVertical.reviewAction(uid,'schedule_interview',{candidateId:candidate.id,interviewerEmail:'interviewer@sandbox.invalid',startTime:'2030-12-01T10:00:00+06:00',endTime:'2030-12-01T10:30:00+06:00'});
+    const result=await hr.hrVertical.executeTool(user,'schedule_interview',args);
+    assert.equal(result.ok,true);assert.equal(invitations,1);assert.equal((await hr.listCandidates(uid)).find(x=>x.id===candidate.id).stage,'hired');assert.equal(result.data.eventId,'confirmed-interview-qa');assert.match(result.message,/stage.*changed|stage.*retained/i);
+   }finally{calendar.scheduleInterview=original}
+  });
   await t.test('paired messages with the same timestamp retain causal order in model history',async()=>{
    const model=load('services/ai/geminiClient.js'),original={generate:model.geminiGenerateContent,live:model.isGeminiLive};
    const conv=(await s.db.query("INSERT INTO accountant_conversations(user_id,title) VALUES($1,'History ordering QA') RETURNING id",[uid])).rows[0].id;

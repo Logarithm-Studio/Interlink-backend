@@ -37,8 +37,9 @@ unavailable tool names still fail immediately. No repair executes a write.
 History preserves user-before-assistant order when paired messages share a
 timestamp. Reversing a descending timestamp-only query inverted those pairs and
 could cause an old request to dominate the next turn.
-For attached summary/analysis requests that explicitly prohibit all changes, the
-Professional catalog is limited to completion. Embedded instructions cannot
+For attached summary/analysis requests without a separate action request, the
+Professional catalog is limited to completion. An explicit no-change phrase is
+not required. Embedded instructions cannot
 request a workflow review or a workflow-specific question. Mixed requests such
 as summarizing then saving a draft retain the normal tool catalog. The shared
 attachment directive identifies file content as data, including embedded questions.
@@ -74,6 +75,8 @@ declared schema, including blank required strings, outside the model loop.
   unavailable model scores never become saved invented scores. `create_opening`
   saves a local opening; interview scheduling requires an email and explicit-offset
   future start/end timestamps. Outreach is an exact unsent draft.
+  If the candidate stage changes while a reviewed calendar request is in flight,
+  the confirmed event receipt is retained and the newer stage is not overwritten.
 - Support `create_ticket` saves a local ticket. Reply drafting never resolves or
   emails a ticket; triage/escalation/resolution use its exact reviewed identity.
 - Real Estate `create_buyer_lead` saves a local buyer with an explicit USD budget.

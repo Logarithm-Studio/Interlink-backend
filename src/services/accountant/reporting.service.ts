@@ -27,11 +27,21 @@ export interface FlashReportResponse {
   generatedAt: string;
 }
 
+export async function getReportCurrencies(userId: string): Promise<string[]> {
+  const result = await query<{ currency: string }>("SELECT currency FROM invoices WHERE user_id=$1 UNION SELECT currency FROM expenses WHERE user_id=$1 ORDER BY currency", [userId]);
+  return result.rows.length ? result.rows.map(row => row.currency) : ["USD"];
+}
+
+export function formatFlashReport(report: FlashReport, currency: string): string {
+  const amount = (cents: number) => `${currency} ${(cents / 100).toFixed(2)}`;
+  return [`Flash Financial Report (${currency})`, "", ...Object.entries(report.totals).map(([key, value]) => `${key.replace(/Cents$/, "").replace(/([A-Z])/g, " $1")}: ${amount(value)}`), "", report.summary, "", report.cashRunwayNote, "", "Insights:", ...report.insights.map(value => `- ${value}`), "", "Recommended actions:", ...report.recommendations.map(value => `- ${value}`)].join("\n");
+}
+
 async function gatherContext(userId: string, selectedCurrency?: string) {
   const allInvoices = await listInvoices(userId);
   const expenseCurrencies = await query<{ currency: string }>("SELECT DISTINCT currency FROM expenses WHERE user_id=$1", [userId]);
   const currencies = new Set([...allInvoices.map(invoice => invoice.currency), ...expenseCurrencies.rows.map(row => row.currency)]);
-  if (!selectedCurrency && currencies.size > 1) throw new BadRequestError("This book has multiple currencies. Use Autolink to request a flash report for one currency; amounts will not be converted or combined.");
+  if (!selectedCurrency && currencies.size > 1) throw new BadRequestError("This book has multiple currencies. Choose one report currency; amounts will not be converted or combined.");
   const currency = selectedCurrency?.trim().toUpperCase() || allInvoices[0]?.currency || expenseCurrencies.rows[0]?.currency || "USD";
   if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestError("Choose a three-letter report currency.");
   const invoices = allInvoices.filter(invoice => invoice.currency === currency);
@@ -103,23 +113,9 @@ export async function emailFlashReport(
   user: AppUser,
   currency?: string,
 ): Promise<{ sent: boolean; messageId: string }> {
-  const { report } = await getFlashReport(user.id, currency);
-
-  const body = [
-    "Flash Financial Report",
-    "",
-    report.summary,
-    "",
-    report.cashRunwayNote,
-    "",
-    "Insights:",
-    ...report.insights.map((i) => `- ${i}`),
-    "",
-    "Recommended actions:",
-    ...report.recommendations.map((r) => `- ${r}`),
-  ].join("\n");
-
-  const subject = `Flash Financial Report — ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`;
+  const selected = await getFlashReport(user.id, currency);
+  const body = formatFlashReport(selected.report, selected.currency);
+  const subject = `Flash Financial Report (${selected.currency}) — ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`;
   const idempotencyKey = `flash:email:${user.id}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(subject + body).digest("hex").slice(0,16)}`;
 
   const draft = await createGmailDraft({
