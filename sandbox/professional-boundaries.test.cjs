@@ -6,6 +6,18 @@ test('Professional record discovery, ambiguity, evidence failures and partial wr
  try{
   const support=load('services/professional/support/support.service.js'),hr=load('services/professional/hr/hr.vertical.js'),re=load('services/professional/realestate/realestate.service.js'),sales=load('services/professional/sales/sales.service.js');
   const records=load('services/professional/assistant-records.service.js');
+  await t.test('paired messages with the same timestamp retain causal order in model history',async()=>{
+   const model=load('services/ai/geminiClient.js'),original={generate:model.geminiGenerateContent,live:model.isGeminiLive};
+   const conv=(await s.db.query("INSERT INTO accountant_conversations(user_id,title) VALUES($1,'History ordering QA') RETURNING id",[uid])).rows[0].id;
+   await s.db.query("INSERT INTO accountant_chat_messages(user_id,conversation_id,role,content,created_at) VALUES($1,$2,'user','Old support request','2020-01-01T00:00:00Z'),($1,$2,'assistant','Old support answer','2020-01-01T00:00:00Z')",[uid,conv]);
+   let contents;
+   try{
+    model.isGeminiLive=()=>true;model.geminiGenerateContent=async input=>{contents=input.contents;return{raw:'',functionCall:{name:'complete_professional_task',args:{answer:'New Marketing answer'}},model:'fixture',latencyMs:1}};
+    await load('services/accountant/assistant.service.js').command(uid,'New Marketing request',conv);
+    assert.deepEqual(contents.slice(0,2).map(x=>[x.role,x.parts[0].text]),[['user','Old support request'],['model','Old support answer']]);
+    assert.match(contents.at(-1).parts.at(-1).text,/New Marketing request/);
+   }finally{model.geminiGenerateContent=original.generate;model.isGeminiLive=original.live}
+  });
   await t.test('every record resource is owner scoped and supports bounded SQL discovery',async()=>{
    const privateTicket=await support.createTicket(s.config.otherUserId,{subject:'Private boundary QA'});
    for(const resource of records.PROFESSIONAL_RECORD_TOOL.parameters.properties.resource.enum){

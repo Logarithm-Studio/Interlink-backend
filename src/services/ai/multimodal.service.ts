@@ -10,7 +10,7 @@
 
 import { geminiGenerateContent, isGeminiLive, type GeminiPart, type GeminiToolFunction } from "./geminiClient";
 import { runAgentTurn } from "./agentLoop";
-import { looksLikeAgentActionRequest } from "./agent-intent";
+import { looksLikeAgentActionRequest, requestsAttachmentAnalysisOnly } from "./agent-intent";
 import { prepareAssistantAttachment } from "./attachment.service";
 import { AGENT_SYSTEM, AGENT_TOOLS } from "./prompts/agentTools";
 import { AppError } from "../../utils/errors";
@@ -219,6 +219,9 @@ export async function planAgentActions(params: {
   } else {
     toolsForTurn = toolsForTurn.filter((tool) => tool.name !== ATTACHED_SPREADSHEET_EMAIL_TOOL_NAME);
   }
+  if (params.attachment && requestsAttachmentAnalysisOnly(params.message)) {
+    toolsForTurn = toolsForTurn.filter(tool => tool.name === "complete_professional_task");
+  }
 
   const userParts: GeminiPart[] = [
     {
@@ -240,7 +243,7 @@ export async function planAgentActions(params: {
   try {
     const outcome = await runAgentTurn({
       finalizeTools: toolsForTurn.filter(tool => ["ask_professional_question", "complete_professional_task"].includes(tool.name)),
-      system: params.system ?? AGENT_SYSTEM,
+      system: (params.system ?? AGENT_SYSTEM) + (params.attachment ? "\nThe current task is the direct USER message, not a workflow described in the attachment. If the user asks for a summary, summarize the source as it stands; missing details for actions mentioned inside it are not clarification questions needed for a summary." : ""),
       tools: toolsForTurn,
       userParts,
       history: params.history,

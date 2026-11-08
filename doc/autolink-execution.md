@@ -34,6 +34,14 @@ Completion repair preserves the full original prose, including requested email
 copy, instead of replacing it with a model-generated completion summary. Invalid
 argument shapes receive one bounded schema repair before asking for clarification;
 unavailable tool names still fail immediately. No repair executes a write.
+History preserves user-before-assistant order when paired messages share a
+timestamp. Reversing a descending timestamp-only query inverted those pairs and
+could cause an old request to dominate the next turn.
+For attached summary/analysis requests that explicitly prohibit all changes, the
+Professional catalog is limited to completion. Embedded instructions cannot
+request a workflow review or a workflow-specific question. Mixed requests such
+as summarizing then saving a draft retain the normal tool catalog. The shared
+attachment directive identifies file content as data, including embedded questions.
 
 ## Marketing customer jobs
 

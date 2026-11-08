@@ -513,7 +513,7 @@ async function loadRecentHistory(
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
   const res = await query<{ role: "user" | "assistant"; content: string }>(
     `SELECT role, content FROM accountant_chat_messages
-      WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 24`,
+      WHERE conversation_id = $1 ORDER BY created_at DESC, (role = 'assistant') DESC, id DESC LIMIT 24`,
     [convId],
   );
   return res.rows.reverse();
