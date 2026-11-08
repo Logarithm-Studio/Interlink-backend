@@ -1376,7 +1376,7 @@ async function executeTool(user: AppUser, name: string, args: Record<string, unk
           channels: Array.isArray(args.channels) ? args.channels.filter((value): value is string => typeof value === "string") : undefined,
         });
         const copyNotice = campaign.body.trim() ? "Review the copy" : "AI copy was unavailable. Write your campaign message";
-        return { ok: true, message: `Saved campaign draft "${campaign.subject}" (ID: ${campaign.id}; status: ${campaign.status}). ${copyNotice} and choose a Mailchimp audience in the Campaigns workspace before any delivery.`, data: { campaignId: campaign.id, status: campaign.status, subject: campaign.subject } };
+        return { ok: true, message: `Saved campaign "${campaign.topic}" (ID: ${campaign.id}; status: ${campaign.status}). Email subject: "${campaign.subject}". ${copyNotice} and choose a Mailchimp audience in the Campaigns workspace before any delivery.`, data: { campaignId: campaign.id, status: campaign.status, topic: campaign.topic, subject: campaign.subject } };
       }
       case "enrich_lead": {
         const text = String(args.emailText ?? "").trim();

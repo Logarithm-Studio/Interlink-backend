@@ -151,6 +151,10 @@ another supplied currency is rejected before review and again at persistence.
 Showing review and execution require a future ISO datetime with its explicit
 offset. Receipts retain that supplied offset; only `schedule_meet` uses the
 separate calendar adapter's wall-clock convention.
+Generated LinkedIn drafts should explain the actual audience problem, supplied
+product relevance and a specific next step; the default is 80-150 words unless
+the user requests another length. Exact supplied copy is preserved. Campaign
+receipts distinguish the saved topic from a generated email subject.
 `route_lead` saves the explicitly selected owned representative as routing metadata;
 it does not guess a rep, invent a meeting time or imply human acceptance.
 `generate_contract` prepares a local editable agreement from supplied requirements
