@@ -11,6 +11,7 @@ test('Autolink creates a reviewed Marketing research plan through the existing o
   assert.match(options.system, /Campaign delivery and content publication have independent lifecycles/);
   assert.match(options.system, /Do not ask for confirmation in prose/);
   assert.match(options.system, /Without verified evidence, never write/);
+  assert.match(options.system, /Do not collapse the saved body into a slogan/);
   assert.match(options.tools.find(tool=>tool.name==='create_marketing_content').description,/80-150 words/);
   assert(options.tools.some(tool=>tool.name==='read_marketing_workspace'));
   assert(options.tools.some(tool=>tool.name==='create_marketing_research_plan'));
